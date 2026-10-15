@@ -10,6 +10,7 @@ struct PDFCropperApp: App {
         WindowGroup("Divisio Textus") {
             ContentView()
                 .environmentObject(model)
+                .onAppear { appDelegate.onOpenPDF { model.load(url: $0) } }
         }
         .windowStyle(.titleBar)
         .commands {
@@ -20,7 +21,15 @@ struct PDFCropperApp: App {
             CommandGroup(after: .saveItem) {
                 Button("Export PDF…") { model.exportPanel() }
                     .keyboardShortcut("e")
-                    .disabled(model.document == nil)
+                    .disabled(model.document == nil || model.isBusy)
+            }
+            CommandMenu("Go") {
+                Button("Previous Page") { model.selectAdjacentPage(-1) }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                    .disabled(model.pages.isEmpty)
+                Button("Next Page") { model.selectAdjacentPage(1) }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+                    .disabled(model.pages.isEmpty)
             }
         }
     }
@@ -40,5 +49,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    // Finder "Open With" / dropping a PDF on the Dock icon. At launch this can
+    // arrive before the window exists, so hold the URL until a handler is set.
+    private var openPDF: ((URL) -> Void)?
+    private var pendingURL: URL?
+
+    func onOpenPDF(_ handler: @escaping (URL) -> Void) {
+        openPDF = handler
+        if let url = pendingURL {
+            pendingURL = nil
+            handler(url)
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { $0.pathExtension.lowercased() == "pdf" }) else { return }
+        if let openPDF { openPDF(url) } else { pendingURL = url }
     }
 }

@@ -39,7 +39,7 @@ private struct ThumbnailRow: View {
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
-                if let img = model.previewImage(for: page) {
+                if let img = model.thumbnail(for: page) {
                     Image(nsImage: img)
                         .resizable().scaledToFit()
                         .frame(maxHeight: 120)

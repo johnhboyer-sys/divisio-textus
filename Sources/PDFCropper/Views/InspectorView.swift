@@ -10,7 +10,7 @@ struct InspectorView: View {
                 Section("Page \(page.sourceIndex + 1)") {
                     Picker("Type", selection: Binding(
                         get: { model.pages[idx].classification },
-                        set: { model.pages[idx].classification = $0 })
+                        set: { model.setClassification($0, for: page.id) })
                     ) {
                         ForEach(PageClassification.allCases) { c in
                             Label(c.label, systemImage: c.symbol).tag(c)
@@ -23,10 +23,28 @@ struct InspectorView: View {
                         Label("Auto-detect this page", systemImage: "wand.and.stars")
                     }
 
-                    Button {
-                        model.applyCropsToAllSpreads()
-                    } label: {
-                        Label("Apply crop to all pages", systemImage: "rectangle.on.rectangle")
+                    switch page.classification {
+                    case .spread:
+                        Button {
+                            model.applyLayoutToAllSpreads()
+                        } label: {
+                            Label("Apply layout to all spreads", systemImage: "rectangle.on.rectangle")
+                        }
+                        .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
+                    case .single:
+                        Button {
+                            model.applySingleCrop(alternate: false)
+                        } label: {
+                            Label("Apply crop to all single pages", systemImage: "rectangle.on.rectangle")
+                        }
+                        Button {
+                            model.applySingleCrop(alternate: true)
+                        } label: {
+                            Label("Apply crop to alternate pages", systemImage: "rectangle.split.2x1")
+                        }
+                        .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
+                    case .skip:
+                        EmptyView()
                     }
 
                     if page.classification != .skip {
@@ -79,7 +97,7 @@ struct InspectorView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.document == nil || model.isBusy)
 
-                if model.isBusy && model.exportProgress > 0 {
+                if model.isExporting && model.exportProgress > 0 {
                     ProgressView(value: model.exportProgress)
                 }
             }
@@ -98,8 +116,10 @@ struct InspectorView: View {
                     .monospacedDigit().foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
-                Slider(value: value, in: -8...8, step: 0.1)
-                Button { value.wrappedValue = 0 } label: {
+                Slider(value: value, in: -8...8, step: 0.1) { editing in
+                    if editing { model.beginEdit() } else { model.endEdit("Straighten") }
+                }
+                Button { model.perform("Straighten") { value.wrappedValue = 0 } } label: {
                     Image(systemName: "arrow.counterclockwise")
                 }
                 .help("Reset to 0°")

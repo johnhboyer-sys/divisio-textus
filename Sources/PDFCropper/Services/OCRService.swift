@@ -17,7 +17,9 @@ enum OCRService {
 
     private static let ciContext = CIContext(options: nil)
 
-    static func recognizeLines(_ cgImage: CGImage, languages: [String] = ["en-US"]) -> [Line] {
+    /// Returns nil when Vision itself failed (not "no text found"), so callers can
+    /// tell the user which pages ended up without a text layer.
+    static func recognizeLines(_ cgImage: CGImage, languages: [String] = ["en-US"]) -> [Line]? {
         // Detect column / table blocks. Vision reads across column gaps, so a page
         // with side-by-side columns (uniform multi-column, or embedded syllogism /
         // footnote tables) gets OCR'd one block at a time; Vision never sees across a
@@ -43,7 +45,8 @@ enum OCRService {
             let bx = block.minX, bw = block.width
             let bh = block.height
             let blockBottom = 1 - (block.minY + block.height)
-            for line in recognizeWhole(sub, languages: languages) {
+            guard let lines = recognizeWhole(sub, languages: languages) else { return nil }
+            for line in lines {
                 let fullBox = CGRect(x: bx + line.box.minX * bw,
                                      y: blockBottom + line.box.minY * bh,
                                      width: line.box.width * bw,
@@ -63,10 +66,11 @@ enum OCRService {
 
     /// OCR over a whole image. Large images get two passes (full + 50% scale) merged
     /// to recover deskew-dropped lines; small blocks get a single full-resolution pass.
-    private static func recognizeWhole(_ cgImage: CGImage, languages: [String]) -> [Line] {
-        let pass1 = runRequest(on: preprocess(cgImage), languages: languages)
+    private static func recognizeWhole(_ cgImage: CGImage, languages: [String]) -> [Line]? {
+        guard let pass1 = runRequest(on: preprocess(cgImage), languages: languages) else { return nil }
         guard cgImage.height >= twoPassMinHeight else { return pass1 }
-        let pass2 = runRequest(on: preprocess(halfScale(cgImage)), languages: languages)
+        // The second pass only recovers lines; if it fails, pass1 alone is still good.
+        guard let pass2 = runRequest(on: preprocess(halfScale(cgImage)), languages: languages) else { return pass1 }
         return merge(pass1, pass2)
     }
 
@@ -85,28 +89,68 @@ enum OCRService {
 
     // MARK: - Internal helpers
 
-    private static func runRequest(on image: CGImage, languages: [String]) -> [Line] {
+    /// Vision can fail outright (e.g. "e5rtError … precompiled compute operation"
+    /// while macOS rebuilds its on-device model, or when other jobs are using the
+    /// Neural Engine) and often succeeds a moment later, so retry before giving up.
+    private static let retryDelays: [TimeInterval] = [0.5, 2]
+
+    /// One recognition pass, retried on failure. nil = every attempt failed.
+    private static func runRequest(on image: CGImage, languages: [String]) -> [Line]? {
+        for attempt in 0...retryDelays.count {
+            if attempt > 0 { Thread.sleep(forTimeInterval: retryDelays[attempt - 1]) }
+            if let lines = recognizeOnce(image, languages: languages) { return lines }
+        }
+        return nil
+    }
+
+    private static func recognizeOnce(_ image: CGImage, languages: [String]) -> [Line]? {
+        if #available(macOS 15, *) { return recognizeOnceModern(image, languages: languages) }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.recognitionLanguages = languages
         request.automaticallyDetectsLanguage = true
         request.minimumTextHeight = 0        // don't drop small body text
-
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
         do {
-            try handler.perform([request])
+            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         } catch {
-            return []
+            return nil
         }
-        guard let observations = request.results else { return [] }
+        return (request.results ?? []).compactMap {
+            makeLine($0.topCandidates(1).first?.string, box: $0.boundingBox)
+        }
+    }
 
-        return observations.compactMap { obs in
-            guard let candidate = obs.topCandidates(1).first else { return nil }
-            let text = candidate.string
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return Line(text: text, box: obs.boundingBox)
+    /// The macOS 15+ API, preferred because it recovers after a Vision failure:
+    /// the next request works. With the older VNRecognizeTextRequest one failure
+    /// made every later request in the process fail too. Same boxes as the old API.
+    @available(macOS 15, *)
+    private static func recognizeOnceModern(_ image: CGImage, languages: [String]) -> [Line]? {
+        final class Result: @unchecked Sendable { var lines: [Line]? }
+        let result = Result()
+        let done = DispatchSemaphore(value: 0)
+        // The API is async; export calls OCR from plain GCD threads, so wait here.
+        Task.detached {
+            var request = RecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.recognitionLanguages = languages.map { Locale.Language(identifier: $0) }
+            request.automaticallyDetectsLanguage = true
+            request.minimumTextHeightFraction = 0    // don't drop small body text
+            if let observations = try? await request.perform(on: image) {
+                result.lines = observations.compactMap {
+                    makeLine($0.topCandidates(1).first?.string, box: $0.boundingBox.cgRect)
+                }
+            }
+            done.signal()
         }
+        done.wait()
+        return result.lines
+    }
+
+    private static func makeLine(_ text: String?, box: CGRect) -> Line? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return Line(text: text, box: box)
     }
 
     /// Merge two line arrays, recovering lines that Vision garbles or drops in pass1.

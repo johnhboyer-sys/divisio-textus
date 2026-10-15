@@ -12,8 +12,9 @@ enum PageAnalyzer {
         var rightCrop: CropRect
     }
 
-    /// Analyze one rendered page.
-    static func analyze(cgImage: CGImage) -> Result {
+    /// Analyze one rendered page. `forced` (spread or single) overrides the
+    /// automatic guess, e.g. when the user changes a page's type.
+    static func analyze(cgImage: CGImage, as forced: PageClassification? = nil) -> Result {
         guard let gray = GrayBuffer(cgImage: cgImage) else {
             return Result(classification: .spread,
                           splitX: 0.5,
@@ -24,7 +25,7 @@ enum PageAnalyzer {
         let aspect = Double(cgImage.width) / Double(cgImage.height)
         // Landscape-ish pages are almost certainly two-page spreads; tall pages
         // are likely a single page. This is just a starting guess.
-        let isSpread = aspect >= 1.15
+        let isSpread = forced.map { $0 == .spread } ?? (aspect >= 1.15)
 
         let splitX = isSpread ? detectGutter(gray) : 0.5
 

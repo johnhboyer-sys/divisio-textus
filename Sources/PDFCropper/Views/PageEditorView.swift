@@ -173,6 +173,7 @@ struct PageEditorView: View {
 
 /// Vertical draggable gutter indicator for spreads.
 private struct SplitLine: View {
+    @EnvironmentObject var model: AppModel
     @Binding var splitX: Double
     let imageFrame: CGRect
 
@@ -192,9 +193,11 @@ private struct SplitLine: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
+                    model.beginEdit()
                     let nx = (value.location.x - imageFrame.minX) / imageFrame.width
                     splitX = nx
                 }
+                .onEnded { _ in model.endEdit("Move Split") }
         )
     }
 }
@@ -202,6 +205,7 @@ private struct SplitLine: View {
 /// Horizontal draggable guide that moves a shared top/bottom margin for a spread.
 private struct HGuide: View {
     enum Edge { case top, bottom }
+    @EnvironmentObject var model: AppModel
     @Binding var y: Double
     let imageFrame: CGRect
     let edge: Edge
@@ -222,8 +226,10 @@ private struct HGuide: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
+                    model.beginEdit()
                     y = (value.location.y - imageFrame.minY) / imageFrame.height
                 }
+                .onEnded { _ in model.endEdit("Move Margin") }
         )
         .help(edge == .top ? "Shared top margin (both pages)" : "Shared bottom margin (both pages)")
     }

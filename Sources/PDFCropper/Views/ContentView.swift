@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         Group {
@@ -18,6 +19,11 @@ struct ContentView: View {
                         InspectorView()
                             .frame(minWidth: 240, maxWidth: 320)
                     }
+                }
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard let url = urls.first(where: { $0.pathExtension.lowercased() == "pdf" }) else { return false }
+                    model.load(url: url)
+                    return true
                 }
             }
         }
@@ -52,5 +58,7 @@ struct ContentView: View {
             .background(.bar)
         }
         .frame(minWidth: 900, minHeight: 600)
+        .onAppear { model.undoManager = undoManager }
+        .onChange(of: undoManager) { _, newValue in model.undoManager = newValue }
     }
 }

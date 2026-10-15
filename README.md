@@ -1,8 +1,8 @@
 # Divisio Textus
 
 A native macOS app for turning scanned-book PDFs (two book pages per scanned
-spread) into clean PDFs with **one book page per PDF page**, cropped to uniform
-size and margins, in correct reading order. Inspired by [Briss](https://briss.sourceforge.net/).
+spread) into clean PDFs with **one book page per PDF page**, cropped to the
+content, straightened, searchable, and in correct reading order. Inspired by [Briss](https://briss.sourceforge.net/).
 
 Built with Swift + SwiftUI using only Apple frameworks (PDFKit, Core Image,
 Vision — no third-party dependencies).
@@ -18,7 +18,9 @@ Vision — no third-party dependencies).
 swift run
 ```
 
-The first build takes ~45s. To open a sample, use **Open PDF** and pick
+The first build takes ~45s. If the project sits in an iCloud-synced folder,
+macOS may offload build files and stall the build; pass
+`--scratch-path ~/Library/Caches/divisio-textus-build` to build outside it. To open a sample, use **Open PDF** and pick
 `sample-book.pdf` (a synthetic 6-page scan: 1 cover + 5 spreads).
 
 ## Opening the app (first time)
@@ -43,7 +45,7 @@ Apple's paid notarization service, so macOS asks you to confirm the first launch
 ## How it works
 
 ```
-Import → auto-classify → gutter split → crop → pad to common size → reorder → export
+Import → auto-classify → gutter split → deskew → crop → OCR → reorder → export
 ```
 
 1. **Import** a PDF; each page is rendered to a preview bitmap.
@@ -52,9 +54,13 @@ Import → auto-classify → gutter split → crop → pad to common size → re
 4. **Content-bounds detection** seeds a crop box for each half (Briss-style).
 5. **Edit** in the UI: drag the orange split line, drag/resize the blue (left) and
    green (right) crop boxes, right-click a thumbnail to change its type.
-   "Apply crop to all pages" copies one layout everywhere.
-6. **Export** renders each crop at the chosen DPI and pads (never scales) it onto a
-   common canvas so every output page is identical in size, emitted in L→R order.
+   "Apply layout to all spreads" copies one spread's layout everywhere; for
+   single-page scans, crops can go to all pages or to alternate (left-hand /
+   right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits.
+6. **Export** renders each crop at the chosen DPI, at its own size (never padded
+   or scaled; the page keeps its physical size), adds an invisible OCR text layer,
+   and writes pages in reading order. Pages are processed a few at a time, so
+   memory stays flat however long the book is.
 
 ## Project layout
 
@@ -66,7 +72,7 @@ Import → auto-classify → gutter split → crop → pad to common size → re
 | `Services/GrayBuffer.swift` | Fast downsampled grayscale for analysis |
 | `Services/PageAnalyzer.swift` | Gutter + content-bounds + classification heuristics |
 | `Services/PDFRenderer.swift` | Render PDF pages to bitmaps; crop |
-| `Services/PDFExporter.swift` | Compose padded uniform pages → output PDF |
+| `Services/PDFExporter.swift` | Crops → output PDF with OCR text layer |
 | `Views/*` | Thumbnail rail, page editor canvas, inspector |
 | `Tools/make_sample.swift` | Standalone generator for `sample-book.pdf` |
 
@@ -79,15 +85,15 @@ Import → auto-classify → gutter split → crop → pad to common size → re
       (left/right often differ on hand scans), then composited at the gutter.
 - [x] **OCR:** Vision text recognition → invisible searchable text layer
       embedded over each page (toggle in Output). PDF stays selectable/searchable.
-- [ ] **Multi-column OCR:** detect column boundaries and recognize each column
+- [x] **Multi-column OCR:** detect column boundaries and recognize each column
       separately so multi-column pages (and boxed tables) read in correct order.
-      Current OCR assumes single-column flow; multi-column pages scramble order.
 - [x] **Color / Grayscale:** optional plain desaturation (no contrast or
       sharpening) that shrinks color scans ≈ −40% with no visible quality loss.
       (B&W binarize / clean-up / despeckle were tried and removed — they
       over-processed readable book scans.)
 - [ ] **Full-res fidelity:** extract source images at native scan DPI
-- [ ] Separate crop layouts for odd vs. even (left vs. right) pages
+- [x] Separate crop layouts for odd vs. even (left vs. right) pages
 - [ ] Right-to-left reading mode in the UI
-- [ ] Packaged, signed/notarized `.app`
+- [x] Packaged, ad-hoc signed universal `.app` (`Tools/make_app.sh`)
+- [ ] Notarized `.app` (needs a paid Apple Developer account)
 ```
