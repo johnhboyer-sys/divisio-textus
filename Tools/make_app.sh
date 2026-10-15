@@ -11,16 +11,13 @@ BUILD="1"
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJ_DIR"
 
-# Build each arch with the native build system (the Xcode-style --arch flag needs
-# xcbuild, which ships only with full Xcode). Cross-compile via an explicit target
-# triple, then lipo the two slices into one universal binary.
-echo "==> Building arm64 slice"
-swift build -c release -Xswiftc -target -Xswiftc arm64-apple-macosx14.0 --build-path .build-arm64
-echo "==> Building x86_64 slice"
-swift build -c release -Xswiftc -target -Xswiftc x86_64-apple-macosx14.0 --build-path .build-x86_64
-
-BIN="$(mktemp -d)/PDFCropper"
-lipo -create .build-arm64/release/PDFCropper .build-x86_64/release/PDFCropper -output "$BIN"
+# Universal (arm64 + x86_64) build. Swift 6.4's build system does this directly;
+# the older approach (one -Xswiftc -target build per arch, then lipo) now links
+# the wrong architecture.
+echo "==> Building universal binary"
+BUILD_ARGS=(-c release --arch arm64 --arch x86_64 --build-path .build-universal)
+swift build "${BUILD_ARGS[@]}"
+BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)/PDFCropper"
 [ -x "$BIN" ] || { echo "universal binary not produced"; exit 1; }
 echo "    architectures: $(lipo -archs "$BIN")"
 
