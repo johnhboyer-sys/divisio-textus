@@ -13,6 +13,9 @@ struct PDFCropperApp: App {
                 .onAppear { appDelegate.onOpenPDF { model.load(url: $0) } }
         }
         .windowStyle(.titleBar)
+        // A PDF opened from Finder goes to AppDelegate and loads into the existing
+        // window; without this SwiftUI also opens a second window for it.
+        .handlesExternalEvents(matching: [])
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open PDF…") { model.openPanel() }

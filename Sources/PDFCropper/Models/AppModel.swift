@@ -431,6 +431,7 @@ final class AppModel: ObservableObject {
         panel.allowedContentTypes = [.pdf]
         let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "book"
         panel.nameFieldStringValue = "\(base)-cropped.pdf"
+        panel.directoryURL = sourceURL?.deletingLastPathComponent()   // next to the original
         if panel.runModal() == .OK, let url = panel.url {
             export(to: url)
         }
