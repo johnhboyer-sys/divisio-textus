@@ -56,11 +56,15 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    green (right) crop boxes, right-click a thumbnail to change its type.
    "Apply layout to all spreads" copies one spread's layout everywhere; for
    single-page scans, crops can go to all pages or to alternate (left-hand /
-   right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits.
-6. **Export** renders each crop at the chosen DPI, at its own size (never padded
-   or scaled; the page keeps its physical size), adds an invisible OCR text layer,
-   and writes pages in reading order. Pages are processed a few at a time, so
-   memory stays flat however long the book is.
+   right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
+   pinch or ⌘= / ⌘− / ⌘0 to zoom. Edits are saved automatically and come back
+   when you reopen the same PDF (Edit ▸ Re-detect All Pages starts over).
+6. **Export** renders each page at its scan's own resolution (150–600 DPI; a
+   fixed DPI for pages without a scan), at its own size (never padded or scaled;
+   the page keeps its physical size), adds an invisible OCR text layer, and
+   writes pages in reading order. Each page is stored as JPEG or losslessly,
+   whichever is smaller (gray when the scan has no color). Pages are processed a
+   few at a time, so memory stays flat however long the book is; ⌘. cancels.
 
 ## Project layout
 
@@ -91,7 +95,7 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
       sharpening) that shrinks color scans ≈ −40% with no visible quality loss.
       (B&W binarize / clean-up / despeckle were tried and removed — they
       over-processed readable book scans.)
-- [ ] **Full-res fidelity:** extract source images at native scan DPI
+- [x] **Full-res fidelity:** export at each scan's native DPI
 - [x] Separate crop layouts for odd vs. even (left vs. right) pages
 - [ ] Right-to-left reading mode in the UI
 - [x] Packaged, ad-hoc signed universal `.app` (`Tools/make_app.sh`)

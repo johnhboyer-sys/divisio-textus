@@ -22,6 +22,25 @@ struct PDFCropperApp: App {
                 Button("Export PDF…") { model.exportPanel() }
                     .keyboardShortcut("e")
                     .disabled(model.document == nil || model.isBusy)
+                Button("Cancel Export") { model.cancelExport() }
+                    .keyboardShortcut(".")
+                    .disabled(!model.isExporting)
+            }
+            CommandGroup(after: .undoRedo) {
+                Button("Re-detect All Pages") { model.redetectAllPages() }
+                    .disabled(model.document == nil || model.isBusy)
+            }
+            CommandGroup(before: .toolbar) {
+                Button("Zoom In") { model.zoomIn() }
+                    .keyboardShortcut("=")
+                    .disabled(model.document == nil)
+                Button("Zoom Out") { model.zoomOut() }
+                    .keyboardShortcut("-")
+                    .disabled(model.document == nil)
+                Button("Zoom to Fit") { model.zoomToFit() }
+                    .keyboardShortcut("0")
+                    .disabled(model.document == nil)
+                Divider()
             }
             CommandMenu("Go") {
                 Button("Previous Page") { model.selectAdjacentPage(-1) }

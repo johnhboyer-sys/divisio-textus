@@ -78,8 +78,12 @@ struct InspectorView: View {
                     }
                 }
 
+                Toggle("Match scan resolution", isOn: $model.matchScanResolution)
+                    .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
                 VStack(alignment: .leading) {
-                    Text("Export resolution: \(Int(model.exportDPI)) DPI")
+                    Text(model.matchScanResolution
+                         ? "Pages without a scan: \(Int(model.exportDPI)) DPI"
+                         : "Export resolution: \(Int(model.exportDPI)) DPI")
                     Slider(value: $model.exportDPI, in: 150...600, step: 50)
                 }
 
@@ -97,8 +101,11 @@ struct InspectorView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.document == nil || model.isBusy)
 
-                if model.isExporting && model.exportProgress > 0 {
-                    ProgressView(value: model.exportProgress)
+                if model.isExporting {
+                    HStack {
+                        ProgressView(value: model.exportProgress)
+                        Button("Cancel") { model.cancelExport() }
+                    }
                 }
             }
         }

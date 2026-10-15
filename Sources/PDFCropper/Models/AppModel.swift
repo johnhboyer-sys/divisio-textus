@@ -3,6 +3,7 @@ import PDFKit
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -13,6 +14,7 @@ final class AppModel: ObservableObject {
 
     @Published var direction: ReadingDirection = .leftToRight
     @Published var exportDPI: Double = 300
+    @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
     @Published var ocrEnabled = true
     @Published var enhanceMode: EnhanceMode = .color {
@@ -25,6 +27,9 @@ final class AppModel: ObservableObject {
     @Published var statusText = "Open a scanned PDF to begin."
     @Published var exportProgress: Double = 0
 
+    /// Editor magnification; 1 fits the whole page in the window.
+    @Published var zoom: Double = 1
+
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
 
@@ -32,7 +37,7 @@ final class AppModel: ObservableObject {
     // composite was built with so any change re-renders. Each entry is a full page
     // at preview DPI, so only the most recently viewed few are kept.
     private struct CachedPreview {
-        let left: Double, right: Double, split: Double, isSpread: Bool
+        let left: Double, right: Double, split: Double, isSpread: Bool, dpi: Double
         let image: NSImage
     }
     private var previewCache: [Int: CachedPreview] = [:]
@@ -46,6 +51,32 @@ final class AppModel: ObservableObject {
 
     /// The page as it was when a drag or slider edit began (see beginEdit / endEdit).
     private var editSnapshot: BookPage?
+
+    // Edits are saved automatically (see ProjectStore) under this PDF's key.
+    private var projectKey: String?
+    private var autosave: AnyCancellable?
+    private let saveQueue = DispatchQueue(label: "Divisio Textus autosave")
+
+    /// Numbers analysis passes so that a newer pass makes an older one stand down.
+    private var analysisRun = 0
+
+    /// Set while an export runs; cancelExport() trips it.
+    private var exportCancel: CancelFlag?
+
+    init() {
+        // Save a moment after the last change, and immediately on quit.
+        autosave = Publishers.CombineLatest($pages, $direction)
+            .dropFirst()
+            .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
+            .sink { [weak self] pages, direction in self?.saveEdits(pages, direction, wait: false) }
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.saveEdits(self.pages, self.direction, wait: true)
+            }
+        }
+    }
 
     var selectedPage: BookPage? {
         guard let id = selectedPageID else { return nil }
@@ -78,29 +109,47 @@ final class AppModel: ObservableObject {
             statusText = "Could not open \(url.lastPathComponent)."
             return
         }
+        // Save the outgoing PDF's edits now: a pending autosave would otherwise be
+        // replaced by the new PDF's pages before it fired.
+        saveEdits(pages, direction, wait: false)
         clearImageCaches()
         undoManager?.removeAllActions()
         editSnapshot = nil
         document = doc
         sourceURL = url
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
-        pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
+        projectKey = ProjectStore.key(for: url)
+        if let key = projectKey, let saved = ProjectStore.load(key: key),
+           saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
+            pages = saved.pages
+            direction = saved.direction
+            statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
+        } else {
+            pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
+            statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…"
+        }
         selectedPageID = pages.first?.id
-        statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…"
         analyzeAll()
     }
 
     // MARK: - Previews
 
-    func previewImage(for page: BookPage) -> NSImage? {
+    /// The straightened page as the editor shows it. `zoom` picks the detail:
+    /// zoomed in, the page renders at 2× or 3× the normal preview resolution so
+    /// crop edges can be placed precisely.
+    func previewImage(for page: BookPage, zoom: Double = 1) -> NSImage? {
+        let dpi = previewDPI * (zoom >= 2.5 ? 3 : zoom >= 1.5 ? 2 : 1)
+        // With both sides straight the split line doesn't change the image, so
+        // dragging it needn't re-render.
+        let straight = abs(page.leftSkew) < 0.01 && abs(page.rightSkew) < 0.01
         if let c = previewCache[page.sourceIndex],
            c.left == page.leftSkew, c.right == page.rightSkew,
-           c.split == page.splitX, c.isSpread == page.isSpread {
+           c.split == page.splitX || straight, c.isSpread == page.isSpread, c.dpi == dpi {
             touchPreview(page.sourceIndex)
             return c.image
         }
         guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
-              let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return nil }
+              let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return nil }
         let composite = ImageTransform.deskewedComposite(
             cg, splitX: page.splitX,
             leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
@@ -109,7 +158,7 @@ final class AppModel: ObservableObject {
         let img = NSImage(cgImage: enhanced, size: NSSize(width: enhanced.width, height: enhanced.height))
         previewCache[page.sourceIndex] = CachedPreview(
             left: page.leftSkew, right: page.rightSkew, split: page.splitX,
-            isSpread: page.isSpread, image: img)
+            isSpread: page.isSpread, dpi: dpi, image: img)
         touchPreview(page.sourceIndex)
         return img
     }
@@ -187,6 +236,8 @@ final class AppModel: ObservableObject {
         guard let current = document, let url = sourceURL else { return }
         let todo = pages.filter { !$0.analyzed }.map(\.sourceIndex)
         guard !todo.isEmpty else { return }
+        analysisRun += 1
+        let run = analysisRun
         isAnalyzing = true
         let deskew = autoDeskewEnabled
         Task.detached { [previewDPI] in
@@ -201,8 +252,8 @@ final class AppModel: ObservableObject {
                     return Self.analyzePage(cg, deskew: deskew)
                 }
                 let stillCurrent = await MainActor.run { () -> Bool in
-                    // A different PDF was opened meanwhile: drop these results.
-                    guard self.document === current else { return false }
+                    // A different PDF was opened, or a newer pass started: stand down.
+                    guard self.document === current, self.analysisRun == run else { return false }
                     // Skip pages the user already edited by hand.
                     if let analysis, let i = self.pages.firstIndex(where: { $0.sourceIndex == index }),
                        !self.pages[i].analyzed {
@@ -214,7 +265,7 @@ final class AppModel: ObservableObject {
                 if !stillCurrent { return }
             }
             await MainActor.run {
-                guard self.document === current else { return }
+                guard self.document === current, self.analysisRun == run else { return }
                 self.isAnalyzing = false
                 self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
             }
@@ -294,6 +345,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Throw away every edit and auto-detect all pages again (undoable).
+    func redetectAllPages() {
+        guard document != nil, !isBusy else { return }
+        perform("Re-detect All Pages", claimPages: false) {
+            for i in pages.indices { pages[i].analyzed = false }
+        }
+        analyzeAll()
+    }
+
+    func zoomIn() { zoom = min(8, zoom * 1.25) }
+    func zoomOut() { zoom = max(1, zoom / 1.25) }
+    func zoomToFit() { zoom = 1 }
+
     func selectAdjacentPage(_ offset: Int) {
         guard !pages.isEmpty else { return }
         let i = max(0, min(pages.count - 1, (selectedIndex ?? 0) + offset))
@@ -302,11 +366,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Undo
 
-    /// Make a one-step change undoable.
-    func perform(_ actionName: String, _ change: () -> Void) {
+    /// Make a one-step change undoable. Pages it changes count as hand-edited
+    /// (analysis still running won't overwrite them) unless `claimPages` is false.
+    func perform(_ actionName: String, claimPages: Bool = true, _ change: () -> Void) {
         let before = pages
         change()
-        finishEdit(before: before, actionName: actionName)
+        finishEdit(before: before, actionName: actionName, claimPages: claimPages)
     }
 
     /// Continuous edits (drags, sliders) of the selected page call beginEdit when
@@ -330,12 +395,12 @@ final class AppModel: ObservableObject {
         registerUndo(restoring: [before], actionName: actionName)
     }
 
-    private func finishEdit(before: [BookPage], actionName: String) {
+    private func finishEdit(before: [BookPage], actionName: String, claimPages: Bool) {
         guard before.count == pages.count else { return }
         let changed = pages.indices.filter { before[$0] != pages[$0] }
         guard !changed.isEmpty else { return }
         // A hand-edited page must not be overwritten by analysis still running.
-        for i in changed { pages[i].analyzed = true }
+        if claimPages { for i in changed { pages[i].analyzed = true } }
         registerUndo(restoring: changed.map { before[$0] }, actionName: actionName)
     }
 
@@ -350,6 +415,9 @@ final class AppModel: ObservableObject {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                 }
                 model.registerUndo(restoring: current, actionName: actionName)  // redo
+                // Undoing or redoing "Re-detect All Pages" can bring back pages that
+                // still need analysis; start a fresh pass for them.
+                if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }
             }
         }
         undoManager.setActionName(actionName)
@@ -374,7 +442,11 @@ final class AppModel: ObservableObject {
         exportProgress = 0
         statusText = "Exporting…"
         let pagesSnapshot = pages
-        let settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
+        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
+        settings.matchScanResolution = matchScanResolution
+        let cancel = CancelFlag()
+        exportCancel = cancel
+        let started = Date()
 
         // A GCD thread rather than a Swift task: OCR blocks while it waits for
         // Vision, and that shouldn't tie up Swift's small shared thread pool.
@@ -385,11 +457,20 @@ final class AppModel: ObservableObject {
                 let report = try PDFExporter.export(pages: pagesSnapshot,
                                                     from: doc,
                                                     to: url,
-                                                    settings: settings) { done, total in
+                                                    settings: settings,
+                                                    isCancelled: { cancel.isSet }) { done, total in
+                    let elapsed = Date().timeIntervalSince(started)
                     Task { @MainActor in
-                        guard self.isExporting else { return }   // finished already; keep the final message
+                        guard self.isExporting, !cancel.isSet else { return }   // keep the final message
                         self.exportProgress = total > 0 ? Double(done) / Double(total) : 0
-                        self.statusText = "Exporting page \(done) of \(total)…"
+                        var text = "Exporting page \(done) of \(total)…"
+                        // The first pages include Vision warming up, so wait a little
+                        // before estimating.
+                        if done >= 2, done < total {
+                            let remaining = elapsed / Double(done) * Double(total - done)
+                            text += " About \(Self.describe(remaining)) left."
+                        }
+                        self.statusText = text
                     }
                 }
                 Task { @MainActor in
@@ -398,12 +479,41 @@ final class AppModel: ObservableObject {
                     self.statusText = Self.exportMessage(url.lastPathComponent, report)
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
+            } catch PDFExporter.ExportError.cancelled {
+                Task { @MainActor in
+                    self.isExporting = false
+                    self.exportProgress = 0
+                    self.statusText = "Export cancelled."
+                }
             } catch {
                 Task { @MainActor in
                     self.isExporting = false
                     self.statusText = "Export failed: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    func cancelExport() {
+        guard isExporting, let exportCancel else { return }
+        exportCancel.set()
+        statusText = "Cancelling export… (finishing the pages in progress)"
+    }
+
+    nonisolated private static func describe(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return "under a minute" }
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 90 { return "\(minutes) minute\(minutes == 1 ? "" : "s")" }
+        return "\(minutes / 60) h \(minutes % 60) min"
+    }
+
+    private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {
+        guard let key = projectKey, !pages.isEmpty else { return }
+        let saved = ProjectStore.Saved(pages: pages, direction: direction)
+        if wait {
+            saveQueue.sync { ProjectStore.save(saved, key: key) }
+        } else {
+            saveQueue.async { ProjectStore.save(saved, key: key) }
         }
     }
 
@@ -415,4 +525,13 @@ final class AppModel: ObservableObject {
         return "Exported \(name), but text recognition failed on \(failed.count) of \(report.pageCount) "
             + "pages (\(list)), so those aren't searchable. Exporting again usually fixes it."
     }
+}
+
+
+/// A thread-safe flag the export thread polls to see whether to stop.
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }

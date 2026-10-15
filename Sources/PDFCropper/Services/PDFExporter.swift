@@ -3,6 +3,9 @@ import PDFKit
 import AppKit
 import CoreGraphics
 import CoreText
+import ImageIO
+import UniformTypeIdentifiers
+import Compression
 
 /// Builds the output PDF: one page per book page, sized to its own crop (never
 /// scaled, never padded). Optionally overlays an invisible OCR text layer so the
@@ -10,7 +13,9 @@ import CoreText
 enum PDFExporter {
 
     struct Settings {
-        var dpi: Double = 300            // export render resolution
+        var dpi: Double = 300            // export resolution when not matching the scan
+        var matchScanResolution = true   // use each page's own scan resolution instead
+        var jpegQuality: Double = 0.7    // for pages stored as JPEG (see encodeForPDF)
         var direction: ReadingDirection = .leftToRight
         var ocr: Bool = true             // embed searchable text layer
         var ocrLanguages: [String] = ["en-US"]
@@ -22,12 +27,14 @@ enum PDFExporter {
         case sourceUnreadable
         case renderFailed(Int)
         case writeFailed
+        case cancelled
         var errorDescription: String? {
             switch self {
             case .noPages: return "No pages to export."
             case .sourceUnreadable: return "Could not reopen the source PDF."
             case .renderFailed(let i): return "Failed to render source page \(i + 1)."
             case .writeFailed: return "Could not write the output PDF."
+            case .cancelled: return "Export cancelled."
             }
         }
     }
@@ -49,6 +56,7 @@ enum PDFExporter {
                        from document: PDFDocument,
                        to url: URL,
                        settings: Settings,
+                       isCancelled: (() -> Bool)? = nil,
                        progress: ((Int, Int) -> Void)? = nil) throws -> Report {
 
         let todo = pages.filter { !$0.outputCrops(direction: settings.direction).isEmpty }
@@ -56,9 +64,8 @@ enum PDFExporter {
         guard total > 0 else { throw ExportError.noPages }
 
         // Each page's media box is its own crop (no padding, no resampling), sized at
-        // the export DPI so the page keeps its physical size: a 300 DPI crop 2550 px
+        // its render DPI so the page keeps its physical size: a 300 DPI crop 2550 px
         // wide is 8.5 in (612 pt), not 2550 pt.
-        let pointsPerPixel = 72.0 / settings.dpi
         var defaultBox = CGRect(x: 0, y: 0, width: 612, height: 792)
 
         // Write to a temporary file and move it into place at the end, so exporting
@@ -80,6 +87,7 @@ enum PDFExporter {
         var report = Report()
         var batchStart = 0
         while batchStart < todo.count {
+            if isCancelled?() == true { throw ExportError.cancelled }
             let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
             batchStart += batch.count
 
@@ -89,10 +97,19 @@ enum PDFExporter {
             //    background thread doesn't drain until the whole export ends, which
             //    kept every rendered page alive.
             var images: [CGImage] = []
+            var dpis: [Double] = []
             for page in batch {
                 try autoreleasepool {
-                    guard let pdfPage = document.page(at: page.sourceIndex),
-                          let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: settings.dpi) else {
+                    guard let pdfPage = document.page(at: page.sourceIndex) else {
+                        throw ExportError.renderFailed(page.sourceIndex)
+                    }
+                    // Render at the scan's own resolution when there is one: higher
+                    // would invent pixels, lower would throw detail away. Kept within
+                    // 150–600 DPI so OCR has enough to read and memory stays sane.
+                    let dpi = settings.matchScanResolution
+                        ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
+                        : settings.dpi
+                    guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
                         throw ExportError.renderFailed(page.sourceIndex)
                     }
                     // Deskew each half independently at full export resolution,
@@ -103,7 +120,10 @@ enum PDFExporter {
                         isSpread: page.isSpread)
                     let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
                     for crop in page.outputCrops(direction: settings.direction) {
-                        if let sub = PDFRenderer.crop(enhanced, to: crop) { images.append(sub) }
+                        if let sub = PDFRenderer.crop(enhanced, to: crop) {
+                            images.append(sub)
+                            dpis.append(dpi)
+                        }
                     }
                 }
             }
@@ -123,13 +143,17 @@ enum PDFExporter {
                 }
             }
 
-            // 3. Write the batch in reading order.
+            if isCancelled?() == true { throw ExportError.cancelled }
+
+            // 3. Write the batch in reading order. OCR above read the full-quality
+            //    image; what goes into the file is the compact encoding of it.
             for (i, image) in images.enumerated() {
+                let pointsPerPixel = 72.0 / dpis[i]
                 var box = CGRect(x: 0, y: 0,
                                  width: Double(image.width) * pointsPerPixel,
                                  height: Double(image.height) * pointsPerPixel)
                 ctx.beginPage(mediaBox: &box)
-                ctx.draw(image, in: box)
+                ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
                 report.pageCount += 1
                 if let pageLines = lines[i] {
                     drawTextLayer(pageLines, in: ctx, pageSize: box.size)
@@ -141,6 +165,8 @@ enum PDFExporter {
             }
         }
         ctx.closePDF()
+        // Cancel pressed during the last batch: don't replace the destination.
+        if isCancelled?() == true { throw ExportError.cancelled }
         do {
             if fm.fileExists(atPath: url.path) {
                 _ = try fm.replaceItemAt(url, withItemAt: tmpURL)
@@ -151,6 +177,46 @@ enum PDFExporter {
             throw ExportError.writeFailed
         }
         return report
+    }
+
+    /// The page image to embed, in whichever form makes the smaller file. Pages
+    /// that hold only grays (black-and-white or grayscale scans stored as RGB) are
+    /// first converted to gray: a third of the data. Then JPEG versus lossless:
+    /// photos and toned scans are far smaller as JPEG, but crisp black type on
+    /// white compresses better losslessly (JPEG is poor at hard edges). Quartz
+    /// stores a raw image with zlib (Flate) and a JPEG-backed image as-is, so
+    /// compare the JPEG against zlib of the raw pixels and keep the smaller.
+    private static func encodeForPDF(_ image: CGImage, quality: Double) -> CGImage {
+        let source = ImageEnhancer.isEffectivelyGray(image)
+            ? ImageEnhancer.apply(image, mode: .grayscale)
+            : image
+        let jpeg = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(jpeg, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return source
+        }
+        CGImageDestinationAddImage(dest, source, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return source }
+        // A JPEG under ~1/12 of the raw size means continuous tone (a photo, a toned
+        // scan): lossless can't win there, so skip measuring it — slow on big plates.
+        let rawBytes = source.bytesPerRow * source.height
+        if jpeg.length * 12 > rawBytes, let lossless = zlibSize(of: source), lossless <= jpeg.length {
+            return source
+        }
+        guard let provider = CGDataProvider(data: jpeg),
+              let embedded = CGImage(jpegDataProviderSource: provider, decode: nil,
+                                     shouldInterpolate: true, intent: .defaultIntent) else { return source }
+        return embedded
+    }
+
+    /// Size of the image's raw pixels after zlib, as Quartz would store them.
+    /// nil if it can't be measured or zlib doesn't shrink it at all.
+    private static func zlibSize(of image: CGImage) -> Int? {
+        guard let data = image.dataProvider?.data, CFDataGetLength(data) > 0 else { return nil }
+        let count = CFDataGetLength(data)
+        let out = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+        defer { out.deallocate() }
+        let size = compression_encode_buffer(out, count, CFDataGetBytePtr(data), count, nil, COMPRESSION_ZLIB)
+        return size > 0 ? size : nil   // 0 = didn't fit in `count` bytes, i.e. no gain
     }
 
     /// Draw each recognized line as one invisible, selectable run. `CTLineDraw`
