@@ -66,9 +66,10 @@ enum ImageTransform {
     }
 
     /// Build the image the user crops on: each book page straightened by its own
-    /// angle. For a spread, the left half (columns left of `splitX`) is rotated
-    /// about its own center by `leftDegrees` and the right half by `rightDegrees`,
-    /// then joined at the gutter. Output keeps the source dimensions so crop
+    /// angle. For a spread, the left half (columns left of `splitX`) is cut out and
+    /// rotated about its own center by `leftDegrees`, the right half likewise by
+    /// `rightDegrees`, then the two are joined at the gutter. Each half is rotated
+    /// on its own canvas, so neither picks up a wedge of the facing page. Output keeps the source dimensions so crop
     /// rectangles stay in one consistent coordinate space (preview == export).
     static func deskewedComposite(_ source: CGImage,
                                   splitX: Double,
@@ -83,10 +84,13 @@ enum ImageTransform {
         let w = source.width, h = source.height
         let splitPx = max(1, min(w - 1, Int(splitX * Double(w))))
 
-        let leftRot = rotateInPlace(source, degrees: leftDegrees,
-                                    pivot: CGPoint(x: splitX / 2, y: 0.5))
-        let rightRot = rotateInPlace(source, degrees: rightDegrees,
-                                     pivot: CGPoint(x: (splitX + 1) / 2, y: 0.5))
+        let leftRect = CGRect(x: 0, y: 0, width: splitPx, height: h)
+        let rightRect = CGRect(x: splitPx, y: 0, width: w - splitPx, height: h)
+        guard let leftHalf = source.cropping(to: leftRect),
+              let rightHalf = source.cropping(to: rightRect) else { return source }
+        let center = CGPoint(x: 0.5, y: 0.5)
+        let leftRot = rotateInPlace(leftHalf, degrees: leftDegrees, pivot: center)
+        let rightRot = rotateInPlace(rightHalf, degrees: rightDegrees, pivot: center)
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: w, height: h,
@@ -97,15 +101,10 @@ enum ImageTransform {
         }
         ctx.setFillColor(NSColor.white.cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        // Left columns from the left-rotated image, right columns from the right.
-        ctx.saveGState()
-        ctx.clip(to: CGRect(x: 0, y: 0, width: splitPx, height: h))
-        ctx.draw(leftRot, in: CGRect(x: 0, y: 0, width: w, height: h))
-        ctx.restoreGState()
-        ctx.saveGState()
-        ctx.clip(to: CGRect(x: splitPx, y: 0, width: w - splitPx, height: h))
-        ctx.draw(rightRot, in: CGRect(x: 0, y: 0, width: w, height: h))
-        ctx.restoreGState()
+        // Both halves span the full height, so their x ranges are the same in
+        // image (top-left) and context (bottom-left) coordinates.
+        ctx.draw(leftRot, in: leftRect)
+        ctx.draw(rightRot, in: rightRect)
         return ctx.makeImage() ?? source
     }
 }

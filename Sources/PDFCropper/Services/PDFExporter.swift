@@ -40,7 +40,7 @@ enum PDFExporter {
     }
 
     /// What the export produced. `ocrFailedPages` are 1-based output page numbers
-    /// where Vision failed, so those pages have no searchable text.
+    /// where Vision failed on all or part of the page, so it isn't fully searchable.
     struct Report {
         var pageCount = 0
         var ocrFailedPages: [Int] = []
@@ -128,18 +128,22 @@ enum PDFExporter {
                 }
             }
 
-            // 2. OCR the batch in parallel. nil = Vision failed on that page.
-            var lines = [[OCRService.Line]?](repeating: [], count: images.count)
+            // 2. OCR the batch in parallel. nil = Vision failed on the whole page;
+            //    incomplete = it failed on part of it.
+            let noText = OCRService.Recognition(lines: [], complete: true)
+            var text = [OCRService.Recognition?](repeating: noText, count: images.count)
             if settings.ocr {
-                lines.withUnsafeMutableBufferPointer { out in
+                text.withUnsafeMutableBufferPointer { out in
                     DispatchQueue.concurrentPerform(iterations: images.count) { i in
                         out[i] = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages)
                     }
                 }
                 // Vision tends to fail while it warms up and then recover, so give
-                // failed pages one more try now that the rest of the batch is done.
-                for i in lines.indices where lines[i] == nil {
-                    lines[i] = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages)
+                // failed or partly failed pages one more try now that the rest of
+                // the batch is done, keeping whichever result read more.
+                for i in text.indices where text[i]?.complete != true {
+                    guard let retry = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages) else { continue }
+                    if retry.complete || retry.lines.count > (text[i]?.lines.count ?? -1) { text[i] = retry }
                 }
             }
 
@@ -155,9 +159,10 @@ enum PDFExporter {
                 ctx.beginPage(mediaBox: &box)
                 ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
                 report.pageCount += 1
-                if let pageLines = lines[i] {
-                    drawTextLayer(pageLines, in: ctx, pageSize: box.size)
-                } else {
+                if let recognition = text[i] {
+                    drawTextLayer(recognition.lines, in: ctx, pageSize: box.size)
+                }
+                if text[i]?.complete != true {
                     report.ocrFailedPages.append(report.pageCount)
                 }
                 ctx.endPage()

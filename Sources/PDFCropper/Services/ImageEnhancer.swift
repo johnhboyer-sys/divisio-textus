@@ -10,11 +10,12 @@ enum ImageEnhancer {
     private static let context = CIContext(options: nil)
 
     /// True when a color image holds only grays — a black-and-white or grayscale
-    /// scan stored as RGB. Checked on a small copy; tinted paper (sepia, yellowed)
-    /// counts as color, so it is kept.
+    /// scan stored as RGB. Checked on a reduced copy; tinted paper (sepia,
+    /// yellowed) counts as color, and so does any small colored mark (a red
+    /// stamp or rubric), so color is kept whenever the page really has some.
     static func isEffectivelyGray(_ image: CGImage) -> Bool {
         if image.colorSpace?.model == .monochrome { return true }
-        let w = min(200, image.width), h = max(1, image.height * w / max(1, image.width))
+        let w = min(400, image.width), h = max(1, image.height * w / max(1, image.width))
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
                                   bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
@@ -26,7 +27,7 @@ enum ImageEnhancer {
             let r = Int(px[i * 4]), g = Int(px[i * 4 + 1]), b = Int(px[i * 4 + 2])
             if max(abs(r - g), abs(g - b), abs(r - b)) > 12 { colored += 1 }
         }
-        return colored * 1000 < w * h   // under 0.1% of pixels show any color
+        return colored * 20000 < w * h   // under 0.005%: stray noise, not a mark
     }
 
     static func apply(_ image: CGImage, mode: EnhanceMode) -> CGImage {

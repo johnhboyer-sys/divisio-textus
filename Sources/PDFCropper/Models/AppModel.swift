@@ -117,6 +117,10 @@ final class AppModel: ObservableObject {
             statusText = "Could not open \(url.lastPathComponent)."
             return
         }
+        guard doc.pageCount > 0 else {
+            statusText = "\(url.lastPathComponent) has no pages."
+            return
+        }
         // Encrypted scans often have an empty open password (they only restrict
         // printing or copying); otherwise ask for it.
         var password: String?
@@ -436,7 +440,15 @@ final class AppModel: ObservableObject {
         guard let i = pages.firstIndex(where: { $0.id == before.id }) else { return }
         var after = pages[i]
         after.analyzed = before.analyzed
-        guard after != before else { return }
+        guard after != before else {
+            // Nothing changed: release the claim beginEdit made, so a page that
+            // was waiting for analysis still gets analyzed.
+            if !before.analyzed {
+                pages[i].analyzed = false
+                analyzeAll()
+            }
+            return
+        }
         registerUndo(restoring: [before], actionName: actionName)
     }
 
@@ -512,7 +524,8 @@ final class AppModel: ObservableObject {
                     Task { @MainActor in
                         guard self.isExporting, !cancel.isSet else { return }   // keep the final message
                         self.exportProgress = total > 0 ? Double(done) / Double(total) : 0
-                        var text = "Exporting page \(done) of \(total)…"
+                        // Named, since another PDF may be open by now.
+                        var text = "Exporting “\(url.lastPathComponent)”: page \(done) of \(total)…"
                         // The first pages include Vision warming up, so wait a little
                         // before estimating.
                         if done >= 2, done < total {
@@ -572,7 +585,7 @@ final class AppModel: ObservableObject {
         var list = failed.prefix(10).map(String.init).joined(separator: ", ")
         if failed.count > 10 { list += ", …" }
         return "Exported \(name), but text recognition failed on \(failed.count) of \(report.pageCount) "
-            + "pages (\(list)), so those aren't searchable. Exporting again usually fixes it."
+            + "pages (\(list)), so those aren't fully searchable. Exporting again usually fixes it."
     }
 }
 

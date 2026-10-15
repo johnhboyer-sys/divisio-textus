@@ -17,9 +17,17 @@ enum OCRService {
 
     private static let ciContext = CIContext(options: nil)
 
-    /// Returns nil when Vision itself failed (not "no text found"), so callers can
-    /// tell the user which pages ended up without a text layer.
-    static func recognizeLines(_ cgImage: CGImage, languages: [String] = ["en-US"]) -> [Line]? {
+    /// The text found on a page. `complete` is false when Vision failed on part
+    /// of it (one column of a two-column page, say): the lines from the parts it
+    /// read are still here, but the page isn't fully searchable.
+    struct Recognition {
+        var lines: [Line]
+        var complete: Bool
+    }
+
+    /// Returns nil when Vision failed on the whole page (not "no text found"), so
+    /// callers can tell the user which pages ended up without a text layer.
+    static func recognizeLines(_ cgImage: CGImage, languages: [String] = ["en-US"]) -> Recognition? {
         // Detect column / table blocks. Vision reads across column gaps, so a page
         // with side-by-side columns (uniform multi-column, or embedded syllogism /
         // footnote tables) gets OCR'd one block at a time; Vision never sees across a
@@ -27,11 +35,12 @@ enum OCRService {
         // yields no useful split and runs the whole-image path unchanged.
         let blocks = LayoutAnalyzer.columnBlocks(cgImage)
         guard blocks.count > 1 else {
-            return recognizeWhole(cgImage, languages: languages)
+            return recognizeWhole(cgImage, languages: languages).map { Recognition(lines: $0, complete: true) }
         }
 
         let imgW = CGFloat(cgImage.width), imgH = CGFloat(cgImage.height)
         var result: [Line] = []
+        var failedBlocks = 0
         for block in blocks {
             // Block rects are normalized TOP-LEFT; CGImage.cropping is top-left too.
             let px = CGRect(x: block.minX * imgW, y: block.minY * imgH,
@@ -45,7 +54,10 @@ enum OCRService {
             let bx = block.minX, bw = block.width
             let bh = block.height
             let blockBottom = 1 - (block.minY + block.height)
-            guard let lines = recognizeWhole(sub, languages: languages) else { return nil }
+            guard let lines = recognizeWhole(sub, languages: languages) else {
+                failedBlocks += 1
+                continue
+            }
             for line in lines {
                 let fullBox = CGRect(x: bx + line.box.minX * bw,
                                      y: blockBottom + line.box.minY * bh,
@@ -54,7 +66,9 @@ enum OCRService {
                 result.append(Line(text: line.text, box: fullBox))
             }
         }
-        return result
+        // Nothing read at all counts as a failed page; otherwise keep what was read.
+        if failedBlocks > 0 && result.isEmpty { return nil }
+        return Recognition(lines: result, complete: failedBlocks == 0)
     }
 
     /// Minimum image height (px) before the second, half-scale OCR pass runs. The
