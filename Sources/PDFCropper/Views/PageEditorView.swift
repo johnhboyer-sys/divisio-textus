@@ -1,0 +1,240 @@
+import SwiftUI
+
+/// The central canvas: shows the selected source page with editable crop boxes
+/// and (for spreads) a draggable gutter / split line.
+struct PageEditorView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let idx = model.selectedIndex {
+            editor(for: idx)
+        } else {
+            ContentUnavailablePlaceholder()
+        }
+    }
+
+    @ViewBuilder
+    private func editor(for idx: Int) -> some View {
+        let page = model.pages[idx]
+        GeometryReader { geo in
+            let image = model.previewImage(for: page)
+            let frame = imageFrame(image: image, in: geo.size)
+
+            ZStack {
+                Color(nsColor: .underPageBackgroundColor)
+
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                } else {
+                    ProgressView()
+                }
+
+                if page.classification == .skip {
+                    skipOverlay(frame: frame)
+                } else if frame.width > 0 {
+                    overlays(for: idx, frame: frame)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+    }
+
+    @ViewBuilder
+    private func overlays(for idx: Int, frame: CGRect) -> some View {
+        let page = model.pages[idx]
+
+        // Left / single crop.
+        CropBoxView(crop: leftBinding(idx),
+                    imageFrame: frame,
+                    color: .blue,
+                    label: page.classification == .single ? "Page" : "Left")
+
+        if page.classification == .spread {
+            CropBoxView(crop: rightBinding(idx),
+                        imageFrame: frame,
+                        color: .green,
+                        label: "Right")
+            SplitLine(splitX: splitBinding(idx), imageFrame: frame)
+            // Shared top/bottom margin guides: drag once to move BOTH pages'
+            // top (or bottom) crop edge together.
+            HGuide(y: topBinding(idx), imageFrame: frame, edge: .top)
+            HGuide(y: bottomBinding(idx), imageFrame: frame, edge: .bottom)
+        }
+    }
+
+    private func skipOverlay(frame: CGRect) -> some View {
+        Rectangle()
+            .fill(.black.opacity(0.45))
+            .frame(width: frame.width, height: frame.height)
+            .overlay(
+                Label("Skipped", systemImage: "xmark.circle.fill")
+                    .font(.title2).foregroundStyle(.white)
+            )
+            .position(x: frame.midX, y: frame.midY)
+    }
+
+    // MARK: - Bindings into the pages array
+
+    private func leftBinding(_ idx: Int) -> Binding<CropRect> {
+        Binding(get: { model.pages[idx].leftCrop },
+                set: { model.pages[idx].leftCrop = $0 })
+    }
+    private func rightBinding(_ idx: Int) -> Binding<CropRect> {
+        Binding(get: { model.pages[idx].rightCrop },
+                set: { model.pages[idx].rightCrop = $0 })
+    }
+    private func splitBinding(_ idx: Int) -> Binding<Double> {
+        Binding(
+            get: { model.pages[idx].splitX },
+            set: { newValue in
+                let clamped = max(0.05, min(newValue, 0.95))
+                model.pages[idx].splitX = clamped
+                // Tie inner crop edges to the gutter.
+                var l = model.pages[idx].leftCrop
+                if clamped > l.minX + 0.02 { l.width = clamped - l.minX }
+                l.normalize(); model.pages[idx].leftCrop = l
+                var r = model.pages[idx].rightCrop
+                if clamped < r.maxX - 0.02 {
+                    let right = r.maxX
+                    r.x = clamped; r.width = right - clamped
+                }
+                r.normalize(); model.pages[idx].rightCrop = r
+            }
+        )
+    }
+
+    /// Shared TOP edge of both crops. Reading position is the average of the
+    /// two current tops; setting it moves both tops together (bottoms fixed).
+    private func topBinding(_ idx: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                let l = model.pages[idx].leftCrop, r = model.pages[idx].rightCrop
+                return (l.minY + r.minY) / 2
+            },
+            set: { newTop in
+                let t = max(0, min(newTop, 1))
+                var l = model.pages[idx].leftCrop
+                var r = model.pages[idx].rightCrop
+                let lBottom = l.maxY, rBottom = r.maxY
+                let lt = min(t, lBottom - 0.02)
+                let rt = min(t, rBottom - 0.02)
+                l.y = lt; l.height = lBottom - lt
+                r.y = rt; r.height = rBottom - rt
+                l.normalize(); r.normalize()
+                model.pages[idx].leftCrop = l
+                model.pages[idx].rightCrop = r
+            }
+        )
+    }
+
+    /// Shared BOTTOM edge of both crops; setting it moves both bottoms together.
+    private func bottomBinding(_ idx: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                let l = model.pages[idx].leftCrop, r = model.pages[idx].rightCrop
+                return (l.maxY + r.maxY) / 2
+            },
+            set: { newBottom in
+                let b = max(0, min(newBottom, 1))
+                var l = model.pages[idx].leftCrop
+                var r = model.pages[idx].rightCrop
+                let lTop = l.minY, rTop = r.minY
+                let lb = max(b, lTop + 0.02)
+                let rb = max(b, rTop + 0.02)
+                l.height = lb - lTop
+                r.height = rb - rTop
+                l.normalize(); r.normalize()
+                model.pages[idx].leftCrop = l
+                model.pages[idx].rightCrop = r
+            }
+        )
+    }
+
+    // MARK: - Layout
+
+    private func imageFrame(image: NSImage?, in container: CGSize) -> CGRect {
+        guard let image, image.size.width > 0, image.size.height > 0 else {
+            return .zero
+        }
+        let inset: CGFloat = 24
+        let avail = CGSize(width: max(1, container.width - inset * 2),
+                           height: max(1, container.height - inset * 2))
+        let scale = min(avail.width / image.size.width, avail.height / image.size.height)
+        let w = image.size.width * scale
+        let h = image.size.height * scale
+        return CGRect(x: (container.width - w) / 2,
+                      y: (container.height - h) / 2,
+                      width: w, height: h)
+    }
+}
+
+/// Vertical draggable gutter indicator for spreads.
+private struct SplitLine: View {
+    @Binding var splitX: Double
+    let imageFrame: CGRect
+
+    var body: some View {
+        let x = imageFrame.minX + splitX * imageFrame.width
+        ZStack {
+            Rectangle()
+                .fill(.orange)
+                .frame(width: 2, height: imageFrame.height)
+            Image(systemName: "arrow.left.and.right")
+                .font(.caption)
+                .padding(4)
+                .background(.orange, in: Circle())
+                .foregroundStyle(.white)
+        }
+        .position(x: x, y: imageFrame.midY)
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let nx = (value.location.x - imageFrame.minX) / imageFrame.width
+                    splitX = nx
+                }
+        )
+    }
+}
+
+/// Horizontal draggable guide that moves a shared top/bottom margin for a spread.
+private struct HGuide: View {
+    enum Edge { case top, bottom }
+    @Binding var y: Double
+    let imageFrame: CGRect
+    let edge: Edge
+
+    var body: some View {
+        let yy = imageFrame.minY + y * imageFrame.height
+        ZStack {
+            Rectangle()
+                .fill(.purple)
+                .frame(width: imageFrame.width, height: 2)
+            Image(systemName: "arrow.up.and.down")
+                .font(.caption)
+                .padding(4)
+                .background(.purple, in: Circle())
+                .foregroundStyle(.white)
+        }
+        .position(x: imageFrame.midX, y: yy)
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    y = (value.location.y - imageFrame.minY) / imageFrame.height
+                }
+        )
+        .help(edge == .top ? "Shared top margin (both pages)" : "Shared bottom margin (both pages)")
+    }
+}
+
+private struct ContentUnavailablePlaceholder: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "doc.viewfinder").font(.system(size: 44)).foregroundStyle(.secondary)
+            Text("No page selected").font(.title3)
+            Text("Open a PDF, then pick a page from the left.").foregroundStyle(.secondary)
+        }
+    }
+}

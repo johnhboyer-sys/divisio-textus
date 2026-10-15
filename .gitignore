@@ -1,0 +1,12 @@
+# SwiftPM build output
+.build/
+.build-*/
+.swiftpm/
+
+# Packaged app (rebuild with Tools/make_app.sh)
+dist/
+
+# Local tooling / OS clutter
+.claude/
+.remember/
+.DS_Store
