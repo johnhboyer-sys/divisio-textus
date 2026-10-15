@@ -6,8 +6,13 @@ import CryptoKit
 /// across renames and moves and never clutter the folder it sits in.
 enum ProjectStore {
 
+    /// Bumped whenever page geometry changes meaning, so older saves are ignored
+    /// (those pages get re-detected) rather than restored onto the wrong spot.
+    /// 2: crops are relative to the page as displayed (crop box, rotation).
+    static let currentVersion = 2
+
     struct Saved: Codable {
-        var version = 1
+        var version = ProjectStore.currentVersion
         var pages: [BookPage]
         var direction: ReadingDirection
     }
@@ -27,7 +32,9 @@ enum ProjectStore {
 
     static func load(key: String) -> Saved? {
         guard let url = fileURL(for: key), let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Saved.self, from: data)
+        guard let saved = try? JSONDecoder().decode(Saved.self, from: data),
+              saved.version == currentVersion else { return nil }
+        return saved
     }
 
     static func save(_ saved: Saved, key: String) {

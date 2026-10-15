@@ -99,7 +99,7 @@ struct InspectorView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.document == nil || model.isBusy)
+                .disabled(!model.canExport)
 
                 if model.isExporting {
                     HStack {

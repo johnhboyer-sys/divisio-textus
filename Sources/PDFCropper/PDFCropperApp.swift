@@ -24,7 +24,7 @@ struct PDFCropperApp: App {
             CommandGroup(after: .saveItem) {
                 Button("Export PDF…") { model.exportPanel() }
                     .keyboardShortcut("e")
-                    .disabled(model.document == nil || model.isBusy)
+                    .disabled(!model.canExport)
                 Button("Cancel Export") { model.cancelExport() }
                     .keyboardShortcut(".")
                     .disabled(!model.isExporting)

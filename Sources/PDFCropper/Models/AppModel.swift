@@ -57,6 +57,10 @@ final class AppModel: ObservableObject {
     private var autosave: AnyCancellable?
     private let saveQueue = DispatchQueue(label: "Divisio Textus autosave")
 
+    /// Password that unlocked the current PDF, so background copies of it can be
+    /// unlocked too. Kept in memory only.
+    private var documentPassword: String?
+
     /// Numbers analysis passes so that a newer pass makes an older one stand down.
     private var analysisRun = 0
 
@@ -92,6 +96,10 @@ final class AppModel: ObservableObject {
         pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
     }
 
+    /// Export is possible: a PDF is open, nothing else is running, and at least
+    /// one page isn't skipped.
+    var canExport: Bool { document != nil && !isBusy && outputPageCount > 0 }
+
     // MARK: - Import
 
     func openPanel() {
@@ -109,6 +117,16 @@ final class AppModel: ObservableObject {
             statusText = "Could not open \(url.lastPathComponent)."
             return
         }
+        // Encrypted scans often have an empty open password (they only restrict
+        // printing or copying); otherwise ask for it.
+        var password: String?
+        if doc.isLocked && !doc.unlock(withPassword: "") {
+            guard let entered = askPassword(for: url, document: doc) else {
+                statusText = "\(url.lastPathComponent) is password-protected and wasn't opened."
+                return
+            }
+            password = entered
+        }
         // Save the outgoing PDF's edits now: a pending autosave would otherwise be
         // replaced by the new PDF's pages before it fired.
         saveEdits(pages, direction, wait: false)
@@ -117,6 +135,7 @@ final class AppModel: ObservableObject {
         editSnapshot = nil
         document = doc
         sourceURL = url
+        documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
         projectKey = ProjectStore.key(for: url)
         if let key = projectKey, let saved = ProjectStore.load(key: key),
@@ -130,6 +149,31 @@ final class AppModel: ObservableObject {
         }
         selectedPageID = pages.first?.id
         analyzeAll()
+    }
+
+    /// Ask for the password of a protected PDF until it unlocks or the user cancels.
+    private func askPassword(for url: URL, document: PDFDocument) -> String? {
+        var message = "“\(url.lastPathComponent)” is protected. Enter its password to open it."
+        while true {
+            let alert = NSAlert()
+            alert.messageText = "Password Required"
+            alert.informativeText = message
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            if document.unlock(withPassword: field.stringValue) { return field.stringValue }
+            message = "That password didn't work. Try again."
+        }
+    }
+
+    /// Open another copy of the PDF for a background job, unlocked like the original.
+    nonisolated static func reopen(_ url: URL, password: String?) -> PDFDocument? {
+        guard let doc = PDFDocument(url: url) else { return nil }
+        if doc.isLocked { _ = doc.unlock(withPassword: password ?? "") }
+        return doc.isLocked ? nil : doc
     }
 
     // MARK: - Previews
@@ -240,10 +284,11 @@ final class AppModel: ObservableObject {
         let run = analysisRun
         isAnalyzing = true
         let deskew = autoDeskewEnabled
+        let password = documentPassword
         Task.detached { [previewDPI] in
             // A separate PDFDocument: PDFKit can't draw one document from two threads,
             // and the main thread keeps rendering previews from `document` meanwhile.
-            let doc = PDFDocument(url: url)
+            let doc = Self.reopen(url, password: password)
             for (n, index) in todo.enumerated() {
                 // Drain PDFKit's autoreleased drawing objects after every page.
                 let analysis = autoreleasepool { () -> Analysis? in
@@ -426,7 +471,7 @@ final class AppModel: ObservableObject {
     // MARK: - Export
 
     func exportPanel() {
-        guard document != nil, !isBusy else { return }
+        guard canExport else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "book"
@@ -439,9 +484,12 @@ final class AppModel: ObservableObject {
 
     func export(to url: URL) {
         guard document != nil, let src = sourceURL else { return }
+        let password = documentPassword
         isExporting = true
         exportProgress = 0
-        statusText = "Exporting…"
+        // Vision can take a minute or more to start after a while unused; say so
+        // rather than look stuck.
+        statusText = ocrEnabled ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
         var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
@@ -454,7 +502,7 @@ final class AppModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 // Own PDFDocument, for the same reason as analyzeAll.
-                guard let doc = PDFDocument(url: src) else { throw PDFExporter.ExportError.sourceUnreadable }
+                guard let doc = Self.reopen(src, password: password) else { throw PDFExporter.ExportError.sourceUnreadable }
                 let report = try PDFExporter.export(pages: pagesSnapshot,
                                                     from: doc,
                                                     to: url,
@@ -469,7 +517,7 @@ final class AppModel: ObservableObject {
                         // before estimating.
                         if done >= 2, done < total {
                             let remaining = elapsed / Double(done) * Double(total - done)
-                            text += " About \(Self.describe(remaining)) left."
+                            text += " \(Self.describe(remaining)) left."
                         }
                         self.statusText = text
                     }
@@ -502,10 +550,10 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func describe(_ seconds: TimeInterval) -> String {
-        if seconds < 60 { return "under a minute" }
+        if seconds < 60 { return "Under a minute" }
         let minutes = Int((seconds / 60).rounded())
-        if minutes < 90 { return "\(minutes) minute\(minutes == 1 ? "" : "s")" }
-        return "\(minutes / 60) h \(minutes % 60) min"
+        if minutes < 90 { return "About \(minutes) minute\(minutes == 1 ? "" : "s")" }
+        return "About \(minutes / 60) h \(minutes % 60) min"
     }
 
     private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {

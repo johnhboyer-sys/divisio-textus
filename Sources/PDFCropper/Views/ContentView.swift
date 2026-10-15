@@ -44,7 +44,7 @@ struct ContentView: View {
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
-                .disabled(model.document == nil || model.isBusy)
+                .disabled(!model.canExport)
             }
         }
         .safeAreaInset(edge: .bottom) {
