@@ -5,7 +5,13 @@ import UniformTypeIdentifiers
 /// open target (the old placeholder image wasn't a button) plus drag-and-drop.
 struct WelcomeView: View {
     @EnvironmentObject var model: AppModel
-    @State private var isTargeted = false
+    // Spelled State(initialValue:) rather than @State: in the macOS 27 SDK @State is a
+    // macro whose plugin ships only with full Xcode, so Command Line Tools can't build it.
+    private let isTargetedState = State(initialValue: false)
+    private var isTargeted: Bool {
+        get { isTargetedState.wrappedValue }
+        nonmutating set { isTargetedState.wrappedValue = newValue }
+    }
 
     var body: some View {
         VStack(spacing: 20) {

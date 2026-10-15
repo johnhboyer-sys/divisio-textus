@@ -10,7 +10,13 @@ struct CropBoxView: View {
     let label: String
 
     // Snapshot of the crop when a drag begins, so deltas are stable.
-    @State private var dragStart: CropRect?
+    // (Spelled State(initialValue:) rather than @State: in the macOS 27 SDK @State is a
+    // macro whose plugin ships only with full Xcode, so Command Line Tools can't build it.)
+    private let dragStartState = State<CropRect?>(initialValue: nil)
+    private var dragStart: CropRect? {
+        get { dragStartState.wrappedValue }
+        nonmutating set { dragStartState.wrappedValue = newValue }
+    }
 
     private let handle: CGFloat = 12
 
