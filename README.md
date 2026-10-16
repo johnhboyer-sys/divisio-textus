@@ -23,6 +23,19 @@ macOS may offload build files and stall the build; pass
 `--scratch-path ~/Library/Caches/divisio-textus-build` to build outside it. To open a sample, use **Open PDF** and pick
 `sample-book.pdf` (a synthetic 6-page scan: 1 cover + 5 spreads).
 
+## Test
+
+```sh
+swift test
+```
+
+About 22 tests (~1 minute) covering rendering (crop boxes, rotation), spread
+straightening, gray detection, scan-resolution detection, export (page size,
+cancel, reading order, skipped pages) and editing (undo/redo, autosave,
+re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
+a temporary folder, never your real ones. OCR isn't covered: Vision is too slow
+and erratic for an automated suite.
+
 ## Opening the app (first time)
 
 If someone sent you the **Divisio Textus** app, follow these steps the **first
@@ -79,6 +92,7 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
 | `Services/PDFExporter.swift` | Crops → output PDF with OCR text layer |
 | `Views/*` | Thumbnail rail, page editor canvas, inspector |
 | `Tools/make_sample.swift` | Standalone generator for `sample-book.pdf` |
+| `Tests/PDFCropperTests/` | `swift test` suite (Swift Testing) |
 
 ## Roadmap (phased)
 

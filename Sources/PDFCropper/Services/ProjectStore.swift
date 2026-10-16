@@ -44,8 +44,13 @@ enum ProjectStore {
         try? data.write(to: url, options: .atomic)
     }
 
+    /// Where saves go. Tests point this at a temporary folder so they never
+    /// touch real saved edits.
+    static var directory: URL? = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("Divisio Textus/Edits", isDirectory: true)
+
     private static func fileURL(for key: String) -> URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Divisio Textus/Edits/\(key).json")
+        directory?.appendingPathComponent("\(key).json")
     }
 }

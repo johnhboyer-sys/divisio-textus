@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
 
+    /// Show the exported file in Finder when an export finishes (off in tests).
+    var revealExportInFinder = true
+
     // Preview-image cache keyed by source page index, remembering what the cached
     // composite was built with so any change re-renders. Each entry is a full page
     // at preview DPI, so only the most recently viewed few are kept.
@@ -539,7 +542,7 @@ final class AppModel: ObservableObject {
                     self.isExporting = false
                     self.exportProgress = 1
                     self.statusText = Self.exportMessage(url.lastPathComponent, report)
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                    if self.revealExportInFinder { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 }
             } catch PDFExporter.ExportError.cancelled {
                 Task { @MainActor in

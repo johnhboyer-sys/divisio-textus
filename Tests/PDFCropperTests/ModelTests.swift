@@ -1,0 +1,204 @@
+import Testing
+import Foundation
+import AppKit
+import PDFKit
+@testable import PDFCropper
+
+/// Editing, undo, analysis and autosave, driven through AppModel the way the UI
+/// drives it. Each test opens its own copy of the sample book (1 single page,
+/// then 5 spreads, some skewed), so their saved edits never mix.
+@Suite("Editing and the app model", .serialized)
+@MainActor
+struct ModelTests {
+
+    private func loadedSample() async -> (AppModel, UndoManager, URL) {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        let url = Fixtures.sampleBook()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        return (m, undo, url)
+    }
+
+    private var firstSpread: Int { 1 }
+
+    @Test("Analysis classifies the sample book")
+    func analysis() async {
+        let (m, _, _) = await loadedSample()
+        #expect(m.pages.count == 6)
+        #expect(m.pages.allSatisfy { $0.analyzed })
+        #expect(m.pages.map(\.classification) == [.single, .spread, .spread, .spread, .spread, .spread])
+        #expect(m.outputPageCount == 11)
+    }
+
+    @Test("Spread to Single re-detects a whole-page crop; undo and redo")
+    func typeChange() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, before = m.pages[i]
+        undoable(undo) { m.setClassification(.single, for: before.id) }
+        let single = m.pages[i]
+        #expect(single.classification == .single)
+        #expect(single.leftCrop.width > before.leftCrop.width + 0.2)
+        undo.undo()
+        #expect(m.pages[i].classification == .spread && m.pages[i].leftCrop == before.leftCrop)
+        undo.redo()
+        #expect(m.pages[i].classification == .single && m.pages[i].leftCrop == single.leftCrop)
+    }
+
+    @Test("Skipping and un-skipping keeps the crops")
+    func skipKeepsCrops() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, before = m.pages[i]
+        undoable(undo) { m.setClassification(.skip, for: before.id) }
+        undoable(undo) { m.setClassification(.spread, for: before.id) }
+        #expect(m.pages[i].leftCrop == before.leftCrop && m.pages[i].rightCrop == before.rightCrop)
+    }
+
+    @Test("A drag is one undo step and leaves other pages' changes alone")
+    func dragUndo() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, other = i + 1
+        let before = m.pages[i].splitX
+        m.selectedPageID = m.pages[i].id
+        undoable(undo) {
+            m.beginEdit()
+            for k in 1...5 { m.pages[i].splitX = 0.5 + Double(k) * 0.01 }
+            m.pages[other].splitX = 0.33          // as if analysis landed mid-drag
+            m.endEdit("Move Split")
+        }
+        #expect(undo.undoActionName == "Move Split")
+        undo.undo()
+        #expect(m.pages[i].splitX == before)
+        #expect(m.pages[other].splitX == 0.33)
+    }
+
+    @Test("A drag claims its page at once; a drag that changes nothing releases it")
+    func claimAndRelease() async {
+        let (m, _, _) = await loadedSample()
+        let i = firstSpread
+        m.pages[i].analyzed = false
+        m.selectedPageID = m.pages[i].id
+        m.beginEdit()
+        #expect(m.pages[i].analyzed)               // analysis can't overwrite the gesture
+
+        // Press and release without moving, on a page analysis hasn't reached.
+        let fresh = BookPage(sourceIndex: m.pages[i].sourceIndex)
+        m.endEdit("Straighten")
+        m.pages[i] = fresh
+        m.selectedPageID = fresh.id
+        m.beginEdit(); m.endEdit("Straighten")
+        await waitUntilIdle(m)
+        #expect(m.pages[i].leftCrop != fresh.leftCrop)   // it still got analyzed
+    }
+
+    @Test("Apply crop to alternate single pages, then to all")
+    func alternatePages() async {
+        let (m, undo, _) = await loadedSample()
+        undoable(undo) { for p in m.pages where p.classification != .single { m.setClassification(.single, for: p.id) } }
+        let mark = CropRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)
+        m.selectedPageID = m.pages[1].id
+        m.pages[1].leftCrop = mark
+        undoable(undo) { m.applySingleCrop(alternate: true) }
+        #expect(m.pages.indices.filter { m.pages[$0].leftCrop == mark } == [1, 3, 5])
+        undoable(undo) { m.applySingleCrop(alternate: false) }
+        #expect(m.pages.allSatisfy { $0.leftCrop == mark })
+        undo.undo()
+        #expect(m.pages.indices.filter { m.pages[$0].leftCrop == mark } == [1, 3, 5])
+    }
+
+    @Test("Up/down page navigation stops at the ends")
+    func navigation() async {
+        let (m, _, _) = await loadedSample()
+        m.selectedPageID = m.pages[0].id
+        m.selectAdjacentPage(-1); #expect(m.selectedIndex == 0)
+        m.selectAdjacentPage(1); #expect(m.selectedIndex == 1)
+        m.selectedPageID = m.pages.last!.id
+        m.selectAdjacentPage(1); #expect(m.selectedIndex == m.pages.count - 1)
+    }
+
+    @Test("Zoom stays within fit…8x and zoomed previews are sharper")
+    func zoom() async throws {
+        let (m, _, _) = await loadedSample()
+        m.zoomOut(); #expect(m.zoom == 1)
+        for _ in 0..<20 { m.zoomIn() }; #expect(m.zoom == 8)
+        m.zoomToFit(); #expect(m.zoom == 1)
+        let page = m.pages[firstSpread]
+        let normal = try #require(m.previewImage(for: page))
+        let sharp = try #require(m.previewImage(for: page, zoom: 3))
+        #expect(abs(sharp.size.width / normal.size.width - 3) < 0.05)
+    }
+
+    @Test("Edits and reading order come back when the PDF is reopened")
+    func autosave() async throws {
+        let (m, undo, url) = await loadedSample()
+        let i = firstSpread
+        let edited = CropRect(x: 0.11, y: 0.12, width: 0.3, height: 0.7)
+        m.selectedPageID = m.pages[i].id
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = edited } }
+        m.direction = .rightToLeft
+        try await Task.sleep(nanoseconds: 1_200_000_000)    // autosave waits for a pause
+
+        let reopened = testModel()
+        reopened.load(url: url)
+        await waitUntilIdle(reopened)
+        #expect(reopened.pages[i].leftCrop == edited)
+        #expect(reopened.direction == .rightToLeft)
+        #expect(reopened.statusText.hasPrefix("Restored"))
+    }
+
+    @Test("An edit made just before opening another PDF is still saved")
+    func saveOnSwitch() async throws {
+        let (m, undo, url) = await loadedSample()
+        let i = firstSpread
+        let quick = CropRect(x: 0.2, y: 0.2, width: 0.25, height: 0.5)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = quick } }
+        m.load(url: Fixtures.sampleBook())                    // switch at once
+        await waitUntilIdle(m)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let reopened = testModel()
+        reopened.load(url: url)
+        await waitUntilIdle(reopened)
+        #expect(reopened.pages[i].leftCrop == quick)
+    }
+
+    @Test("Re-detect all pages, undo, redo")
+    func redetectAll() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, auto = m.pages[i].leftCrop
+        let edited = CropRect(x: 0.11, y: 0.12, width: 0.3, height: 0.7)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = edited } }
+        undoable(undo) { m.redetectAllPages() }
+        await waitUntilIdle(m)
+        #expect(m.pages[i].leftCrop == auto)
+        undo.undo()
+        #expect(m.pages[i].leftCrop == edited)
+        undo.redo()
+        await waitUntilIdle(m)
+        #expect(m.pages.allSatisfy { $0.analyzed })
+    }
+
+    @Test("Password-protected PDFs: locked without it, open with it")
+    func passwords() {
+        let locked = Fixtures.save(Fixtures.markedPage(), "locked.pdf",
+                                   options: [.userPasswordOption: "pw", .ownerPasswordOption: "pw"])
+        #expect(AppModel.reopen(locked, password: nil) == nil)
+        #expect(AppModel.reopen(locked, password: "wrong") == nil)
+        #expect(AppModel.reopen(locked, password: "pw") != nil)
+        // Restrictions only (no open password): opens with no prompt.
+        let ownerOnly = Fixtures.save(Fixtures.markedPage(), "owner-only.pdf",
+                                      options: [.ownerPasswordOption: "owner"])
+        #expect(AppModel.reopen(ownerOnly, password: nil) != nil)
+    }
+
+    @Test("Files that aren't PDFs are refused cleanly")
+    func notAPDF() throws {
+        let junk = Fixtures.url("junk.pdf")
+        try Data("not a pdf".utf8).write(to: junk)
+        let m = testModel()
+        m.load(url: junk)
+        #expect(m.document == nil)
+        #expect(m.statusText.hasPrefix("Could not open"))
+    }
+}
