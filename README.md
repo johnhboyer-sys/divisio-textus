@@ -63,8 +63,13 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
 
 1. **Import** a PDF; each page is rendered to a preview bitmap.
 2. **Auto-classify** each page as Spread / Single / Skip (aspect ratio + content).
-3. **Gutter detection** finds the split line (darkest central column = binding shadow).
-4. **Content-bounds detection** seeds a crop box for each half (Briss-style).
+3. **Gutter detection** finds the split line: a binding shadow if there is one,
+   otherwise the middle of the clean white gap between the pages (off center is fine).
+4. **Content-bounds detection** seeds a crop box for each half (Briss-style),
+   trimming dark scanner bands along the edges first (even behind a thin light
+   strip, with ragged streaks). When analysis finishes, blank and nearly empty
+   pages (part titles, chapter ends) get the book's usual crop and split, so
+   every page comes out a matching size.
 5. **Edit** in the UI: drag the orange split line, drag/resize the blue (left) and
    green (right) crop boxes, right-click a thumbnail to change its type.
    "Apply layout to all spreads" copies one spread's layout everywhere; for

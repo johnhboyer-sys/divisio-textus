@@ -33,6 +33,12 @@ struct CropRect: Equatable, Codable {
         return c
     }
 
+    /// The smallest rect containing both.
+    func union(_ other: CropRect) -> CropRect {
+        let x0 = min(minX, other.minX), y0 = min(minY, other.minY)
+        return CropRect(x: x0, y: y0, width: max(maxX, other.maxX) - x0, height: max(maxY, other.maxY) - y0)
+    }
+
     /// Convert to a pixel-space CGRect (top-left origin) for an image of the
     /// given pixel dimensions.
     func pixelRect(in size: CGSize) -> CGRect {

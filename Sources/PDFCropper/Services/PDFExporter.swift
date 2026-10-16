@@ -85,6 +85,7 @@ enum PDFExporter {
         }
 
         var report = Report()
+        let textFont = makeTextLayerFont()
         var batchStart = 0
         while batchStart < todo.count {
             if isCancelled?() == true { throw ExportError.cancelled }
@@ -160,7 +161,7 @@ enum PDFExporter {
                 ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
                 report.pageCount += 1
                 if let recognition = text[i] {
-                    drawTextLayer(recognition.lines, in: ctx, pageSize: box.size)
+                    drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
                 }
                 if text[i]?.complete != true {
                     report.ocrFailedPages.append(report.pageCount)
@@ -227,13 +228,20 @@ enum PDFExporter {
     /// Draw each recognized line as one invisible, selectable run. `CTLineDraw`
     /// positions glyphs individually, so PDF text extraction reconstructs words
     /// from glyph gaps. The rules that keep copied text clean:
-    ///   • never stretch horizontally (textMatrix stays identity) — stretching
-    ///     spreads glyphs and yields "c a u s e";
-    ///   • if the natural line is wider than its box, shrink the font UNIFORMLY
-    ///     to fit, which keeps letters tight and the space glyphs intact, so
-    ///     words stay separated and letters stay joined.
-    private static func drawTextLayer(_ lines: [OCRService.Line], in ctx: CGContext, pageSize: CGSize) {
+    ///   • never stretch horizontally — stretching spreads glyphs and yields
+    ///     "c a u s e";
+    ///   • size each line by scaling the drawing the same in both directions,
+    ///     shrinking to fit the line's width if needed, which keeps letters
+    ///     tight and the space glyphs intact. (Scale the context, not the text
+    ///     matrix: CTLineDraw places glyphs at the font's own advances and
+    ///     ignores the text matrix for that, which spreads the letters out.)
+    /// Every line uses the one `font` object made for the export, so the PDF
+    /// embeds Helvetica once. (Making a font per line at that line's size usually
+    /// got a cached font back, but under memory pressure each line embedded its
+    /// own copy: about 1,000 copies and +7 MB on a 26-page book.)
+    static func drawTextLayer(_ lines: [OCRService.Line], in ctx: CGContext, pageSize: CGSize, font: CTFont) {
         guard !lines.isEmpty else { return }
+        let baseSize = CTFontGetSize(font)
         ctx.saveGState()
         ctx.setTextDrawingMode(.invisible)
         ctx.textMatrix = .identity
@@ -245,24 +253,26 @@ enum PDFExporter {
                              height: line.box.height * pageSize.height)
             guard box.width > 1, box.height > 1 else { continue }
 
-            var fontSize = max(1, box.height)
-            var ctLine = makeLine(line.text, fontSize: fontSize)
+            let ctLine = CTLineCreateWithAttributedString(
+                NSAttributedString(string: line.text, attributes: [.font: font]))
             let naturalWidth = CTLineGetTypographicBounds(ctLine, nil, nil, nil)
-            // Shrink to fit width if needed (uniform — no glyph distortion).
-            if naturalWidth > box.width, naturalWidth > 0 {
-                fontSize *= box.width / naturalWidth
-                ctLine = makeLine(line.text, fontSize: max(1, fontSize))
+            var size = max(1, box.height)
+            if naturalWidth > 0, naturalWidth * size / baseSize > box.width {
+                size = max(1, box.width * baseSize / naturalWidth)
             }
-
-            ctx.textPosition = CGPoint(x: box.minX, y: box.minY + fontSize * 0.18)
+            let scale = size / baseSize
+            ctx.saveGState()
+            ctx.translateBy(x: box.minX, y: box.minY + size * 0.18)
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.textPosition = .zero
             CTLineDraw(ctLine, ctx)
+            ctx.restoreGState()
         }
         ctx.restoreGState()
     }
 
-    private static func makeLine(_ text: String, fontSize: CGFloat) -> CTLine {
-        let font = CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
-        let attributed = NSAttributedString(string: text, attributes: [.font: font])
-        return CTLineCreateWithAttributedString(attributed)
+    /// The text layer's font, made once per export (see drawTextLayer).
+    static func makeTextLayerFont() -> CTFont {
+        CTFontCreateWithName("Helvetica" as CFString, 100, nil)
     }
 }

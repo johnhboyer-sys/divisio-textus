@@ -169,44 +169,49 @@ enum OCRService {
 
     /// Merge two line arrays, recovering lines that Vision garbles or drops in pass1.
     ///
-    /// Two failure modes are handled:
-    ///  1. **Garbled merge** — Vision collapses two adjacent lines into one wide
-    ///     observation with mangled text. Detected when two or more pass2 line centers
-    ///     fall inside the same pass1 box; that pass1 entry is replaced by the pass2
-    ///     lines (which are individually cleaner at half resolution).
-    ///  2. **Outright drop** — Vision misses a line entirely in pass1. Detected when a
-    ///     pass2 line's center doesn't fall inside any pass1 box at all; appended as-is.
-    private static func merge(_ pass1: [Line], _ pass2: [Line]) -> [Line] {
-        let expanded = pass1.map { ($0, $0.box.insetBy(dx: -0.005, dy: -0.005)) }
+    /// Each pass2 line is given to ONE pass1 line: the nearest whose (slightly
+    /// enlarged) box holds its center. On tightly set text the line boxes overlap,
+    /// and giving a pass2 line to every box it fell in once duplicated about one
+    /// line in six. Then:
+    ///  1. **Garbled merge** — Vision collapsed two adjacent lines into one
+    ///     observation: the pass2 lines given to it sit on different rows, so they
+    ///     replace it (they are individually cleaner at half resolution).
+    ///  2. **Outright drop** — a pass2 line that no pass1 box holds is appended.
+    static func merge(_ pass1: [Line], _ pass2: [Line]) -> [Line] {
+        let expanded = pass1.map { $0.box.insetBy(dx: -0.005, dy: -0.005) }
 
-        // For every pass1 entry, collect how many pass2 centers land inside it.
-        var pass2ByPass1: [Int: [Line]] = [:]   // pass1 index → pass2 lines inside it
-        var pass2Covered: Set<Int> = []          // pass2 indices covered by any pass1 box
-
-        for (p2idx, p2) in pass2.enumerated() {
-            let pt = CGPoint(x: p2.box.midX, y: p2.box.midY)
-            for (p1idx, (_, box)) in expanded.enumerated() where box.contains(pt) {
-                pass2ByPass1[p1idx, default: []].append(p2)
-                pass2Covered.insert(p2idx)
+        var given: [Int: [Line]] = [:]     // pass1 index → its pass2 lines
+        var unheld: [Line] = []
+        for line in pass2 {
+            let center = CGPoint(x: line.box.midX, y: line.box.midY)
+            let holders = expanded.indices.filter { expanded[$0].contains(center) }
+            guard let nearest = holders.min(by: {
+                abs(pass1[$0].box.midY - center.y) < abs(pass1[$1].box.midY - center.y)
+            }) else {
+                unheld.append(line)
+                continue
             }
+            given[nearest, default: []].append(line)
         }
 
         var result: [Line] = []
-        for (p1idx, (p1line, _)) in expanded.enumerated() {
-            let insiders = pass2ByPass1[p1idx] ?? []
-            if insiders.count >= 2 {
-                // Pass1 likely garbled/merged multiple lines — use the pass2 versions.
-                result.append(contentsOf: insiders)
+        for (i, line) in pass1.enumerated() {
+            let mine = given[i] ?? []
+            if mine.count >= 2 && onDifferentRows(mine) {
+                result.append(contentsOf: mine)
             } else {
-                result.append(p1line)
+                result.append(line)
             }
         }
+        return result + unheld
+    }
 
-        // Append any pass2 line that didn't land inside any pass1 box (outright drop).
-        for (p2idx, p2) in pass2.enumerated() where !pass2Covered.contains(p2idx) {
-            result.append(p2)
-        }
-        return result
+    /// True when some of the lines sit above others (not side by side on one row).
+    private static func onDifferentRows(_ lines: [Line]) -> Bool {
+        let centers = lines.map(\.box.midY)
+        guard let lowest = centers.min(), let highest = centers.max(),
+              let height = lines.map(\.box.height).min() else { return false }
+        return highest - lowest > height * 0.6
     }
 
     /// Desaturate and stretch contrast to give Vision a cleaner signal.
