@@ -128,3 +128,8 @@ func exportAndOpen(_ m: AppModel, _ name: String) async -> PDFDocument? {
     await waitUntilIdle(m)
     return PDFDocument(url: out)
 }
+
+extension GrayBuffer {
+    /// Feed this buffer to a function, so a test can build and analyze in one line.
+    func pipe<T>(_ f: (GrayBuffer) -> T) -> T { f(self) }
+}

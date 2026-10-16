@@ -242,22 +242,27 @@ final class AppModel: ObservableObject {
         thumbnailCache.removeAll()
     }
 
-    /// Detect skew for each book page on the raw render. For a spread, the spine
-    /// region is trimmed off each half first (the binding shadow would bias it).
-    nonisolated private static func detectSkews(_ cg: CGImage, splitX: Double, isSpread: Bool) -> (left: Double, right: Double) {
-        guard isSpread else { return (DeskewDetector.detect(cg), 0) }
-        let leftImg = PDFRenderer.crop(cg, to: CropRect(
-            x: 0, y: 0, width: max(0.05, splitX - 0.05), height: 1))
-        let rightImg = PDFRenderer.crop(cg, to: CropRect(
-            x: min(0.95, splitX + 0.05), y: 0, width: max(0.05, 0.95 - splitX), height: 1))
-        let l = leftImg.map { DeskewDetector.detect($0, excludeCenterBand: false) } ?? 0
-        let r = rightImg.map { DeskewDetector.detect($0, excludeCenterBand: false) } ?? 0
-        return (l, r)
+    /// Detect skew for each book page on the raw render, measured inside that
+    /// page's own content (with a little room around it), so scanner bands, the
+    /// binding shadow and the facing page can't pull the angle.
+    nonisolated static func detectSkews(_ cg: CGImage, splitX: Double, isSpread: Bool) -> (left: Double, right: Double) {
+        guard let g = GrayBuffer(cgImage: cg) else { return (0, 0) }
+        func skew(_ side: Range<Double>) -> Double {
+            let found = PageAnalyzer.contentBounds(g, xRange: side)
+            guard !found.blank else { return 0 }
+            let room = 0.02, c = found.crop
+            let x0 = max(side.lowerBound, c.minX - room), x1 = min(side.upperBound, c.maxX + room)
+            let y0 = max(0, c.minY - room), y1 = min(1, c.maxY + room)
+            guard let content = PDFRenderer.crop(cg, to: CropRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+            else { return 0 }
+            return DeskewDetector.detect(content, excludeCenterBand: false)
+        }
+        return isSpread ? (skew(0..<splitX), skew(splitX..<1)) : (skew(0..<1), 0)
     }
 
     // MARK: - Analysis
 
-    private struct Analysis {
+    struct Analysis {
         let leftSkew: Double
         let rightSkew: Double
         let result: PageAnalyzer.Result
@@ -265,14 +270,16 @@ final class AppModel: ObservableObject {
 
     /// Classify a rendered page (or use `forced`), find its gutter and each side's
     /// skew, then find the crops on the straightened image so they line up.
-    nonisolated private static func analyzePage(_ cg: CGImage, deskew: Bool,
+    nonisolated static func analyzePage(_ cg: CGImage, deskew: Bool,
                                                 as forced: PageClassification? = nil) -> Analysis {
         let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced)
         let spread = r0.classification == .spread
         let skews = deskew ? detectSkews(cg, splitX: r0.splitX, isSpread: spread) : (left: 0.0, right: 0.0)
         let composite = ImageTransform.deskewedComposite(
             cg, splitX: r0.splitX, leftDegrees: skews.left, rightDegrees: skews.right, isSpread: spread)
-        let r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification)
+        // Keep the gutter found on the scan: the straightened image is cut there,
+        // and turning each half tilts a binding shadow so it can't be found again.
+        let r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification, split: r0.splitX)
         return Analysis(leftSkew: skews.left, rightSkew: skews.right, result: r1)
     }
 
@@ -324,7 +331,7 @@ final class AppModel: ObservableObject {
             }
             await MainActor.run {
                 guard self.document === current, self.analysisRun == run else { return }
-                self.evenOutNearlyEmptyPages()
+                self.evenOutNearlyEmptyPages(self.setByAnalysis)
                 self.isAnalyzing = false
                 self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
             }
@@ -335,9 +342,10 @@ final class AppModel: ObservableObject {
     /// smaller than the rest of the book and would export as odd little pages,
     /// and a blank page next to the gutter leaves no white gap to find the split
     /// by. Give those the book's usual split and crop instead, keeping each crop
-    /// on its own side of the split. Only what this analysis pass set is
-    /// changed, never anything edited by hand.
-    private func evenOutNearlyEmptyPages() {
+    /// on its own side of the split. Only the pages in `sides` (what an analysis
+    /// pass just set, with which of their sides it found blank) are changed,
+    /// never anything edited by hand.
+    private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: (leftBlank: Bool, rightBlank: Bool)]) {
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
         func usual(_ crops: [CropRect]) -> CropRect? {
             guard crops.count >= 3 else { return nil }
@@ -349,10 +357,10 @@ final class AppModel: ObservableObject {
         }
         let spreads = pages.indices.filter { pages[$0].classification == .spread }
         let singles = pages.indices.filter { pages[$0].classification == .single }
-        let candidates = { (indices: [Int]) in indices.filter { self.setByAnalysis[self.pages[$0].id] != nil } }
+        let candidates = { (indices: [Int]) in indices.filter { sides[self.pages[$0].id] != nil } }
         func blank(_ i: Int, left: Bool) -> Bool {
-            guard let sides = setByAnalysis[pages[i].id] else { return false }
-            return left ? sides.leftBlank : sides.rightBlank
+            guard let found = sides[pages[i].id] else { return false }
+            return left ? found.leftBlank : found.rightBlank
         }
         if spreads.count >= 3 {
             let usualSplit = median(spreads.map { pages[$0].splitX })
@@ -393,7 +401,11 @@ final class AppModel: ObservableObject {
     private func reanalyze(_ idx: Int, as forced: PageClassification? = nil) {
         guard let doc = document, let pdfPage = doc.page(at: pages[idx].sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-        apply(Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced), to: idx)
+        let analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced)
+        apply(analysis, to: idx)
+        // The same book-wide treatment the full pass gives a blank or nearly
+        // empty page, so re-detecting one page gives what opening the book gave.
+        evenOutNearlyEmptyPages([pages[idx].id: (analysis.result.leftBlank, analysis.result.rightBlank)])
     }
 
     func reanalyzeSelected() {

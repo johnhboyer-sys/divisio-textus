@@ -63,6 +63,73 @@ struct AnalysisTests {
         #expect(r.leftCrop.maxX <= gapRight && r.rightCrop.minX >= gapLeft)
     }
 
+    @Test("A narrow white gutter between two pages of text is still found, not a column of text")
+    func narrowGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 980)
+            Self.text(c, 1010, 1850)      // a 1.5% gap: the pages were trimmed close at the binding
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 980.0 / 2000 && r.splitX < 1010.0 / 2000)
+    }
+
+    @Test("The split stays clear of a running head close to the gutter")
+    func runningHeadNearGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 940)
+            Self.text(c, 1100, 1850)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            c.fill(CGRect(x: 1010, y: Self.height - 40, width: 190, height: 12))   // the right page's running head, high up
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 940.0 / 2000 && r.splitX < 1010.0 / 2000)
+    }
+
+    @Test("A soft grey shadow along a page's edge is not cropped in")
+    func softShadowTrimmed() throws {
+        let page = Fixtures.image(1300, 2000) { c in
+            for x in 0..<70 {                                    // fades from 60% grey to paper
+                c.setFillColor(CGColor(gray: 0.6 + 0.4 * Double(x) / 70, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 1, height: 2000))
+            }
+            AnalysisTests.text(c, 200, 1100, rows: 0..<30)
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.minX > 60.0 / 1300)
+        #expect(r.crop.height < 0.6)                             // the text's height, not the page's
+    }
+
+    @Test("A soft grey binding shadow is the gutter, and neither page's crop takes it in")
+    func softGutterShadow() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 900)
+            Self.text(c, 1100, 1850)
+            for x in 950..<1050 {                                // 62% grey at the fold, fading out
+                let d = abs(Double(x) - 1000) / 50
+                c.setFillColor(CGColor(gray: 0.62 + 0.38 * d * d, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 1, height: Self.height))
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 0.5) < 0.01)
+        #expect(r.leftCrop.maxX < 0.485 && r.rightCrop.minX > 0.515)
+        #expect(r.leftCrop.height < 0.95 && r.rightCrop.height < 0.95)
+    }
+
+    @Test("A dark photograph beside the gutter is not mistaken for the binding shadow")
+    func photoIsNotShadow() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            c.setFillColor(CGColor(gray: 0.15, alpha: 1))
+            c.fill(CGRect(x: 160, y: 250, width: 750, height: 900))        // a frontispiece reaching the middle
+            Self.text(c, 160, 900, rows: 34..<36)                          // its caption
+            c.setFillColor(CGColor(gray: 0.55, alpha: 1))
+            c.fill(CGRect(x: 999, y: 0, width: 3, height: Self.height))   // the fold: a thin grey line
+            Self.text(c, 1100, 1850)
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 0.5) < 0.01, "split \(r.splitX)")
+    }
+
     @Test("A binding shadow is still taken as the gutter")
     func shadowGutter() {
         let image = Fixtures.image(Self.width, Self.height) { c in
@@ -104,6 +171,119 @@ struct AnalysisTests {
         let g = try #require(GrayBuffer(cgImage: page))
         #expect(g.height == 800)
         #expect(PageAnalyzer.contentBounds(g, xRange: 0.0..<1.0).blank == blank)
+    }
+
+    @Test("One line sticking out past the rest stays inside the crop, on either side")
+    func longLineKept() throws {
+        let page = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 300, 1000, rows: 0..<40)           // the text block
+            AnalysisTests.text(c, 300, 1150, rows: 12..<13)          // one longer line
+            AnalysisTests.text(c, 160, 1000, rows: 30..<31)          // one line set out to the left
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX >= 1150.0 / 1300)
+        #expect(r.crop.minX <= 160.0 / 1300)
+
+        // Small type in one half of a spread: wider word gaps, relative to the half.
+        let small = Fixtures.image(2000, 1300) { c in
+            AnalysisTests.text(c, 300, 800, rows: 0..<30)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            var x = 300
+            while x < 960 { c.fill(CGRect(x: x, y: 600, width: 40, height: 8)); x += 40 + 13 }   // one longer line
+        }
+        let h = try #require(GrayBuffer(cgImage: small)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<0.5) }
+        #expect(h.crop.maxX >= 950.0 / 2000)
+
+        // Tiny type comes out light: its thin strokes are paler than the main ink.
+        let light = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 300, 1000, rows: 0..<40)
+            c.setFillColor(CGColor(gray: 0.78, alpha: 1))                // pale strokes, gaps a word wide
+            var x = 140
+            while x < 300 { c.fill(CGRect(x: x, y: 776, width: 12, height: 9)); x += 12 + 8 }
+        }
+        let p = try #require(GrayBuffer(cgImage: light)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(p.crop.minX <= 140.0 / 1300)
+
+        // A speck well out in the margin is still not content.
+        let specked = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 300, 1000, rows: 0..<40)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1)); c.fill(CGRect(x: 1180, y: 1000, width: 5, height: 5))
+        }
+        let s = try #require(GrayBuffer(cgImage: specked)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(s.crop.maxX < 1100.0 / 1300)
+    }
+
+    @Test("Shading toward a page's edge and the book block's edge lines are not content")
+    func edgeShadingAndForeEdge() throws {
+        // Tinted paper darkening over its last 6% toward the right edge.
+        let shaded = Fixtures.image(1300, 2000) { c in
+            c.setFillColor(CGColor(gray: 0.6, alpha: 1)); c.fill(CGRect(x: 0, y: 0, width: 1300, height: 2000))
+            for x in 1222..<1300 {
+                c.setFillColor(CGColor(gray: 0.6 - 0.12 * Double(x - 1222) / 78, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 1, height: 2000))
+            }
+            AnalysisTests.text(c, 150, 1150, rows: 0..<30)
+        }
+        let s = try #require(GrayBuffer(cgImage: shaded)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(s.crop.maxX < 1190.0 / 1300)
+
+        // Blotchy shading, as scanned: mottled, partly dark enough to pass for ink.
+        var mottle = SplitMix(seed: 7)
+        let blotchy = Fixtures.image(1300, 2000) { c in
+            c.setFillColor(CGColor(gray: 0.6, alpha: 1)); c.fill(CGRect(x: 0, y: 0, width: 1300, height: 2000))
+            for y in stride(from: 0, to: 2000, by: 6) {
+                for x in stride(from: 1190, to: 1300, by: 6) {
+                    let depth = Double(x - 1190) / 110
+                    c.setFillColor(CGColor(gray: 0.6 - 0.18 * depth * Double.random(in: 0.4...1.2, using: &mottle), alpha: 1))
+                    c.fill(CGRect(x: x, y: y, width: 6, height: 6))
+                }
+            }
+            AnalysisTests.text(c, 150, 1150, rows: 0..<30)
+        }
+        let b = try #require(GrayBuffer(cgImage: blotchy)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(b.crop.maxX < 1190.0 / 1300)
+
+        // Thin grey lines down the left: the edges of the other pages in the book.
+        let foreEdge = Fixtures.image(1300, 2000) { c in
+            c.setFillColor(CGColor(gray: 0.45, alpha: 1))
+            for x in [40, 46, 53, 61] { c.fill(CGRect(x: x, y: 0, width: 2, height: 2000)) }
+            AnalysisTests.text(c, 200, 1100, rows: 0..<30)
+        }
+        let f = try #require(GrayBuffer(cgImage: foreEdge)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(f.crop.minX > 150.0 / 1300)
+    }
+
+    @Test("A thin scan-edge line below the text is not content; a footer line and a folio are")
+    func scanEdgeLine() throws {
+        let page = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 200, 1100, rows: 0..<30)                      // ends near y = 2000 - 1100
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            c.fill(CGRect(x: 100, y: 60, width: 1000, height: 3))                // the scan's edge, low down
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxY < 0.92, "bottom \(r.crop.maxY)")   // the text ends at 0.884
+
+        let footer = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 200, 1100, rows: 0..<30)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            c.fill(CGRect(x: 300, y: 120, width: 700, height: 14))               // a printer's line at the foot
+            c.fill(CGRect(x: 640, y: 60, width: 20, height: 14))                 // and a folio
+        }
+        let f = try #require(GrayBuffer(cgImage: footer)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(f.crop.maxY > 1 - 60.0 / 2000, "bottom \(f.crop.maxY)")
+    }
+
+    @Test("A running foot set off to the side below the text stays inside the crop")
+    func runningFootKept() throws {
+        let page = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 500, 1150, rows: 0..<30)                       // the text column, right of center
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            var x = 120
+            while x < 440 { c.fill(CGRect(x: x, y: 180, width: 9, height: 14)); x += 9 + 15 }   // letterspaced small caps
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.minX <= 120.0 / 1300, "left \(r.crop.minX)")
+        #expect(r.crop.maxY >= 1 - 180.0 / 2000, "bottom \(r.crop.maxY)")
     }
 
     @Test("A page's crop never reaches past the split into the facing page")
@@ -216,5 +396,107 @@ struct AnalysisTests {
         #expect(title.width > usual.width * 0.8)
         // Ordinary pages keep their own detected crops.
         #expect(m.pages[1].rightCrop.height > 0.7)
+    }
+
+    @Test("Tiny and degenerate images don't crash (Codex GPT-6.1-Sol review)")
+    func degenerateImages() throws {
+        for (w, h) in [(1, 1), (100, 1), (1, 100), (2, 2), (3, 800)] {
+            let g = try #require(GrayBuffer(cgImage: Fixtures.image(w, h)))
+            _ = PageAnalyzer.contentBounds(g, xRange: 0.0..<1.0)
+            _ = PageAnalyzer.contentBounds(g, xRange: 0.5..<0.5000001)
+            _ = PageAnalyzer.detectGutter(g)
+            _ = DeskewDetector.detect(Fixtures.image(w, h))
+        }
+        // Rows pass but no column does: two dots, far apart vertically.
+        let dots = Fixtures.image(800, 800) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 300, y: 200, width: 9, height: 1)); c.fill(CGRect(x: 300, y: 600, width: 9, height: 1))
+        }
+        _ = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: dots)), xRange: 0.0..<1.0)
+    }
+
+    @Test("Marginal line numbers and a printed rule stay; a pale grey shadow is not followed")
+    func marginsReviewCases() throws {
+        // Line numbers in a narrow column of the margin, every few lines.
+        let numbered = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 330, 1150, rows: 0..<30)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in stride(from: 0, to: 30, by: 3) { c.fill(CGRect(x: 160, y: 1300 - 140 - r * 32, width: 16, height: 9)) }
+        }
+        let n = try #require(GrayBuffer(cgImage: numbered)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(n.crop.minX <= 160.0 / 1300, "left \(n.crop.minX)")
+
+        // A printed rule under a heading, well inside the page.
+        let ruled = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 200, 1100, rows: 4..<30)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            c.fill(CGRect(x: 200, y: 1300 - 60, width: 900, height: 4))
+        }
+        let rr = try #require(GrayBuffer(cgImage: ruled)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(rr.crop.minY <= 1 - (1300.0 - 56) / 2000, "top \(rr.crop.minY)")
+
+        // A light grey shadow (paler than ink, darker than paper) beside the text.
+        let shaded = Fixtures.image(1300, 2000) { c in
+            AnalysisTests.text(c, 150, 975, rows: 0..<30)
+            c.setFillColor(CGColor(gray: 0.8, alpha: 1)); c.fill(CGRect(x: 990, y: 0, width: 310, height: 2000))
+        }
+        let sh = try #require(GrayBuffer(cgImage: shaded)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(sh.crop.maxX < 1050.0 / 1300, "right \(sh.crop.maxX)")
+    }
+
+    @Test("A page whose only ink is one outlined box can still be straightened from it")
+    func boxOnlyPage() {
+        let page = Fixtures.image(1000, 1000) { c in
+            c.setStrokeColor(CGColor(gray: 0, alpha: 1)); c.setLineWidth(4)
+            c.stroke(CGRect(x: 200, y: 200, width: 600, height: 600))
+        }
+        let turned = ImageTransform.rotateInPlace(page, degrees: 1.0, pivot: CGPoint(x: 0.5, y: 0.5))
+        #expect(abs(DeskewDetector.detect(turned, excludeCenterBand: false) + 1.0) <= 0.15)
+    }
+
+    @Test("Any page and any region: no crash, and the crop stays inside its region")
+    func randomPages() throws {
+        var rng = SplitMix(seed: 42)
+        for _ in 0..<300 {
+            let w = Int.random(in: 1...1400, using: &rng), h = Int.random(in: 1...1400, using: &rng)
+            let page = Fixtures.image(w, h) { c in
+                if Bool.random(using: &rng) {                                  // tinted paper
+                    c.setFillColor(CGColor(gray: Double.random(in: 0.5...0.95, using: &rng), alpha: 1))
+                    c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                }
+                for _ in 0..<Int.random(in: 0...6, using: &rng) {             // blocks, bands, streaks, specks
+                    c.setFillColor(CGColor(gray: Double.random(in: 0...0.8, using: &rng), alpha: 1))
+                    let bw = Int.random(in: 1...max(1, w / 2), using: &rng), bh = Int.random(in: 1...h, using: &rng)
+                    c.fill(CGRect(x: Int.random(in: -bw...w, using: &rng), y: Int.random(in: -bh...h, using: &rng), width: bw, height: bh))
+                }
+                for row in 0..<Int.random(in: 0...40, using: &rng) {           // lines of "text"
+                    let x0 = Int.random(in: 0...w, using: &rng)
+                    c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+                    c.fill(CGRect(x: x0, y: h - 20 - row * 14, width: Int.random(in: 1...w, using: &rng), height: 6))
+                }
+            }
+            let g = try #require(GrayBuffer(cgImage: page))
+            let a = Double.random(in: 0...0.999, using: &rng), b = Double.random(in: (a + 0.0001)...1, using: &rng)
+            let r = PageAnalyzer.contentBounds(g, xRange: a..<b)
+            if b - a >= 0.02 {
+                #expect(r.crop.minX >= a - 1e-9 && r.crop.maxX <= b + 1e-9, "\(r.crop) in \(a)..<\(b), \(w)x\(h)")
+            }
+            #expect(r.crop.minY >= -1e-9 && r.crop.maxY <= 1 + 1e-9)
+            _ = PageAnalyzer.analyze(cgImage: page)
+            _ = AppModel.detectSkews(page, splitX: Double.random(in: 0.01...0.99, using: &rng), isSpread: w > h)
+        }
+    }
+}
+
+/// A small seeded random number generator, so a failing case can be rerun.
+struct SplitMix: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
     }
 }

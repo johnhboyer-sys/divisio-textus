@@ -26,13 +26,17 @@ macOS may offload build files and stall the build; pass
 ## Test
 
 ```sh
-swift test
+swift test -c release -Xswiftc -enable-testing
 ```
 
-About 22 tests (~1 minute) covering rendering (crop boxes, rotation), spread
-straightening, gray detection, scan-resolution detection, export (page size,
-cancel, reading order, skipped pages) and editing (undo/redo, autosave,
-re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
+Run the tests as an optimized build: the image analysis is pixel loops, which a
+debug build runs many times slower (plain `swift test` works but takes minutes).
+About 54 tests (~20 seconds plus the build) covering page analysis (splits,
+crops, scanner bands, shadows, the book block's edge, a speck or hairline on a
+blank page, 300 random pages), straightening (known turns, two columns, sparse
+lines, tinted paper, pictures beside text), rendering, gray detection,
+scan-resolution detection, export (page size, cancel, reading order, skipped
+pages) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
 a temporary folder, never your real ones. OCR isn't covered: Vision is too slow
 and erratic for an automated suite.
 
