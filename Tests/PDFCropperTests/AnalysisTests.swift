@@ -160,6 +160,27 @@ struct AnalysisTests {
         #expect(blank.rightCrop.minX >= blank.splitX - 0.015)
     }
 
+    @Test("Whole pages too: a blank page keeps the book's split, and both its pages fit it")
+    @MainActor
+    func blankPageWholePage() async throws {
+        let images = (0..<5).map { i in Self.wallaceSpread(blankLeft: i == 2) }
+        let media = CGRect(x: 0, y: 0, width: 1000, height: 650)
+        let url = Fixtures.writePDF("blankwhole-\(UUID().uuidString).pdf", media: media,
+                                    pages: images.map { img in { $0.draw(img, in: media) } })
+        let m = testModel()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        m.setCropTarget(.page)
+        await waitUntilIdle(m)
+        let blank = m.pages[2], split = blank.splitX
+        #expect(abs(split - m.pages[0].splitX) < 0.02)
+        // The band and streaks end at 0.1375; each page runs to the split.
+        #expect(abs(blank.leftCrop.minX - 0.1375) < 0.01 && blank.leftCrop.maxX <= split + 0.001 && blank.leftCrop.maxX > split - 0.01,
+                "left \(blank.leftCrop), split \(split)")
+        #expect(blank.rightCrop.minX >= split - 0.001 && blank.rightCrop.minX < split + 0.01 && blank.rightCrop.maxX > 0.99,
+                "right \(blank.rightCrop), split \(split)")
+    }
+
     @Test("A stray hairline alone is not content; a thin rule or line of text is",
           arguments: [(1, true), (2, true), (3, false), (5, false)])
     func hairline(thickness: Int, blank: Bool) throws {

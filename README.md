@@ -31,9 +31,10 @@ swift test -c release -Xswiftc -enable-testing
 
 Run the tests as an optimized build: the image analysis is pixel loops, which a
 debug build runs many times slower (plain `swift test` works but takes minutes).
-About 54 tests (~20 seconds plus the build) covering page analysis (splits,
+About 78 tests (~20 seconds plus the build) covering page analysis (splits,
 crops, scanner bands, shadows, the book block's edge, a speck or hairline on a
-blank page, 300 random pages), straightening (known turns, two columns, sparse
+blank page, 300 random pages), whole-page crops (the sheet on a dark scanner bed,
+a black fold, the corners straightening leaves empty), straightening (known turns, two columns, sparse
 lines, tinted paper, pictures beside text), rendering, gray detection,
 scan-resolution detection, export (page size, cancel, reading order, skipped
 pages) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
@@ -73,7 +74,10 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    trimming dark scanner bands along the edges first (even behind a thin light
    strip, with ragged streaks). When analysis finishes, blank and nearly empty
    pages (part titles, chapter ends) get the book's usual crop and split, so
-   every page comes out a matching size.
+   every page comes out a matching size. **Crop to: Whole page** crops to the
+   sheet of paper instead, margins included: it leaves out the scanner
+   background around the sheet and a black fold at the gutter, and keeps clear
+   of the corners straightening leaves empty (but never cuts printed text).
 5. **Edit** in the UI: drag the orange split line, drag/resize the blue (left) and
    green (right) crop boxes, right-click a thumbnail to change its type.
    "Apply layout to all spreads" copies one spread's layout everywhere; for

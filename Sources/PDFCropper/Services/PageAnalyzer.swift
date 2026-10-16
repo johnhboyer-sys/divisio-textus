@@ -17,8 +17,31 @@ enum PageAnalyzer {
 
     /// Analyze one rendered page. `forced` (spread or single) overrides the
     /// automatic guess, e.g. when the user changes a page's type; `split` keeps a
-    /// gutter already found instead of looking for it again.
-    static func analyze(cgImage: CGImage, as forced: PageClassification? = nil, split: Double? = nil) -> Result {
+    /// gutter already found instead of looking for it again. `target` says what
+    /// the crops take in; for whole pages, `turns` are the angles each side of
+    /// `cgImage` was straightened by, so the crops keep clear of the corners
+    /// the turn left empty.
+    static func analyze(cgImage: CGImage, as forced: PageClassification? = nil, split: Double? = nil,
+                        target: CropTarget = .text, turns: (left: Double, right: Double) = (0, 0)) -> Result {
+        var r = analyzeText(cgImage: cgImage, as: forced, split: split)
+        guard target == .page, let g = GrayBuffer(cgImage: cgImage) else { return r }
+        // Never less than the text block: on a tight scan turned a long way, the
+        // corners left empty can reach into the printed text, and text beats a
+        // clean corner.
+        func page(_ side: Range<Double>, _ turned: Double, _ text: CropRect, _ blank: Bool) -> CropRect {
+            let paper = paperBounds(g, xRange: side, turned: turned)
+            return blank ? paper : paper.union(text)
+        }
+        if r.classification == .spread {
+            r.leftCrop = page(0..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
+            r.rightCrop = page(r.splitX..<1, turns.right, r.rightCrop, r.rightBlank)
+        } else {
+            r.leftCrop = page(0..<1, turns.left, r.leftCrop, r.leftBlank)
+        }
+        return r
+    }
+
+    private static func analyzeText(cgImage: CGImage, as forced: PageClassification?, split: Double?) -> Result {
         guard let gray = GrayBuffer(cgImage: cgImage) else {
             return Result(classification: .spread,
                           splitX: 0.5,
@@ -164,6 +187,89 @@ enum PageAnalyzer {
         found.crop.width = max(0, min(found.crop.maxX, xRange.upperBound) - x0)
         found.crop.x = x0
         return found
+    }
+
+    /// The sheet of paper within a horizontal sub-range of the page, margins
+    /// included: everything but the scanner background around it (a black band,
+    /// a dark lid, the book block's streaks beside it) and a black fold at the
+    /// gutter. A scan cut at the paper's edge is all page. `turned` is the angle
+    /// the region was straightened by, about its own center; the crop keeps clear
+    /// of the corners that turn left empty.
+    static func paperBounds(_ g: GrayBuffer, xRange: Range<Double>, turned degrees: Double = 0) -> CropRect {
+        let x0 = max(0, Int(Double(g.width) * xRange.lowerBound))
+        let x1 = min(g.width, Int(Double(g.width) * xRange.upperBound))
+        guard x1 > x0, g.height > 0 else {
+            return CropRect(x: xRange.lowerBound, y: 0, width: max(0, xRange.upperBound - xRange.lowerBound), height: 1)
+        }
+
+        // Which pixels the turn filled in: those outside the turned rectangle.
+        let cx = Double(x0 + x1) / 2, cy = Double(g.height) / 2
+        let hw = Double(x1 - x0) / 2, hh = Double(g.height) / 2
+        let turned = abs(degrees) > 0.01
+        let rad = degrees * .pi / 180, cosT = cos(rad), sinT = sin(rad)
+        func scanned(_ x: Int, _ y: Int) -> Bool {
+            guard turned else { return true }
+            let dx = Double(x) + 0.5 - cx, dy = cy - (Double(y) + 0.5)      // y up, as the turn was made
+            return abs(dx * cosT + dy * sinT) <= hw - 1.5 && abs(-dx * sinT + dy * cosT) <= hh - 1.5
+        }
+
+        // Background is far darker than the paper; ink is too, but no line of
+        // print is dark nearly end to end.
+        let dark = g.paperLevel(columns: x0..<x1) * 0.5
+        func share(_ pixels: [(Int, Int)]) -> Double? {
+            var n = 0, d = 0
+            for (x, y) in pixels where scanned(x, y) { n += 1; if Double(g.value(x, y)) < dark { d += 1 } }
+            return n * 2 >= pixels.count ? Double(d) / Double(n) : nil      // nil: mostly filled in
+        }
+        // Walk in from an edge past background lines, allowing short gaps between
+        // them (the book block's streaks) and a light strip before the first (the
+        // scanner glass's border). Returns the first line of paper.
+        func paperStart(from start: Int, toward end: Int, line: (Int) -> Double?) -> Int {
+            let step = end >= start ? 1 : -1, span = abs(end - start)
+            let leadIn = max(1, span * 3 / 100), maxGap = max(1, span * 15 / 1000)
+            var last: Int?, i = start
+            while i != end {
+                if let s = line(i) {
+                    if s >= 0.9 { last = i }
+                    else if let l = last { if abs(i - l) > maxGap { break } }
+                    else if abs(i - start) > leadIn { break }
+                }
+                i += step
+            }
+            return last.map { $0 + step } ?? start
+        }
+
+        // Columns, then rows within them, twice over: a sheet short of the scan's
+        // height leaves background above and below every column at first.
+        var left = x0, right = x1, top = 0, bottom = g.height
+        for _ in 0..<2 {
+            let ys = top..<bottom
+            left = paperStart(from: x0, toward: x1) { x in share(ys.map { (x, $0) }) }
+            right = max(left, paperStart(from: x1 - 1, toward: left - 1) { x in share(ys.map { (x, $0) }) } + 1)
+            let xs = left..<right
+            top = paperStart(from: 0, toward: g.height) { y in share(xs.map { ($0, y) }) }
+            bottom = max(top, paperStart(from: g.height - 1, toward: top - 1) { y in share(xs.map { ($0, y) }) } + 1)
+        }
+
+        // Keep inside the largest upright box the turned scan still covers: half
+        // sizes (a, b) with both of its corners' constraints just met,
+        // a·cos + b·sin = w/2 and a·sin + b·cos = h/2 (less a pixel and a half).
+        // Straightening turns a few degrees; past 45° no upright box is meant.
+        if turned {
+            let c = abs(cosT), s = abs(sinT), W = hw - 1.5, H = hh - 1.5
+            let a = c > s ? (W * c - H * s) / (c * c - s * s) : 0, b = c > s ? (H * c - W * s) / (c * c - s * s) : 0
+            left = max(left, Int((cx - a).rounded(.up))); right = min(right, Int((cx + a).rounded(.down)))
+            top = max(top, Int((cy - b).rounded(.up))); bottom = min(bottom, Int((cy + b).rounded(.down)))
+        }
+        guard right > left, bottom > top else {
+            return CropRect(x: xRange.lowerBound, y: 0, width: max(0, xRange.upperBound - xRange.lowerBound), height: 1)
+        }
+        // An edge that stayed at the region's own edge is exactly that edge.
+        let minX = left == x0 ? xRange.lowerBound : Double(left) / Double(g.width)
+        let maxX = right == x1 ? xRange.upperBound : Double(right) / Double(g.width)
+        let minY = top == 0 ? 0 : Double(top) / Double(g.height)
+        let maxY = bottom == g.height ? 1 : Double(bottom) / Double(g.height)
+        return CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     private static func findContent(_ g: GrayBuffer, xRange: Range<Double>) -> (crop: CropRect, blank: Bool) {

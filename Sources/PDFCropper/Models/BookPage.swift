@@ -99,3 +99,16 @@ enum ReadingDirection: String, Codable, CaseIterable, Identifiable {
         }
     }
 }
+
+/// What auto-detection crops each book page to.
+enum CropTarget: String, Codable, CaseIterable, Identifiable {
+    case text       // the printed text block, with a little room
+    case page       // the whole sheet of paper, margins included
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .text: return "Text block"
+        case .page: return "Whole page"
+        }
+    }
+}

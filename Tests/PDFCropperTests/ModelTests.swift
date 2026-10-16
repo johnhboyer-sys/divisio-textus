@@ -179,6 +179,64 @@ struct ModelTests {
         #expect(m.pages.allSatisfy { $0.analyzed })
     }
 
+    @Test("Crop to whole page re-detects every page; undo, redo, and reopening keep the choice")
+    func cropToWholePage() async throws {
+        let (m, undo, url) = await loadedSample()
+        let i = firstSpread, text = m.pages[i].leftCrop
+        undoable(undo) { m.setCropTarget(.page) }
+        await waitUntilIdle(m)
+        #expect(m.cropTarget == .page)
+        // The sample book's scans are cut at the paper: a whole page is its half,
+        // less what straightening it turned out of view.
+        let whole = m.pages[i].leftCrop, split = m.pages[i].splitX
+        let size = try #require(m.document?.page(at: m.pages[i].sourceIndex)).bounds(for: .cropBox).size
+        let turn = abs(sin(m.pages[i].leftSkew * .pi / 180))
+        let dx = 0.5 * turn * size.height / size.width + 0.01, dy = 0.5 * turn * split * size.width / size.height + 0.01
+        #expect(whole.minX < dx && whole.maxX > split - dx && whole.maxX <= split && whole.minY < dy && whole.maxY > 1 - dy,
+                "whole page \(whole), turned \(m.pages[i].leftSkew)°")
+        #expect(whole.width > text.width && whole.height > text.height)
+        #expect(m.pages[0].leftCrop.width > 0.97, "single page \(m.pages[0].leftCrop)")
+        undo.undo()
+        #expect(m.cropTarget == .text && m.pages[i].leftCrop == text)
+        undo.redo()
+        await waitUntilIdle(m)
+        #expect(m.cropTarget == .page && m.pages[i].leftCrop == whole)
+        try await Task.sleep(nanoseconds: 1_200_000_000)    // autosave waits for a pause
+
+        let reopened = testModel()
+        reopened.load(url: url)
+        await waitUntilIdle(reopened)
+        #expect(reopened.cropTarget == .page && reopened.pages[i].leftCrop == whole)
+    }
+
+    @Test("Whole page keeps a blank sheet's own paper, though it is smaller than the book's")
+    func wholePageBlankSheet() async {
+        let media = CGRect(x: 0, y: 0, width: 600, height: 840)
+        func page(blank: Bool) -> (CGContext) -> Void {
+            { c in
+                if blank {                          // a smaller sheet on a dark scanner bed
+                    c.setFillColor(CGColor(gray: 0.05, alpha: 1)); c.fill(media)
+                    c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(CGRect(x: 120, y: 140, width: 360, height: 560))
+                } else {                            // text on a scan cut at the paper
+                    c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+                    c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+                    for i in 0..<30 { c.fill(CGRect(x: 80, y: 100 + i * 21, width: 440, height: 8)) }
+                }
+            }
+        }
+        let url = Fixtures.writePDF("sheets-\(UUID().uuidString).pdf", media: media,
+                                    pages: [page(blank: false), page(blank: false), page(blank: false), page(blank: true)])
+        let m = testModel()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        m.setCropTarget(.page)
+        await waitUntilIdle(m)
+        let c = m.pages[3].leftCrop
+        #expect(abs(c.minX - 0.2) < 0.01 && abs(c.maxX - 0.8) < 0.01 && abs(c.minY - 140.0 / 840) < 0.01 && abs(c.maxY - 700.0 / 840) < 0.01,
+                "blank sheet cropped to \(c)")
+        #expect(m.pages[0].leftCrop.width > 0.98, "full page cropped to \(m.pages[0].leftCrop)")
+    }
+
     @Test("Password-protected PDFs: locked without it, open with it")
     func passwords() {
         let locked = Fixtures.save(Fixtures.markedPage(), "locked.pdf",

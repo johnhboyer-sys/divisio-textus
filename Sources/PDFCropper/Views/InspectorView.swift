@@ -69,6 +69,14 @@ struct InspectorView: View {
                         Text(m.label).tag(m)
                     }
                 }
+                Picker("Crop to", selection: Binding(get: { model.cropTarget },
+                                                     set: { model.setCropTarget($0) })) {
+                    ForEach(CropTarget.allCases) { t in
+                        Text(t.label).tag(t)
+                    }
+                }
+                .disabled(model.isBusy)
+                .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
                 Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
 

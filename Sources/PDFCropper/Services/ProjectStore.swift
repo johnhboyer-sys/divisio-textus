@@ -15,6 +15,8 @@ enum ProjectStore {
         var version = ProjectStore.currentVersion
         var pages: [BookPage]
         var direction: ReadingDirection
+        /// Absent in saves made before whole-page crops existed: text block.
+        var cropTarget: CropTarget?
     }
 
     /// Identifies a PDF by its size plus a hash of its first 4 MB: unique enough

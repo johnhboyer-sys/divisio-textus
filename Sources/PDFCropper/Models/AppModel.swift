@@ -13,6 +13,8 @@ final class AppModel: ObservableObject {
     @Published var selectedPageID: BookPage.ID?
 
     @Published var direction: ReadingDirection = .leftToRight
+    /// What auto-detection crops each book page to (see setCropTarget).
+    @Published private(set) var cropTarget: CropTarget = .text
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
@@ -153,6 +155,7 @@ final class AppModel: ObservableObject {
            saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
             pages = saved.pages
             direction = saved.direction
+            cropTarget = saved.cropTarget ?? .text   // what these edits were made with; a new PDF keeps the current choice
             statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
         } else {
             pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
@@ -270,8 +273,8 @@ final class AppModel: ObservableObject {
 
     /// Classify a rendered page (or use `forced`), find its gutter and each side's
     /// skew, then find the crops on the straightened image so they line up.
-    nonisolated static func analyzePage(_ cg: CGImage, deskew: Bool,
-                                                as forced: PageClassification? = nil) -> Analysis {
+    nonisolated static func analyzePage(_ cg: CGImage, deskew: Bool, as forced: PageClassification? = nil,
+                                        target: CropTarget = .text) -> Analysis {
         let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced)
         let spread = r0.classification == .spread
         let skews = deskew ? detectSkews(cg, splitX: r0.splitX, isSpread: spread) : (left: 0.0, right: 0.0)
@@ -279,7 +282,8 @@ final class AppModel: ObservableObject {
             cg, splitX: r0.splitX, leftDegrees: skews.left, rightDegrees: skews.right, isSpread: spread)
         // Keep the gutter found on the scan: the straightened image is cut there,
         // and turning each half tilts a binding shadow so it can't be found again.
-        let r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification, split: r0.splitX)
+        let r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification, split: r0.splitX,
+                                      target: target, turns: skews)
         return Analysis(leftSkew: skews.left, rightSkew: skews.right, result: r1)
     }
 
@@ -302,7 +306,7 @@ final class AppModel: ObservableObject {
         let run = analysisRun
         setByAnalysis = [:]
         isAnalyzing = true
-        let deskew = autoDeskewEnabled
+        let deskew = autoDeskewEnabled, target = cropTarget
         let password = documentPassword
         Task.detached { [previewDPI] in
             // A separate PDFDocument: PDFKit can't draw one document from two threads,
@@ -313,7 +317,7 @@ final class AppModel: ObservableObject {
                 let analysis = autoreleasepool { () -> Analysis? in
                     guard let pdfPage = doc?.page(at: index),
                           let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return nil }
-                    return Self.analyzePage(cg, deskew: deskew)
+                    return Self.analyzePage(cg, deskew: deskew, target: target)
                 }
                 let stillCurrent = await MainActor.run { () -> Bool in
                     // A different PDF was opened, or a newer pass started: stand down.
@@ -344,7 +348,9 @@ final class AppModel: ObservableObject {
     /// by. Give those the book's usual split and crop instead, keeping each crop
     /// on its own side of the split. Only the pages in `sides` (what an analysis
     /// pass just set, with which of their sides it found blank) are changed,
-    /// never anything edited by hand.
+    /// never anything edited by hand. Whole-page crops are the paper, found
+    /// whether or not anything is printed on it: only a spread whose split had
+    /// to move gets the book's usual crops, which its old ones no longer fit.
     private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: (leftBlank: Bool, rightBlank: Bool)]) {
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
         func usual(_ crops: [CropRect]) -> CropRect? {
@@ -362,6 +368,8 @@ final class AppModel: ObservableObject {
             guard let found = sides[pages[i].id] else { return false }
             return left ? found.leftBlank : found.rightBlank
         }
+        let wholePage = cropTarget == .page
+        var moved = Set<Int>()
         if spreads.count >= 3 {
             let usualSplit = median(spreads.map { pages[$0].splitX })
             // Only where a blank page left no gap to find the gutter by; a book's
@@ -369,19 +377,20 @@ final class AppModel: ObservableObject {
             for i in candidates(spreads) where abs(pages[i].splitX - usualSplit) > 0.06
                 && (blank(i, left: true) || blank(i, left: false)) {
                 pages[i].splitX = usualSplit
+                moved.insert(i)
             }
         }
         if let u = usual(spreads.map { pages[$0].leftCrop }) {
-            for i in candidates(spreads) where tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
-                var c = blank(i, left: true) ? u : u.union(pages[i].leftCrop)   // keep what was found
+            for i in candidates(spreads) where wholePage ? moved.contains(i) : tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
+                var c = wholePage || blank(i, left: true) ? u : u.union(pages[i].leftCrop)   // keep what was found
                 c.width = min(c.width, pages[i].splitX - c.x)           // stay left of the split
                 c.normalize()
                 pages[i].leftCrop = c
             }
         }
         if let u = usual(spreads.map { pages[$0].rightCrop }) {
-            for i in candidates(spreads) where tooSmall(pages[i].rightCrop, u) || blank(i, left: false) {
-                var c = blank(i, left: false) ? u : u.union(pages[i].rightCrop)
+            for i in candidates(spreads) where wholePage ? moved.contains(i) : tooSmall(pages[i].rightCrop, u) || blank(i, left: false) {
+                var c = wholePage || blank(i, left: false) ? u : u.union(pages[i].rightCrop)
                 if c.x < pages[i].splitX {                               // stay right of the split
                     c.width -= pages[i].splitX - c.x
                     c.x = pages[i].splitX
@@ -390,7 +399,7 @@ final class AppModel: ObservableObject {
                 pages[i].rightCrop = c
             }
         }
-        if let u = usual(singles.map { pages[$0].leftCrop }) {
+        if !wholePage, let u = usual(singles.map { pages[$0].leftCrop }) {
             for i in candidates(singles) where tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
                 pages[i].leftCrop = blank(i, left: true) ? u : u.union(pages[i].leftCrop)
             }
@@ -401,7 +410,7 @@ final class AppModel: ObservableObject {
     private func reanalyze(_ idx: Int, as forced: PageClassification? = nil) {
         guard let doc = document, let pdfPage = doc.page(at: pages[idx].sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-        let analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced)
+        let analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced, target: cropTarget)
         apply(analysis, to: idx)
         // The same book-wide treatment the full pass gives a blank or nearly
         // empty page, so re-detecting one page gives what opening the book gave.
@@ -483,6 +492,18 @@ final class AppModel: ObservableObject {
         analyzeAll()
     }
 
+    /// Crop every page to its text block or to the whole page: switching
+    /// re-detects all pages, and undo puts back both the pages and the choice.
+    func setCropTarget(_ target: CropTarget) {
+        guard target != cropTarget, !isBusy else { return }
+        guard document != nil else { cropTarget = target; return }
+        let before = pages, old = cropTarget
+        cropTarget = target
+        for i in pages.indices { pages[i].analyzed = false }
+        registerUndo(restoring: before, actionName: "Crop to \(target.label)", cropTarget: old)
+        analyzeAll()
+    }
+
     func zoomIn() { zoom = min(8, zoom * 1.25) }
     func zoomOut() { zoom = max(1, zoom / 1.25) }
     func zoomToFit() { zoom = 1 }
@@ -545,17 +566,20 @@ final class AppModel: ObservableObject {
     }
 
     /// Undo puts back only the pages the edit changed, so it never reverts
-    /// analysis results that arrived after the edit.
-    private func registerUndo(restoring saved: [BookPage], actionName: String) {
+    /// analysis results that arrived after the edit. An edit that changed the
+    /// crop target passes the one it replaced, to be put back first.
+    private func registerUndo(restoring saved: [BookPage], actionName: String, cropTarget savedTarget: CropTarget? = nil) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 let current = saved.compactMap { p in model.pages.first { $0.id == p.id } }
+                let currentTarget = savedTarget.map { _ in model.cropTarget }
+                if let savedTarget { model.cropTarget = savedTarget }
                 for p in saved {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                     model.setByAnalysis[p.id] = nil
                 }
-                model.registerUndo(restoring: current, actionName: actionName)  // redo
+                model.registerUndo(restoring: current, actionName: actionName, cropTarget: currentTarget)  // redo
                 // Undoing or redoing "Re-detect All Pages" can bring back pages that
                 // still need analysis; start a fresh pass for them.
                 if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }
@@ -655,7 +679,7 @@ final class AppModel: ObservableObject {
 
     private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {
         guard let key = projectKey, !pages.isEmpty else { return }
-        let saved = ProjectStore.Saved(pages: pages, direction: direction)
+        let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget)
         if wait {
             saveQueue.sync { ProjectStore.save(saved, key: key) }
         } else {
