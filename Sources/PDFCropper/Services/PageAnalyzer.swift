@@ -268,7 +268,7 @@ enum PageAnalyzer {
         func slantedShadowEnd(from start: Int, step: Int) -> Int? {
             let depth = max(4, spanW * 8 / 100), wedge = depth / 2
             func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
-            var ends: [Int] = [], sampled = 0
+            var ends: [(y: Double, end: Double)] = [], sampled = 0
             for y in stride(from: 0, to: g.height, by: 2) {
                 sampled += 1
                 var x = start, k = 0
@@ -280,11 +280,24 @@ enum PageAnalyzer {
                     x += step; k += 1
                 }
                 guard k < depth && inside(x) else { return nil }     // ink running deep: not a shadow
-                ends.append(abs(x - start))
+                ends.append((Double(y), Double(abs(x - start))))
             }
             guard !ends.isEmpty, ends.count * 10 >= sampled * 8 else { return nil }   // 80% of rows; text reaches about half
-            ends.sort()
-            return start + step * ends[ends.count * 95 / 100]
+            // The shadow's inner edge is a straight line, slanted or not; rows where
+            // letters touch the shadow run deeper. Fit the line without them and
+            // cut just past its deepest point, so those letters stay.
+            var kept = ends, fit = (a: 0.0, b: 0.0)
+            for _ in 0..<3 {
+                let n = Double(kept.count), sy = kept.reduce(0) { $0 + $1.y }, se = kept.reduce(0) { $0 + $1.end }
+                let syy = kept.reduce(0) { $0 + $1.y * $1.y }, sye = kept.reduce(0) { $0 + $1.y * $1.end }
+                let b = n * syy - sy * sy > 0 ? (n * sye - sy * se) / (n * syy - sy * sy) : 0
+                fit = ((se - b * sy) / n, b)
+                let next = kept.filter { $0.end <= fit.a + fit.b * $0.y + 2 }
+                guard next.count >= ends.count / 2, next.count < kept.count else { break }
+                kept = next
+            }
+            let deepest = max(fit.a, fit.a + fit.b * Double(g.height - 1)) + 2
+            return start + step * Int(min(Double(depth), deepest).rounded(.up))
         }
         if bx1 - bx0 > spanW / 2 {
             // From the region's own edge: the column test may have taken part of it.
@@ -349,7 +362,7 @@ enum PageAnalyzer {
         // beside a scanner band or at the fold) is a narrow cluster of tall ink
         // at the very edge of what was found, then a clear gap before the text.
         // A folio is short and a column of line numbers is wide; they stay.
-        var leftLimit = bx0, rightLimit = bx1 - 1
+        var leftLimit = x0, rightLimit = x1 - 1
         if right > left {
             let isContent = { (x: Int) in columnDark[x - bx0] > Int(Double(contentHeight) * minRunFraction) }
             let narrow = max(2, (bx1 - bx0) / 50), clear = max(3, (bx1 - bx0) / 50)
@@ -362,15 +375,23 @@ enum PageAnalyzer {
             }
             func strip(from start: Int, step: Int) -> Int? {
                 var x = start, last = start, tallest = 0, longest = 0
+                var rowsInked = Set<Int>()
                 while (x - start) * step <= narrow + 2 && x >= left && x <= right {
-                    if isContent(x) { last = x; tallest = max(tallest, columnDark[x - bx0]); longest = max(longest, longestRunDown(x)) }
+                    if isContent(x) {
+                        last = x; tallest = max(tallest, columnDark[x - bx0]); longest = max(longest, longestRunDown(x))
+                        for y in by0..<by1 where Double(g.value(x, y)) < threshold { rowsInked.insert(y) }
+                    }
                     x += step
                 }
+                // Or a dashed streak: ink in at least half the rows over a long span
+                // (line numbers fill a few percent of theirs).
+                let span = (rowsInked.max() ?? 0) - (rowsInked.min() ?? 0) + 1
+                let dashed = Double(span) >= 0.3 * Double(by1 - by0) && rowsInked.count * 2 >= span
                 // Tall, or right at the scan's own border (nothing printed sits
                 // there with a clear gap inside it), however short.
                 let border = max(2, (bx1 - bx0) * 15 / 1000)
                 let atBorder = step > 0 ? last - bx0 <= border : bx1 - 1 - last <= border
-                let streak = Double(tallest) >= 0.12 * Double(by1 - by0) && Double(longest) >= 0.04 * Double(by1 - by0)
+                let streak = Double(tallest) >= 0.12 * Double(by1 - by0) && (Double(longest) >= 0.04 * Double(by1 - by0) || dashed)
                 guard (last - start) * step <= narrow, streak || atBorder else { return nil }
                 var next = last + step
                 while next >= left && next <= right && !isContent(next) { next += step }
@@ -429,10 +450,31 @@ enum PageAnalyzer {
             // Paler ink counts here (tiny type's thin strokes): this only ever
             // extends from text already found, so paper grain can't start it.
             let pale = paper * 0.85
-            // A column pale over half its height is shading, not a line's tail.
+            // Past a trimmed band or shadow, letters can still be printed over the
+            // shadow's paler part: there a pixel is ink when it is clearly darker
+            // than the brightest pixel near it in its row (a smooth shadow never is).
+            // A shadow is no valley: inside one, only a pixel clearly darker than
+            // the brightest pixel on each side of it within a few pixels is ink.
+            func valley(_ x: Int, _ y: Int) -> Bool {
+                var leftMax: UInt8 = 0, rightMax: UInt8 = 0
+                for xx in max(x0, x - 6)..<x { leftMax = max(leftMax, g.value(xx, y)) }
+                for xx in min(x1, x + 1)..<min(x1, x + 7) { rightMax = max(rightMax, g.value(xx, y)) }
+                return Double(g.value(x, y)) < 0.7 * Double(min(leftMax, rightMax))   // print, not mottling
+            }
+            func isInk(_ x: Int, _ y: Int) -> Bool {
+                guard x < bx0 || x >= bx1 else { return Double(g.value(x, y)) < pale }
+                return valley(x, y)
+            }
+            // A column inked over half its height is shading, not a line's tail.
+            // Inside a shadow, a stroke runs at least 3 pixels down; the shadow's
+            // own mottling leaves flecks of a pixel or two.
             func hasInk(_ x: Int) -> Bool {
-                let count = (top...bottom).filter { Double(g.value(x, $0)) < pale }.count
-                return count > 0 && count * 2 <= bottom - top + 1
+                let inShadow = x < bx0 || x >= bx1
+                var count = 0, run = 0, stroke = false
+                for y in top...bottom {
+                    if isInk(x, y) { count += 1; run += 1; if run >= 3 { stroke = true } } else { run = 0 }
+                }
+                return count > 0 && count * 2 <= bottom - top + 1 && (stroke || !inShadow)
             }
             var gap = 0, x = right + 1
             while x <= rightLimit && gap <= maxGap {
@@ -443,6 +485,60 @@ enum PageAnalyzer {
             while x >= leftLimit && gap <= maxGap {
                 if hasInk(x) { left = x; gap = 0 } else { gap += 1 }
                 x -= 1
+            }
+
+            // Marks printed on a trimmed shadow (line numbers in the margin, over
+            // the page's darkened edge) are found however far from the text they
+            // sit: columns of valley ink in short runs, more than one run down the
+            // page. A band's streaks run on; a speck is a single run.
+            func marks(_ x: Int) -> Bool {
+                // Runs at least 3 pixels tall (a digit's stroke; a shadow's mottling
+                // leaves flecks of a pixel or two), at most 3% of the page.
+                var count = 0, runs = 0, run = 0, longest = 0, all = 0
+                func close() { if run >= 3 { runs += 1; count += run; longest = max(longest, run) }; run = 0 }
+                for y in top...bottom {
+                    if valley(x, y) { run += 1; all += 1 } else { close() }
+                }
+                close()
+                return count >= max(3, Int(Double(bottom - top + 1) * minRunFraction)) && runs >= 2
+                    && all * 2 <= bottom - top + 1 && longest <= max(3, (by1 - by0) * 3 / 100)
+            }
+            // The trimmed zones: a band or shadow cut off the side, and any edge strip removed.
+            // A printed mark is several pixels wide; a fleck of dust is one.
+            func supported(_ x: Int) -> Bool { marks(x) && ((x > x0 && marks(x - 1)) || (x + 1 < x1 && marks(x + 1))) }
+            if let far = stride(from: x1 - 1, through: min(bx1, rightLimit + 1), by: -1).first(where: supported) {
+                right = max(right, far)
+            }
+            if let far = stride(from: x0, through: max(bx0 - 1, leftLimit - 1), by: 1).first(where: supported) {
+                left = min(left, far)
+            }
+        }
+
+        // A line of its own beside the text block (a running foot set off to the
+        // side, a folio, a caption): a band of content rows with nothing in the
+        // block's columns. Its small type can be too short for the column test.
+        // A speck is smaller than any line of type, and stays out.
+        if bottom > top && right >= left {
+            let rowLimit = Int(Double(bx1 - bx0) * minRunFraction)
+            let minThick = max(2, (by1 - by0) / 250), minWide = max(3, (bx1 - bx0) / 100)
+            var y = top
+            while y <= bottom {
+                guard (rowX0..<rowX1).filter({ Double(g.value($0, y)) < threshold }).count > rowLimit else { y += 1; continue }
+                var end = y
+                while end + 1 <= bottom && (rowX0..<rowX1).filter({ Double(g.value($0, end + 1)) < threshold }).count > rowLimit { end += 1 }
+                let inBlock = (y...end).contains { yy in (left...right).contains { Double(g.value($0, yy)) < threshold } }
+                if !inBlock && end - y + 1 >= minThick {
+                    // Its ink across the band, column by column: a line of type is
+                    // pieces side by side (letters, digits); dust is one piece.
+                    let inked = (bx0..<bx1).map { x in (y...end).contains { Double(g.value(x, $0)) < threshold } }
+                    var lo = Int.max, hi = Int.min, pieces = 0
+                    for (i, on) in inked.enumerated() where on {
+                        if i == 0 || !inked[i - 1] { pieces += 1 }
+                        lo = min(lo, bx0 + i); hi = max(hi, bx0 + i)
+                    }
+                    if pieces >= 2 && hi - lo + 1 >= minWide { left = min(left, lo); right = max(right, hi) }
+                }
+                y = end + 1
             }
         }
 

@@ -276,7 +276,7 @@ struct AnalysisTests {
     @Test("A running foot set off to the side below the text stays inside the crop")
     func runningFootKept() throws {
         let page = Fixtures.image(1300, 2000) { c in
-            AnalysisTests.text(c, 500, 1150, rows: 0..<30)                       // the text column, right of center
+            AnalysisTests.text(c, 500, 1150, rows: -20..<30)                     // a full-height text column, right of center
             c.setFillColor(CGColor(gray: 0.1, alpha: 1))
             var x = 120
             while x < 440 { c.fill(CGRect(x: x, y: 180, width: 9, height: 14)); x += 9 + 15 }   // letterspaced small caps
@@ -284,6 +284,65 @@ struct AnalysisTests {
         let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
         #expect(r.crop.minX <= 120.0 / 1300, "left \(r.crop.minX)")
         #expect(r.crop.maxY >= 1 - 180.0 / 2000, "bottom \(r.crop.maxY)")
+    }
+
+    @Test("Text running into a shadowed page edge keeps its last letters")
+    func textIntoShadowedEdge() throws {
+        let page = Fixtures.image(1300, 2000) { c in
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1)); c.fill(CGRect(x: 1290, y: 0, width: 10, height: 2000))  // the page edge's shadow
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<12 {                                                       // lines of letters running into it
+                var x = 150
+                while x < 1288 { c.fill(CGRect(x: x, y: 1300 - 140 - r * 32, width: min(7, 1288 - x), height: 9)); x += 7 + 5 }
+            }
+            AnalysisTests.text(c, 150, 1100, rows: 12..<36)
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX >= 1285.0 / 1300, "right \(r.crop.maxX)")
+    }
+
+    @Test("Letters printed over a darkening page edge stay; the bare shadow beyond them doesn't")
+    func lettersOverGradient() throws {
+        func page(lettersReachEdge: Bool) -> CGImage {
+            Fixtures.image(1300, 2000) { c in
+                for x in 1240..<1300 {                                              // darkening over the last 5%
+                    let d = Double(x - 1240) / 60
+                    c.setFillColor(CGColor(gray: 1 - 0.75 * d, alpha: 1)); c.fill(CGRect(x: x, y: 0, width: 1, height: 2000))
+                }
+                c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+                for r in 0..<36 {
+                    let end = lettersReachEdge && r < 10 ? 1290 : 1150
+                    var x = 150
+                    while x < end { c.fill(CGRect(x: x, y: 1300 - 140 - r * 32, width: min(7, end - x), height: 9)); x += 7 + 5 }
+                }
+            }
+        }
+        let reach = try #require(GrayBuffer(cgImage: page(lettersReachEdge: true))).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(reach.crop.maxX >= 1285.0 / 1300, "right \(reach.crop.maxX)")
+        let bare = try #require(GrayBuffer(cgImage: page(lettersReachEdge: false))).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(bare.crop.maxX < 1240.0 / 1300, "right \(bare.crop.maxX)")
+    }
+
+    @Test("Line numbers printed over a steep edge shadow stay; the shadow itself doesn't")
+    func lineNumbersOnShadow() throws {
+        func page(numbers: Bool) -> CGImage {
+            Fixtures.image(1300, 2000) { c in
+                for x in 1210..<1300 {                                              // a steep dark edge: paper to 25% grey
+                    let d = min(1, Double(x - 1210) / 40)
+                    c.setFillColor(CGColor(gray: 1 - 0.75 * d, alpha: 1)); c.fill(CGRect(x: x, y: 0, width: 1, height: 2000))
+                }
+                AnalysisTests.text(c, 150, 1180, rows: -20..<30)
+                guard numbers else { return }
+                c.setFillColor(CGColor(gray: 0.02, alpha: 1))
+                for r in stride(from: -18, to: 30, by: 5) {                          // "1020"-style numbers on the shadow
+                    for k in 0..<4 { c.fill(CGRect(x: 1215 + k * 11, y: 1300 - 140 - r * 32, width: 7, height: 12)) }
+                }
+            }
+        }
+        let with = try #require(GrayBuffer(cgImage: page(numbers: true))).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(with.crop.maxX >= 1255.0 / 1300, "right \(with.crop.maxX)")
+        let bare = try #require(GrayBuffer(cgImage: page(numbers: false))).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(bare.crop.maxX < 1215.0 / 1300, "right \(bare.crop.maxX)")
     }
 
     @Test("A page's crop never reaches past the split into the facing page")
@@ -452,6 +511,36 @@ struct AnalysisTests {
         }
         let turned = ImageTransform.rotateInPlace(page, degrees: 1.0, pivot: CGPoint(x: 0.5, y: 0.5))
         #expect(abs(DeskewDetector.detect(turned, excludeCenterBand: false) + 1.0) <= 0.15)
+    }
+
+    @Test("Dust doesn't pass for marks or a line; a dashed fore-edge streak is still edge (Codex review 2)")
+    func dustAndDashedStreak() throws {
+        func page(_ draw: (CGContext) -> Void) -> CGImage {
+            Fixtures.image(800, 800) { c in
+                c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+                for y in stride(from: 100, to: 700, by: 20) { c.fill(CGRect(x: 300, y: 800 - y - 8, width: 300, height: 8)) }   // text
+                draw(c)
+            }
+        }
+        // Two flecks in a trimmed shadow.
+        let flecks = page { c in
+            c.setFillColor(CGColor(gray: 100.0 / 255, alpha: 1)); c.fill(CGRect(x: 760, y: 0, width: 40, height: 800))
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 790, y: 800 - 203, width: 1, height: 3)); c.fill(CGRect(x: 790, y: 800 - 303, width: 1, height: 3))
+        }
+        let f = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: flecks)), xRange: 0.0..<1.0)
+        #expect(f.crop.maxX < 0.8, "right \(f.crop.maxX)")
+        // A small dust patch between lines, off to the side.
+        let patch = page { c in c.setFillColor(CGColor(gray: 0, alpha: 1)); c.fill(CGRect(x: 100, y: 800 - 113, width: 9, height: 3)) }
+        let p = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: patch)), xRange: 0.0..<1.0)
+        #expect(p.crop.minX > 0.3, "left \(p.crop.minX)")
+        // A dashed streak down the left: the book block's edge, broken up.
+        let dashed = page { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 100, to: 700, by: 30) { c.fill(CGRect(x: 50, y: 800 - y - 20, width: 2, height: 20)) }
+        }
+        let d = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: dashed)), xRange: 0.0..<1.0)
+        #expect(d.crop.minX > 0.3, "left \(d.crop.minX)")
     }
 
     @Test("Any page and any region: no crash, and the crop stays inside its region")
