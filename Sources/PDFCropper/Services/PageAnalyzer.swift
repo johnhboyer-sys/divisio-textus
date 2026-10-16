@@ -265,10 +265,13 @@ enum PageAnalyzer {
         // Fallback to the full sub-range if we found nothing.
         // Nothing found (a blank page): the page area left once bands are trimmed.
         // A box under 3% of the page in both directions is a speck of dust, not
-        // content (a one-line title is far wider): treat the page as blank.
+        // content (a one-line title is far wider), and so is one at most 2 px
+        // thick (a stray scan line; at analysis size, 800 px at most, no line of
+        // text or printed rule is that thin): treat the page as blank.
+        let boxW = right - left + 1, boxH = bottom - top + 1
         let speck = right >= left && bottom >= top
-            && Double(right - left + 1) < 0.03 * Double(bx1 - bx0)
-            && Double(bottom - top + 1) < 0.03 * Double(by1 - by0)
+            && ((Double(boxW) < 0.03 * Double(bx1 - bx0) && Double(boxH) < 0.03 * Double(by1 - by0))
+                || boxW <= 2 || boxH <= 2)
         if bottom < top || right < left || speck {
             var r = CropRect(x: Double(bx0) / Double(g.width), y: Double(by0) / Double(g.height),
                              width: Double(bx1 - bx0) / Double(g.width), height: Double(by1 - by0) / Double(g.height))

@@ -19,7 +19,8 @@ struct AnalysisTests {
 
     /// The Wallace-style spread: white strip, black band, streaks, then two pages
     /// whose gutter is a clean white gap centered at `gutter` (0...1).
-    static func wallaceSpread(gutter: Double = 0.57, titleOnly: Bool = false, blankLeft: Bool = false) -> CGImage {
+    static func wallaceSpread(gutter: Double = 0.57, titleOnly: Bool = false, blankLeft: Bool = false,
+                              hairline: Bool = false) -> CGImage {
         Fixtures.image(width, height) { c in
             c.setFillColor(CGColor(gray: 0.02, alpha: 1))
             c.fill(CGRect(x: 20, y: 0, width: 220, height: height))                    // black band
@@ -29,6 +30,9 @@ struct AnalysisTests {
             let g = Int(gutter * Double(width))
             if !blankLeft {
                 text(c, 380, g - 80)                                                   // left page
+            } else if hairline {
+                c.setFillColor(CGColor(gray: 0.02, alpha: 1))                          // a stray scan line
+                c.fill(CGRect(x: 340, y: 700, width: 300, height: 2))
             } else {
                 c.setFillColor(CGColor(gray: 0.1, alpha: 1))                           // a speck of dust
                 c.fill(CGRect(x: 600, y: 700, width: 6, height: 6))
@@ -71,10 +75,11 @@ struct AnalysisTests {
         #expect(abs(r.splitX - 0.51) < 0.015)
     }
 
-    @Test("A blank page keeps the book's split, and its crop stays on its own side")
+    @Test("A blank page keeps the book's split, and its crop stays on its own side",
+          arguments: [false, true])
     @MainActor
-    func blankPage() async throws {
-        let images = (0..<5).map { i in Self.wallaceSpread(blankLeft: i == 2) }
+    func blankPage(hairline: Bool) async throws {
+        let images = (0..<5).map { i in Self.wallaceSpread(blankLeft: i == 2, hairline: hairline) }
         let media = CGRect(x: 0, y: 0, width: 1000, height: 650)
         let url = Fixtures.writePDF("blank-\(UUID().uuidString).pdf", media: media,
                                     pages: images.map { img in { $0.draw(img, in: media) } })
@@ -86,6 +91,19 @@ struct AnalysisTests {
         #expect(blank.leftCrop.maxX <= blank.splitX + 0.015)
         #expect(abs(blank.leftCrop.height - m.pages[0].leftCrop.height) < 0.03)   // the usual size
         #expect(blank.rightCrop.minX >= blank.splitX - 0.015)
+    }
+
+    @Test("A stray hairline alone is not content; a thin rule or line of text is",
+          arguments: [(1, true), (2, true), (3, false), (5, false)])
+    func hairline(thickness: Int, blank: Bool) throws {
+        // Already at analysis size (800 px tall), so nothing is resampled away.
+        let page = Fixtures.image(520, 800) { c in
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+            c.fill(CGRect(x: 200, y: 400, width: 100, height: thickness))
+        }
+        let g = try #require(GrayBuffer(cgImage: page))
+        #expect(g.height == 800)
+        #expect(PageAnalyzer.contentBounds(g, xRange: 0.0..<1.0).blank == blank)
     }
 
     @Test("A dark picture near a page edge is content, not a scanner band")
