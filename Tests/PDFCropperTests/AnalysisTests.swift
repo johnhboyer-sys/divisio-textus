@@ -106,6 +106,41 @@ struct AnalysisTests {
         #expect(PageAnalyzer.contentBounds(g, xRange: 0.0..<1.0).blank == blank)
     }
 
+    @Test("A page's crop never reaches past the split into the facing page")
+    func cropStaysOnItsSide() throws {
+        // Text running right up to the split on both sides.
+        let spread = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 300, 990)
+            Self.text(c, 1010, 1700)
+        }
+        let g = try #require(GrayBuffer(cgImage: spread))
+        #expect(!PageAnalyzer.contentBounds(g, xRange: 0.5..<1.0).blank)
+        #expect(PageAnalyzer.contentBounds(g, xRange: 0.0..<0.5).crop.maxX <= 0.5)
+        #expect(PageAnalyzer.contentBounds(g, xRange: 0.5..<1.0).crop.minX >= 0.5)
+
+        // A sliver right at the split, narrower than the smallest crop allowed,
+        // grows away from the split, not across it.
+        let sliver = Fixtures.image(800, 520) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 0, y: 0, width: 360, height: 520))       // scanner band
+            c.fill(CGRect(x: 397, y: 220, width: 3, height: 100))
+        }
+        let s = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: sliver)), xRange: 0.0..<0.5)
+        #expect(!s.blank && s.crop.maxX <= 0.5 + 1e-9)
+
+        // Even a region narrower than the smallest crop keeps its crop inside it.
+        let dot = Fixtures.image(800, 520) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 397, y: 200, width: 3, height: 100))
+            c.fill(CGRect(x: 794, y: 200, width: 3, height: 100))
+        }
+        let gd = try #require(GrayBuffer(cgImage: dot))
+        for range in [0.49..<0.5, 0.99..<1.0] {
+            let c = PageAnalyzer.contentBounds(gd, xRange: range).crop
+            #expect(c.minX >= range.lowerBound - 1e-9 && c.maxX <= range.upperBound + 1e-9)
+        }
+    }
+
     @Test("A dark picture near a page edge is content, not a scanner band")
     func darkPictureKept() {
         // A single portrait page: a dark plate starting 2% in, 70% of the height.

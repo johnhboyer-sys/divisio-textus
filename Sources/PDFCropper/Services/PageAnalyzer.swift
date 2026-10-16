@@ -286,7 +286,21 @@ enum PageAnalyzer {
             width: Double(right - left) / Double(g.width) + 2 * pad,
             height: Double(bottom - top) / Double(g.height) + 2 * pad
         )
+        // The padding stops at the split, so it never takes in the facing page.
+        let x0Clamped = max(rect.x, xRange.lowerBound)
+        rect.width = min(rect.maxX, xRange.upperBound) - x0Clamped
+        rect.x = x0Clamped
+        // A box narrower than the smallest crop grows inward, staying on its side.
+        let minWidth = min(0.02, xRange.upperBound - xRange.lowerBound)
+        if rect.width < minWidth {
+            rect.x = min(rect.x, xRange.upperBound - minWidth)
+            rect.width = minWidth
+        }
         rect.normalize()
+        // normalize() can still widen a box in a region narrower than its minimum.
+        let x0Final = max(rect.x, xRange.lowerBound)
+        rect.width = min(rect.maxX, xRange.upperBound) - x0Final
+        rect.x = x0Final
         return (rect, false)
     }
 }
