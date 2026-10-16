@@ -5,16 +5,24 @@ struct ThumbnailRail: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(model.pages) { page in
-                    ThumbnailRow(page: page,
-                                 isSelected: page.id == model.selectedPageID)
-                        .onTapGesture { model.selectedPageID = page.id }
-                        .contextMenu { classificationMenu(for: page) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(model.pages) { page in
+                        ThumbnailRow(page: page,
+                                     isSelected: page.id == model.selectedPageID)
+                            .id(page.id)
+                            .onTapGesture { model.selectedPageID = page.id }
+                            .contextMenu { classificationMenu(for: page) }
+                    }
                 }
+                .padding(8)
             }
-            .padding(8)
+            // Keep the selected page in view when ↑/↓ moves past the visible rows.
+            .onChange(of: model.selectedPageID) { _, id in
+                guard let id else { return }
+                withAnimation { proxy.scrollTo(id, anchor: .center) }
+            }
         }
         .frame(minWidth: 170)
     }
