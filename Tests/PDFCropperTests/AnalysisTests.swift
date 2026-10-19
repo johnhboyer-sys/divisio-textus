@@ -99,6 +99,26 @@ struct AnalysisTests {
         #expect(r.crop.height < 0.6)                             // the text's height, not the page's
     }
 
+    @Test("A wedge of scanner bed beside a turned page is trimmed, its fringe too")
+    func wedgeOfBackgroundTrimmed() throws {
+        // As on Freudenthal 1999 p19: the page turned on the scanner leaves a
+        // wedge of black bed, 7.5% of the width at the top and none at the
+        // bottom, edged with a fringe of grey streaks.
+        let page = Fixtures.image(1300, 2000) { c in
+            for y in 0..<2000 {
+                let edge = 98 * (1 - Double(y) / 2200)                  // from the top down
+                c.setFillColor(CGColor(gray: 0.02, alpha: 1)); c.fill(CGRect(x: 0, y: Double(1999 - y), width: edge, height: 1))
+                for k in stride(from: 0, to: 15, by: 4) where (y / 6 + k) % 3 != 0 {
+                    c.setFillColor(CGColor(gray: 0.65, alpha: 1)); c.fill(CGRect(x: edge + Double(k), y: Double(1999 - y), width: 2, height: 1))
+                }
+            }
+            AnalysisTests.text(c, 250, 1100, rows: 0..<30)
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.minX > 200.0 / 1300 && r.crop.minX < 250.0 / 1300, "crop starts at \(r.crop.minX * 1300) px")
+        #expect(r.crop.height < 0.6, "crop height \(r.crop.height)")   // the text's height, not the page's
+    }
+
     @Test("A soft grey binding shadow is the gutter, and neither page's crop takes it in")
     func softGutterShadow() {
         let image = Fixtures.image(Self.width, Self.height) { c in
@@ -366,6 +386,47 @@ struct AnalysisTests {
         #expect(bare.crop.maxX < 1215.0 / 1300, "right \(bare.crop.maxX)")
     }
 
+    @Test("Scanner noise in a black band is not ink: the crop doesn't follow it across the band")
+    func noisyBlackBand() throws {
+        // As on Freudenthal 1999: the bed beyond the page is black with specks
+        // of 1–15% grey, which pass for ink "darker than its neighbours".
+        var rng = SplitMix(seed: 3)
+        let page = Fixtures.image(1300, 2000) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1)); c.fill(CGRect(x: 1200, y: 0, width: 100, height: 2000))
+            for _ in 0..<6000 {
+                c.setFillColor(CGColor(gray: Double(rng.next() % 15 + 1) / 100, alpha: 1))
+                c.fill(CGRect(x: 1200 + Int(rng.next() % 100), y: Int(rng.next() % 2000), width: 3, height: 3))
+            }
+            AnalysisTests.text(c, 150, 1100, rows: 0..<30)
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX < 1200.0 / 1300, "right \(r.crop.maxX * 1300) px")
+    }
+
+    @Test("A narrow black binding shadow beside the text is not followed as print")
+    func narrowBindingShadow() throws {
+        // As on Simon 1990: by the fold the shadow is a black stripe 16 px wide,
+        // just past the text, with paper on both sides of it, as a printed rule
+        // would have; lower down it widens to the page's edge. Print strokes run
+        // a line's height at most; this one runs unbroken for 44% of the page.
+        let page = Fixtures.image(1000, 1600) { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<48 {                                                  // letters, to x = 940
+                var x = 330
+                while x < 940 {
+                    let len = 8 + (x * 7 + r * 13) % 14
+                    c.fill(CGRect(x: x, y: 40 + r * 32, width: min(len, 940 - x), height: 9)); x += len + 4
+                }
+            }
+            c.setFillColor(CGColor(gray: 0.01, alpha: 1))
+            c.fill(CGRect(x: 952, y: 900, width: 16, height: 700))             // upper part: the stripe
+            c.fill(CGRect(x: 988, y: 900, width: 12, height: 700))
+            c.fill(CGRect(x: 950, y: 0, width: 50, height: 900))               // lower part: black to the edge
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.contentBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX < 0.958, "right \(r.crop.maxX * 1000) px")
+    }
+
     @Test("A page's crop never reaches past the split into the facing page")
     func cropStaysOnItsSide() throws {
         // Text running right up to the split on both sides.
@@ -379,11 +440,12 @@ struct AnalysisTests {
         #expect(PageAnalyzer.contentBounds(g, xRange: 0.5..<1.0).crop.minX >= 0.5)
 
         // A sliver right at the split, narrower than the smallest crop allowed,
-        // grows away from the split, not across it.
+        // grows away from the split, not across it. (Short marks: one tall,
+        // steady line flush with the edge is the book block's edge, not content.)
         let sliver = Fixtures.image(800, 520) { c in
             c.setFillColor(CGColor(gray: 0, alpha: 1))
             c.fill(CGRect(x: 0, y: 0, width: 360, height: 520))       // scanner band
-            c.fill(CGRect(x: 397, y: 220, width: 3, height: 100))
+            for y in stride(from: 220, to: 320, by: 25) { c.fill(CGRect(x: 397, y: y, width: 3, height: 12)) }
         }
         let s = PageAnalyzer.contentBounds(try #require(GrayBuffer(cgImage: sliver)), xRange: 0.0..<0.5)
         #expect(!s.blank && s.crop.maxX <= 0.5 + 1e-9)

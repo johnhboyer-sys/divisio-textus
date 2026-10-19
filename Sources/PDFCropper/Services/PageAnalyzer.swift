@@ -429,6 +429,59 @@ enum PageAnalyzer {
         // keep the page rather than cropping it to nothing.
         guard bx1 > bx0, by1 > by0 else { return (fullSubRange(), false) }
 
+        // A wedge of scanner bed beside a page that lay turned on the glass (or
+        // one that straightening it left) narrows down the page, so no column is
+        // dark enough to trim. Row by row it is ink running in from the region's
+        // edge, in nearly every row of a long stretch, its end moving smoothly;
+        // text near an edge leaves the gaps between its lines empty, and its
+        // words end anywhere. Those runs, and the grey fringe along them, count
+        // for nothing below. A run reaching far past the trimmed band is a
+        // picture, and stays.
+        let leadIn = max(1, spanW * 3 / 100), reach = max(4, spanW * 8 / 100)
+        func edgeRun(_ y: Int, from start: Int, step: Int, limit: Int) -> Int {
+            func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
+            var x = start, k = 0
+            while k < leadIn && inside(x) && Double(g.value(x, y)) >= threshold { x += step; k += 1 }
+            guard inside(x), Double(g.value(x, y)) < threshold else { return 0 }
+            var last = k, gap = 0
+            while inside(x) && gap <= 2 && k <= limit {
+                if Double(g.value(x, y)) < threshold { last = k; gap = 0 } else { gap += 1 }
+                x += step; k += 1
+            }
+            return k > limit ? 0 : last + 3        // the run, and 2 px of fringe past it
+        }
+        var lo = [Int](repeating: x0, count: g.height), hi = [Int](repeating: x1, count: g.height)
+        func wedge(from start: Int, step: Int, limit: Int, apply: (Int, Int) -> Void) {
+            var runs = [Int](repeating: 0, count: g.height)
+            for y in by0..<by1 { runs[y] = edgeRun(y, from: start, step: step, limit: limit) }
+            // The wedge's edge is where most rows nearby end: a mark printed
+            // over it lengthens only its own few rows.
+            let half = max(2, (by1 - by0) / 40)
+            let edge = (0..<g.height).map { y -> Int in
+                guard y >= by0 && y < by1 else { return 0 }
+                let near = runs[max(by0, y - half)..<min(by1, y + half + 1)].sorted()
+                return near[near.count / 2]
+            }
+            var y = by0
+            while y < by1 {
+                guard runs[y] > 0 else { y += 1; continue }
+                var end = y, gap = 0, k = y + 1
+                while k < by1 && gap <= 2 { if runs[k] > 0 { end = k; gap = 0 } else { gap += 1 }; k += 1 }
+                let rows = (y...end).filter { runs[$0] > 0 }
+                let steps = zip(rows, rows.dropFirst()).map { abs(runs[$1] - runs[$0]) }.sorted()
+                if end - y + 1 >= (by1 - by0) / 10, rows.count * 10 >= (end - y + 1) * 9,
+                   steps.isEmpty || steps[steps.count / 2] <= 2 {
+                    for r in rows { apply(r, edge[r]) }
+                }
+                y = end + 1
+            }
+        }
+        wedge(from: x0, step: 1, limit: bx0 - x0 + reach) { y, run in lo[y] = max(lo[y], x0 + run) }
+        wedge(from: x1 - 1, step: -1, limit: x1 - bx1 + reach) { y, run in hi[y] = min(hi[y], x1 - run) }
+        /// Ink, outside any wedge of scanner bed. (Past a trimmed band, ink is told
+        /// from shadow another way, below.)
+        func ink(_ x: Int, _ y: Int) -> Bool { x >= lo[y] && x < hi[y] && Double(g.value(x, y)) < threshold }
+
         var top = by1, bottom = by0 - 1, left = bx1, right = bx0 - 1
 
         // Rows skip a thin strip along each side: a straightened page can leave a
@@ -438,7 +491,7 @@ enum PageAnalyzer {
             top = by1; bottom = by0 - 1
             for y in by0..<by1 {
                 var darkInRow = 0
-                for x in xs where Double(g.value(x, y)) < threshold {
+                for x in xs where ink(x, y) {
                     darkInRow += 1
                 }
                 if darkInRow > Int(Double(bx1 - bx0) * minRunFraction) {
@@ -455,7 +508,7 @@ enum PageAnalyzer {
         var columnDark = [Int](repeating: 0, count: max(0, bx1 - bx0))
         for x in bx0..<bx1 {
             var darkInCol = 0
-            for y in by0..<by1 where Double(g.value(x, y)) < threshold {
+            for y in by0..<by1 where ink(x, y) {
                 darkInCol += 1
             }
             columnDark[x - bx0] = darkInCol
@@ -561,25 +614,31 @@ enum PageAnalyzer {
             // than the brightest pixel near it in its row (a smooth shadow never is).
             // A shadow is no valley: inside one, only a pixel clearly darker than
             // the brightest pixel on each side of it within a few pixels is ink.
+            // Those must be lit: in a black band, scanner noise makes valleys too.
             func valley(_ x: Int, _ y: Int) -> Bool {
                 var leftMax: UInt8 = 0, rightMax: UInt8 = 0
                 for xx in max(x0, x - 6)..<x { leftMax = max(leftMax, g.value(xx, y)) }
                 for xx in min(x1, x + 1)..<min(x1, x + 7) { rightMax = max(rightMax, g.value(xx, y)) }
-                return Double(g.value(x, y)) < 0.7 * Double(min(leftMax, rightMax))   // print, not mottling
+                let lit = Double(min(leftMax, rightMax))
+                return lit >= 0.2 * paper && Double(g.value(x, y)) < 0.7 * lit   // print, not mottling or noise
             }
             func isInk(_ x: Int, _ y: Int) -> Bool {
-                guard x < bx0 || x >= bx1 else { return Double(g.value(x, y)) < pale }
+                guard x < bx0 || x >= bx1 else { return x >= lo[y] && x < hi[y] && Double(g.value(x, y)) < pale }
                 return valley(x, y)
             }
             // A column inked over half its height is shading, not a line's tail.
             // Inside a shadow, a stroke runs at least 3 pixels down; the shadow's
             // own mottling leaves flecks of a pixel or two.
+            // Nor does a stroke run on past a line's height (3% of the page): a
+            // narrow black shadow between paper and the fold looks like print
+            // across, but runs unbroken down the page.
             func hasInk(_ x: Int) -> Bool {
                 let inShadow = x < bx0 || x >= bx1
-                var count = 0, run = 0, stroke = false
+                var count = 0, run = 0, longest = 0
                 for y in top...bottom {
-                    if isInk(x, y) { count += 1; run += 1; if run >= 3 { stroke = true } } else { run = 0 }
+                    if isInk(x, y) { count += 1; run += 1; longest = max(longest, run) } else { run = 0 }
                 }
+                let stroke = longest >= 3 && longest <= max(3, (by1 - by0) * 3 / 100)
                 return count > 0 && count * 2 <= bottom - top + 1 && (stroke || !inShadow)
             }
             var gap = 0, x = right + 1
@@ -629,14 +688,14 @@ enum PageAnalyzer {
             let minThick = max(2, (by1 - by0) / 250), minWide = max(3, (bx1 - bx0) / 100)
             var y = top
             while y <= bottom {
-                guard (rowX0..<rowX1).filter({ Double(g.value($0, y)) < threshold }).count > rowLimit else { y += 1; continue }
+                guard (rowX0..<rowX1).filter({ ink($0, y) }).count > rowLimit else { y += 1; continue }
                 var end = y
-                while end + 1 <= bottom && (rowX0..<rowX1).filter({ Double(g.value($0, end + 1)) < threshold }).count > rowLimit { end += 1 }
-                let inBlock = (y...end).contains { yy in (left...right).contains { Double(g.value($0, yy)) < threshold } }
+                while end + 1 <= bottom && (rowX0..<rowX1).filter({ ink($0, end + 1) }).count > rowLimit { end += 1 }
+                let inBlock = (y...end).contains { yy in (left...right).contains { ink($0, yy) } }
                 if !inBlock && end - y + 1 >= minThick {
                     // Its ink across the band, column by column: a line of type is
                     // pieces side by side (letters, digits); dust is one piece.
-                    let inked = (bx0..<bx1).map { x in (y...end).contains { Double(g.value(x, $0)) < threshold } }
+                    let inked = (bx0..<bx1).map { x in (y...end).contains { ink(x, $0) } }
                     var lo = Int.max, hi = Int.min, pieces = 0
                     for (i, on) in inked.enumerated() where on {
                         if i == 0 || !inked[i - 1] { pieces += 1 }
