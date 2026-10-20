@@ -105,9 +105,10 @@ func testModel(ocr: Bool = false) -> AppModel {
     return m
 }
 
-/// Wait until analysis or export has finished.
+/// Wait until analysis or export has finished. The timeout only stops a hang: a debug
+/// build on a busy Mac can take several minutes over a book.
 @MainActor
-func waitUntilIdle(_ m: AppModel, timeout: TimeInterval = 120) async {
+func waitUntilIdle(_ m: AppModel, timeout: TimeInterval = 600) async {
     let start = Date()
     while m.isBusy && Date().timeIntervalSince(start) < timeout {
         try? await Task.sleep(nanoseconds: 20_000_000)
