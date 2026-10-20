@@ -59,10 +59,10 @@ struct StackView: View {
                 if let stack {
                     Menu("Apply Crop") {
                         Button("To All \(stack.members.count) Pages") {
-                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.members)
+                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.members, in: stack)
                         }
                         Button("To the \(stack.outliers.count) Flagged Pages") {
-                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.outliers)
+                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.outliers, in: stack)
                         }
                         .disabled(stack.outliers.isEmpty)
                     }

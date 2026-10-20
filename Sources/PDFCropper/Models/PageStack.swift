@@ -40,10 +40,21 @@ struct PageStack: Identifiable {
                      width: crop.width * regionWidth, height: crop.height)
         }
 
-        /// Kept inside its side at a size export leaves alone: export normalizes on
-        /// the page, whose smallest crop can be wider than a small box on a side.
-        func clampedCrop(_ crop: CropRect) -> CropRect {
-            var c = pageCrop(crop.normalized()).normalized()
+        /// The box placed on this page at the stack's usual size and measured from the
+        /// gutter: a text block is one size on every page and sits a set distance from
+        /// the fold, while a half's width moves with the gutter. Kept inside its side
+        /// at a size export leaves alone (export normalizes on the page, whose smallest
+        /// crop can be wider than a small box on a side). A box edge on the stack's
+        /// outer edge means this page's outer edge, however wide its half.
+        func clampedCrop(_ crop: CropRect, usualWidth: Double) -> CropRect {
+            let local = crop.normalized(), width = local.width * usualWidth
+            var x = side == .left
+                ? regionMinX + regionWidth - (1 - local.maxX) * usualWidth - width
+                : regionMinX + local.x * usualWidth
+            var right = x + width
+            if side == .left, local.minX <= 0.001 { x = regionMinX }
+            if side == .right, local.maxX >= 0.999 { right = regionMinX + regionWidth }
+            var c = CropRect(x: x, y: local.y, width: right - x, height: local.height).normalized()
             let end = regionMinX + regionWidth
             c.width = min(c.width, regionWidth)
             c.x = max(regionMinX, min(c.x, end - c.width))
@@ -95,11 +106,14 @@ struct PageStack: Identifiable {
     var outliers: [Member] {
         let widths = members.map { pageWidth($0) }, heights = members.map(\.crop.height)
         let width = Self.median(widths), height = Self.median(heights)
-        let tolerance = 0.04 * Self.median(members.map(\.regionWidth))
+        let tolerance = 0.04 * usualRegionWidth
         return zip(members, zip(widths, heights)).filter { _, size in
             abs(size.0 - width) > tolerance || abs(size.1 - height) > 0.04
         }.map(\.0).sorted { $0.page.sourceIndex < $1.page.sourceIndex }
     }
+
+    /// The width of a usual half in this stack, on the page.
+    var usualRegionWidth: Double { Self.median(members.map(\.regionWidth)) }
 
     private func pageWidth(_ member: Member) -> Double {
         (member.side == .right ? member.page.rightCrop : member.page.leftCrop).width

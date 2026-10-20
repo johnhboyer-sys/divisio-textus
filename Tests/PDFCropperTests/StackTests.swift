@@ -38,7 +38,7 @@ struct StackTests {
         for (side, x) in [(PageStack.Member.Side.left, 0.98), (.right, 0.0)] {
             for split in [0.5, 0.3] {
                 let member = PageStack.Member(page: BookPage(sourceIndex: 0, splitX: split), side: side)
-                let c = member.clampedCrop(CropRect(x: x, y: 0.2, width: 0.02, height: 0.5))
+                let c = member.clampedCrop(CropRect(x: x, y: 0.2, width: 0.02, height: 0.5), usualWidth: member.regionWidth)
                 #expect(c.minX >= member.regionMinX - 1e-12)
                 #expect(c.maxX <= member.regionMinX + member.regionWidth + 1e-12)
                 #expect(c.normalized() == c)   // export normalizes; nothing may move
@@ -83,7 +83,7 @@ struct StackTests {
         let left = try #require(groups.first { $0.id == .left })
         let right = try #require(groups.first { $0.id == .right })
         let outside = CropRect(x: -0.2, y: -0.1, width: 1.4, height: 1.3)
-        undoable(undo) { model.applyStackCrop(outside, to: left.members) }
+        undoable(undo) { model.applyStackCrop(outside, to: left.members, in: left) }
         for page in model.pages.prefix(2) {
             #expect(page.leftCrop.minX >= 0 && page.leftCrop.maxX <= page.splitX)
             #expect(abs(page.leftCrop.width - page.splitX) < 1e-10)
@@ -93,18 +93,59 @@ struct StackTests {
         undo.undo()
         #expect(model.pages == before)
         #expect(!undo.canUndo)
-        undoable(undo) { model.applyStackCrop(outside, to: right.members) }
+        undoable(undo) { model.applyStackCrop(outside, to: right.members, in: right) }
         for page in model.pages.prefix(2) {
             #expect(page.rightCrop.minX >= page.splitX && page.rightCrop.maxX <= 1)
         }
         undo.undo()
         #expect(model.pages == before)
 
-        undoable(undo) { model.applyStackCrop(.full, to: [left.members[1]]) }
+        undoable(undo) { model.applyStackCrop(.full, to: [left.members[1]], in: left) }
         #expect(model.pages[0] == before[0] && model.pages[2] == before[2])
         #expect(model.pages[1].leftCrop.maxX <= model.pages[1].splitX)
         undo.undo()
         #expect(model.pages == before)
+    }
+
+    @Test("Applied crops are one size on the page, the same distance from the gutter")
+    @MainActor
+    func appliedSize() throws {
+        // The gutter sits at 0.45 on one spread and 0.55 on the other, so their halves
+        // differ; the text block, and so the applied crop, should not.
+        let model = testModel()
+        model.pages = [BookPage(sourceIndex: 0, splitX: 0.45, analyzed: true),
+                       BookPage(sourceIndex: 1, splitX: 0.55, analyzed: true)]
+        let groups = PageStack.groups(pages: model.pages)
+        let left = try #require(groups.first { $0.id == .left })
+        let right = try #require(groups.first { $0.id == .right })
+        let box = CropRect(x: 0.2, y: 0.1, width: 0.6, height: 0.8)
+        model.applyStackCrop(box, to: left.members, in: left)
+        model.applyStackCrop(box, to: right.members, in: right)
+        let (a, b) = (model.pages[0], model.pages[1])
+        #expect(abs(a.leftCrop.width - 0.3) < 1e-10 && abs(b.leftCrop.width - 0.3) < 1e-10)
+        #expect(abs((a.splitX - a.leftCrop.maxX) - (b.splitX - b.leftCrop.maxX)) < 1e-10)
+        #expect(abs(a.rightCrop.width - b.rightCrop.width) < 1e-10)
+        #expect(abs((a.rightCrop.minX - a.splitX) - (b.rightCrop.minX - b.splitX)) < 1e-10)
+        // Applied crops are no longer flagged.
+        for stack in PageStack.groups(pages: model.pages) { #expect(stack.outliers.isEmpty) }
+    }
+
+    @Test("A box at the stack's outer edge reaches each page's edge, and stays in its half")
+    func outerEdgeAndNarrowHalf() {
+        let usual = 0.5
+        for split in [0.45, 0.55] {
+            let page = BookPage(sourceIndex: 0, splitX: split)
+            let left = PageStack.Member(page: page, side: .left)
+            let right = PageStack.Member(page: page, side: .right)
+            // Out to the stack's outer edge: the page's own outer edge, whatever its half.
+            let l = left.clampedCrop(CropRect(x: 0, y: 0.1, width: 0.8, height: 0.8), usualWidth: usual)
+            #expect(l.minX == 0 && abs(split - l.maxX - 0.2 * usual) < 1e-10)
+            let r = right.clampedCrop(CropRect(x: 0.2, y: 0.1, width: 0.8, height: 0.8), usualWidth: usual)
+            #expect(abs(r.maxX - 1) < 1e-10 && abs(r.minX - split - 0.2 * usual) < 1e-10)
+            // A box wider than a narrow half stays inside it.
+            let wide = left.clampedCrop(CropRect(x: 0.05, y: 0.1, width: 0.95, height: 0.8), usualWidth: 0.6)
+            #expect(wide.minX >= 0 && wide.maxX <= split + 1e-12)
+        }
     }
 
     @Test("The chosen stack and its draft crop last until another PDF is opened")

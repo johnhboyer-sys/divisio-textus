@@ -509,14 +509,14 @@ final class AppModel: ObservableObject {
             : "Applied this crop to every single page."
     }
 
-    func applyStackCrop(_ crop: CropRect, to members: [PageStack.Member]) {
+    func applyStackCrop(_ crop: CropRect, to members: [PageStack.Member], in stack: PageStack) {
         var count = 0
         perform("Apply Crop to Stack") {
             for member in members {
                 guard let i = pages.firstIndex(where: { $0.id == member.id }),
                       pages[i].classification == member.page.classification else { continue }
                 let live = PageStack.Member(page: pages[i], side: member.side)
-                let c = live.clampedCrop(crop)
+                let c = live.clampedCrop(crop, usualWidth: stack.usualRegionWidth)
                 if member.side == .right { pages[i].rightCrop = c }
                 else { pages[i].leftCrop = c }
                 count += 1
