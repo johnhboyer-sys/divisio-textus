@@ -30,7 +30,8 @@ final class AppModel: ObservableObject {
 
     @Published var isAnalyzing = false
     @Published var isExporting = false
-    var isBusy: Bool { isAnalyzing || isExporting }
+    @Published var isStraightening = false
+    var isBusy: Bool { isAnalyzing || isExporting || isStraightening }
     @Published var statusText = "Open a scanned PDF to begin."
     @Published var exportProgress: Double = 0
 
@@ -164,6 +165,7 @@ final class AppModel: ObservableObject {
         sourceURL = url
         documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
+        isStraightening = false
         projectKey = ProjectStore.key(for: url)
         if let key = projectKey, let saved = ProjectStore.load(key: key),
            saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
@@ -475,6 +477,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// "Auto-straighten" for every page: re-detect the skew angles, keep the crops,
+    /// as one undoable step. Skipped pages are left alone. Runs off the main thread
+    /// with its own PDFDocument, like analysis.
+    func autoStraightenAllPages() async {
+        guard let current = document, let url = sourceURL, !isBusy else { return }
+        let todo = pages.filter { $0.classification != .skip }
+        guard !todo.isEmpty else { return }
+        isStraightening = true
+        statusText = "Straightening \(todo.count) pages…"
+        let password = documentPassword
+        let found = await Task.detached { [previewDPI] () -> [BookPage.ID: (left: Double, right: Double)] in
+            guard let doc = Self.reopen(url, password: password) else { return [:] }
+            var found: [BookPage.ID: (left: Double, right: Double)] = [:]
+            for (n, page) in todo.enumerated() {
+                autoreleasepool {
+                    guard let pdfPage = doc.page(at: page.sourceIndex),
+                          let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
+                    found[page.id] = Self.detectSkews(cg, splitX: page.splitX, isSpread: page.isSpread)
+                }
+                if n % 10 == 9 {
+                    await MainActor.run {
+                        guard self.document === current else { return }
+                        self.statusText = "Straightening page \(n + 1) of \(todo.count)…"
+                    }
+                }
+            }
+            return found
+        }.value
+        guard document === current else { return }   // another PDF was opened meanwhile
+        isStraightening = false
+        // A page edited meanwhile keeps the edit, and one waiting for analysis is
+        // left to it: the angles were found for the page as it was.
+        let asWas = Dictionary(uniqueKeysWithValues: todo.map { ($0.id, $0) })
+        var count = 0
+        perform("Auto-straighten All Pages") {
+            for i in pages.indices {
+                guard let s = found[pages[i].id], pages[i] == asWas[pages[i].id] else { continue }
+                pages[i].leftSkew = s.left
+                pages[i].rightSkew = s.right
+                count += 1
+            }
+        }
+        statusText = "Straightened \(count) page\(count == 1 ? "" : "s")."
+    }
+
     // MARK: - Editing helpers
 
     /// Copy the selected spread's split and crops to every spread (Briss-style
@@ -541,9 +588,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Throw away every edit and auto-detect all pages again (undoable).
-    func redetectAllPages() {
+    func autoDetectAllPages() {
         guard document != nil, !isBusy else { return }
-        perform("Re-detect All Pages", claimPages: false) {
+        perform("Auto-detect All Pages", claimPages: false) {
             for i in pages.indices { pages[i].analyzed = false }
         }
         analyzeAll()
@@ -637,7 +684,7 @@ final class AppModel: ObservableObject {
                     model.setByAnalysis[p.id] = nil
                 }
                 model.registerUndo(restoring: current, actionName: actionName, cropTarget: currentTarget)  // redo
-                // Undoing or redoing "Re-detect All Pages" can bring back pages that
+                // Undoing or redoing "Auto-detect All Pages" can bring back pages that
                 // still need analysis; start a fresh pass for them.
                 if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }
             }

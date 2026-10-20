@@ -63,6 +63,24 @@ struct InspectorView: View {
                 }
             }
 
+            if model.document != nil {
+                Section("Whole book") {
+                    Button {
+                        model.autoDetectAllPages()
+                    } label: {
+                        Label("Auto-detect all pages", systemImage: "wand.and.stars")
+                    }
+                    .help("Finds every page's split, type and crops again, replacing hand edits (⌘Z undoes it). Straightens too when Auto-straighten on import is on.")
+                    Button {
+                        Task { await model.autoStraightenAllPages() }
+                    } label: {
+                        Label("Auto-straighten all pages", systemImage: "wand.and.stars")
+                    }
+                    .help("Finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
+                }
+                .disabled(model.isBusy)
+            }
+
             Section("Output") {
                 Picker("Color", selection: $model.enhanceMode) {
                     ForEach(EnhanceMode.allCases) { m in

@@ -84,7 +84,9 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    single-page scans, crops can go to all pages or to alternate (left-hand /
    right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
    pinch or ⌘= / ⌘− / ⌘0 to zoom. Edits are saved automatically and come back
-   when you reopen the same PDF (Edit ▸ Re-detect All Pages starts over).
+   when you reopen the same PDF. The inspector's **Whole book** group (also in
+   the Edit menu) has Auto-detect all pages, which starts over, and
+   Auto-straighten all pages (angles only, crops kept); each is one undo step.
    **Stack** view (⌘2; ⌘1 back to Page) lays every left-hand page on top of the
    others, likewise right-hand and single pages, with each page's crop drawn
    over the blend. Pages whose crop is a different size from the rest turn red

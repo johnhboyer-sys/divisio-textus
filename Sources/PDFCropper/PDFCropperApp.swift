@@ -30,7 +30,9 @@ struct PDFCropperApp: App {
                     .disabled(!model.isExporting)
             }
             CommandGroup(after: .undoRedo) {
-                Button("Re-detect All Pages") { model.redetectAllPages() }
+                Button("Auto-detect All Pages") { model.autoDetectAllPages() }
+                    .disabled(model.document == nil || model.isBusy)
+                Button("Auto-straighten All Pages") { Task { await model.autoStraightenAllPages() } }
                     .disabled(model.document == nil || model.isBusy)
             }
             CommandGroup(before: .toolbar) {

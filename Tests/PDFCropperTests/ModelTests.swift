@@ -163,13 +163,13 @@ struct ModelTests {
         #expect(reopened.pages[i].leftCrop == quick)
     }
 
-    @Test("Re-detect all pages, undo, redo")
+    @Test("Auto-detect all pages, undo, redo")
     func redetectAll() async {
         let (m, undo, _) = await loadedSample()
         let i = firstSpread, auto = m.pages[i].leftCrop
         let edited = CropRect(x: 0.11, y: 0.12, width: 0.3, height: 0.7)
         undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = edited } }
-        undoable(undo) { m.redetectAllPages() }
+        undoable(undo) { m.autoDetectAllPages() }
         await waitUntilIdle(m)
         #expect(m.pages[i].leftCrop == auto)
         undo.undo()
@@ -177,6 +177,45 @@ struct ModelTests {
         undo.redo()
         await waitUntilIdle(m)
         #expect(m.pages.allSatisfy { $0.analyzed })
+    }
+
+    @Test("Auto-straighten all pages finds every angle again, keeps the crops, one undo")
+    func straightenAll() async {
+        let (m, undo, _) = await loadedSample()
+        let found = m.pages.map { ($0.leftSkew, $0.rightSkew) }
+        #expect(found.contains { abs($0.0) > 0.1 || abs($0.1) > 0.1 })   // the sample has skewed spreads
+        undoable(undo) { m.perform("Level") { for i in m.pages.indices { m.pages[i].leftSkew = 0; m.pages[i].rightSkew = 0 } } }
+        let level = m.pages
+        undo.beginUndoGrouping()
+        await m.autoStraightenAllPages()
+        undo.endUndoGrouping()
+        for (i, p) in m.pages.enumerated() {
+            #expect(abs(p.leftSkew - found[i].0) < 0.01 && abs(p.rightSkew - found[i].1) < 0.01)
+            #expect(p.leftCrop == level[i].leftCrop && p.rightCrop == level[i].rightCrop)
+        }
+        #expect(!m.isBusy)
+        #expect(undo.undoActionName == "Auto-straighten All Pages")
+        undo.undo()
+        #expect(m.pages == level)
+    }
+
+    @Test("Auto-straighten all pages leaves a page edited while it runs as edited")
+    func straightenAllKeepsEdits() async {
+        let (m, undo, _) = await loadedSample()
+        undoable(undo) { m.perform("Level") { for i in m.pages.indices { m.pages[i].leftSkew = 0; m.pages[i].rightSkew = 0 } } }
+        let i = firstSpread
+        undo.beginUndoGrouping()
+        let run = Task { await m.autoStraightenAllPages() }
+        await Task.yield()                  // the run is now working off the main thread
+        #expect(m.isBusy)
+        m.pages[i].splitX += 0.03           // the user moves a split meanwhile…
+        m.pages[i + 1].classification = .skip   // …and skips the next page
+        let edited = (m.pages[i], m.pages[i + 1])
+        await run.value
+        undo.endUndoGrouping()
+        #expect(m.pages[i] == edited.0 && m.pages[i + 1] == edited.1)
+        #expect(m.pages.indices.contains { $0 != i && $0 != i + 1 && (m.pages[$0].leftSkew != 0 || m.pages[$0].rightSkew != 0) })
+        #expect(!m.isBusy)
     }
 
     @Test("Crop to whole page re-detects every page; undo, redo, and reopening keep the choice")
