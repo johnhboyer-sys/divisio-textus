@@ -365,27 +365,59 @@ enum PageAnalyzer {
         var bx1 = max(bx0, bandEnd(from: x1 - 1, toward: bx0 - 1, span: spanW,
                                    darkness: { max(columnDarkFraction($0, 0, g.height), columnInk($0)) },
                                    isStreak: { columnInk($0) > streak }) + 1)
+        // Past a band, its edge can break up into specks that thin out toward the
+        // paper (a mottled binding shadow): columns whose ink falls, give or take
+        // a little, to clean paper within a few pixels. They are the band's too.
+        // Text beside a band doesn't thin out into a clean column that soon.
+        // The band ends at the last clean column before the next ink.
+        // Its ink hangs from the band: in each row, dark all the way back to it.
+        // (A brace or a letter beside the band has paper between.)
+        func fadeEnd(from start: Int, step: Int) -> Int {
+            var x = start, low = 1.0, clean: Int?
+            var reach = [Bool](repeating: true, count: g.height)          // row still dark back to the band
+            while abs(x - start) <= max(1, spanW * 3 / 100) && x >= x0 && x < x1 {
+                var dark = 0, hanging = 0
+                for y in 0..<g.height {
+                    let d = Double(g.value(x, y)) < threshold
+                    if d { dark += 1; if reach[y] { hanging += 1 } }
+                    reach[y] = reach[y] && d
+                }
+                let ink = Double(dark) / Double(g.height)
+                if ink <= minRunFraction { clean = x }                  // paper, a speck or two at most
+                else if clean != nil || ink > low + 0.03 || hanging * 10 < dark * 9 { break }   // print, or no fade
+                low = min(low, ink); x += step
+            }
+            return clean ?? start
+        }
+        // (Where the solid band ends is kept: the side strips and the scan's own
+        // border below are measured from there.)
+        let solid = (lo: bx0, hi: bx1)
+        if bx0 > x0 && bx0 < x1 { bx0 = fadeEnd(from: bx0, step: 1) }
+        if bx1 < x1 && bx1 > x0 { bx1 = max(bx0, fadeEnd(from: bx1 - 1, step: -1) + 1) }
         // A shadow that runs at a slant (the binding shadow, once its half has
         // been straightened) fills no single column. Row by row, though, it is
         // ink starting at the region's edge in nearly every row, where text near
         // an edge leaves the gaps between its lines empty. Trim to where that edge
         // ink ends in nearly every row, if it is shadow-narrow (a full-height
-        // plate at the gutter is far wider, and stays).
+        // plate at the gutter is far wider, and stays). A wider band whose edge
+        // slants is the scan's, turned with the page (print stands upright once
+        // the page is straight): up to a fifth of the width.
         func slantedShadowEnd(from start: Int, step: Int) -> Int? {
-            let depth = max(4, spanW * 8 / 100), wedge = depth / 2
+            let depth = max(4, spanW * 8 / 100), far = max(depth, spanW * 20 / 100), wedge = depth / 2
             func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
-            var ends: [(y: Double, end: Double)] = [], sampled = 0
+            var ends: [(y: Double, end: Double)] = [], sampled = 0, deepest = 0, first = g.height, last = -1
             for y in stride(from: 0, to: g.height, by: 2) {
                 sampled += 1
                 var x = start, k = 0
                 while k < wedge && inside(x) && Double(g.value(x, y)) >= threshold { x += step; k += 1 }
                 guard k < wedge && inside(x) else { continue }
                 var gap = 0
-                while k < depth && gap <= 1 && inside(x) {
+                while k < far && gap <= 1 && inside(x) {
                     if Double(g.value(x, y)) < threshold { gap = 0 } else { gap += 1 }
                     x += step; k += 1
                 }
-                guard k < depth && inside(x) else { return nil }     // ink running deep: not a shadow
+                guard k < far && inside(x) else { return nil }       // ink running deep: not a shadow
+                deepest = max(deepest, k); first = min(first, y); last = max(last, y)
                 ends.append((Double(y), Double(abs(x - start))))
             }
             guard !ends.isEmpty, ends.count * 10 >= sampled * 8 else { return nil }   // 80% of rows; text reaches about half
@@ -402,14 +434,123 @@ enum PageAnalyzer {
                 guard next.count >= ends.count / 2, next.count < kept.count else { break }
                 kept = next
             }
-            let deepest = max(fit.a, fit.a + fit.b * Double(g.height - 1)) + 2
-            return start + step * Int(min(Double(depth), deepest).rounded(.up))
+            // A band wider than a shadow must be the bed: slanted, and running off
+            // the scan at its top or bottom (the turn's empty corner can hide the
+            // other end). A picture, even one at a slant, has paper above and
+            // below it.
+            let slanted = abs(fit.b) * Double(g.height - 1) >= Double(max(3, spanW * 2 / 100))
+            let tall = first * 20 <= g.height || (g.height - 1 - last) * 20 <= g.height
+            guard (slanted && tall) || deepest < depth else { return nil }
+            let inner = max(fit.a, fit.a + fit.b * Double(g.height - 1)) + 2
+            return start + step * Int(min(Double(slanted ? far : depth), inner).rounded(.up))
         }
         if bx1 - bx0 > spanW / 2 {
             // From the region's own edge: the column test may have taken part of it.
             if let e = slantedShadowEnd(from: x0, step: 1) { bx0 = max(bx0, e) }
             if let e = slantedShadowEnd(from: x1 - 1, step: -1) { bx1 = min(bx1, e + 1) }
         }
+        // A spiral or comb binding: loops down the gutter, one below the next from
+        // the top of the page to the bottom. Row by row each loop is a solid run
+        // of ink in from the region's edge, all about as deep, and the rows
+        // between them are short or empty, at a steady pitch. Each loop is solid
+        // and at least 2% of the page tall: taller than a line of print or a
+        // mark in the margin (line numbers are strokes with gaps, besides). The
+        // loops count for nothing below, nor does the shading on them, which
+        // looks like marks printed over a shadow. Returns how deep they reach.
+        func bindingDepth(from start: Int, step: Int) -> Int? {
+            let lead = max(1, spanW * 3 / 100), cap = max(4, spanW * 15 / 100)
+            func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
+            var runs = [Int](repeating: 0, count: g.height), solid = [Bool](repeating: false, count: g.height)
+            var deep = 0
+            for y in 0..<g.height {
+                var x = start, k = 0
+                while k < lead && inside(x) && Double(g.value(x, y)) >= threshold { x += step; k += 1 }
+                guard inside(x), Double(g.value(x, y)) < threshold else { continue }
+                let first = k
+                var last = k, gap = 0, inked = 0
+                while inside(x) && gap <= 2 && k <= cap {
+                    if Double(g.value(x, y)) < threshold { last = k; gap = 0; inked += 1 } else { gap += 1 }
+                    x += step; k += 1
+                }
+                if k > cap { deep += 1; continue }                     // ink running deep: text or a picture
+                runs[y] = last + 1
+                solid[y] = inked * 10 >= (last - first + 1) * 9
+            }
+            guard deep * 20 <= g.height else { return nil }
+            let depth = runs.sorted()[g.height * 9 / 10]
+            guard depth >= max(4, spanW * 3 / 100) else { return nil }
+            // The loops: stretches of rows reaching past half that depth.
+            var loops: [(start: Int, end: Int)] = []
+            var y = 0
+            while y < g.height {
+                guard runs[y] * 2 > depth else { y += 1; continue }
+                var end = y
+                while end + 1 < g.height && runs[end + 1] * 2 > depth { end += 1 }
+                loops.append((y, end)); y = end + 1
+            }
+            guard loops.count >= 6, let top = loops.first, let bottom = loops.last,
+                  (bottom.end - top.start) * 10 >= g.height * 6 else { return nil }
+            let heights = loops.map { $0.end - $0.start + 1 }, pitches = zip(loops, loops.dropFirst()).map { $1.start - $0.start }
+            let height = heights.sorted()[heights.count / 2], pitch = pitches.sorted()[pitches.count / 2]
+            // Each loop as deep as the next (lines of print start with words of
+            // any length).
+            let depths = loops.map { l in (l.start...l.end).map { runs[$0] }.sorted()[(l.end - l.start + 1) / 2] }
+            let reach = depths.sorted()[depths.count / 2]
+            let steady = heights.filter { $0 * 2 >= height && $0 <= height * 2 }.count * 10 >= heights.count * 8
+                && pitches.filter { abs($0 - pitch) * 4 <= pitch }.count * 10 >= pitches.count * 8
+                && depths.filter { abs($0 - reach) <= max(2, reach / 6) }.count * 10 >= depths.count * 8
+            let rows = loops.flatMap { $0.start...$0.end }
+            // The loops run through the gutter: just across the split, on the
+            // facing page, there is more ink in the loops' rows than between them
+            // (a fold, a printed rule or the facing text is the same in both).
+            let facing = (1...16).map { start - step * $0 }.filter { $0 >= 0 && $0 < g.width }
+            guard facing.count == 16 else { return nil }
+            func across(_ y: Int) -> Double { Double(facing.filter { Double(g.value($0, y)) < threshold }.count) }
+            let between0 = (0..<g.height).filter { y in !loops.contains { y >= $0.start - 3 && y <= $0.end + 3 } }
+            guard !between0.isEmpty else { return nil }
+            let inLoops = rows.map(across).reduce(0, +) / Double(rows.count)
+            let outside = between0.map(across).reduce(0, +) / Double(between0.count)
+            guard inLoops >= outside + 4 else { return nil }
+            guard steady, height * 100 <= g.height * 6, height * 50 >= g.height, pitch >= height + 2,
+                  rows.filter({ solid[$0] }).count * 10 >= rows.count * 9 else { return nil }
+            // Between the loops (away from their curling ends) nothing printed
+            // reaches across the zone's inner edge (the wire through the holes, or
+            // the fold, stays inside it), so trimming it cuts no text.
+            let zone = depth + 2
+            var nearLoop = [Bool](repeating: false, count: g.height)
+            for l in loops { for y in max(0, l.start - 3)...min(g.height - 1, l.end + 3) { nearLoop[y] = true } }
+            var stray = 0, room = 0
+            for y in 0..<g.height where !nearLoop[y] {
+                for k in max(0, zone - 3)..<(zone + 3) {
+                    let x = start + step * k
+                    guard inside(x) else { break }
+                    room += 1
+                    if Double(g.value(x, y)) < threshold { stray += 1 }
+                }
+            }
+            guard room > 0, stray * 50 <= room else { return nil }
+            // And something holds the loops together: the fold, or the wire through
+            // the holes, shows between them in the zone (or just across the split:
+            // the loops straddle it), 3 px wide or more. Marks printed down a
+            // margin have bare paper between them, or at most a printed rule a
+            // pixel or two wide.
+            let between = (0..<g.height).filter { !nearLoop[$0] }
+            let widths = between.map { y -> Int in
+                var widest = 0, run = 0
+                for k in -8..<zone {
+                    let x = start + step * k
+                    if x >= 0 && x < g.width && Double(g.value(x, y)) < threshold { run += 1; widest = max(widest, run) } else { run = 0 }
+                }
+                return widest
+            }
+            guard widths.filter({ $0 >= 3 }).count * 10 >= between.count else { return nil }
+            return zone
+        }
+        // Only at the gutter: a region's side that is the scan's own edge is
+        // the outer margin (where numbers in the margin are set at a steady pitch).
+        var markX0 = x0, markX1 = x1
+        if xRange.lowerBound > 0, let d = bindingDepth(from: x0, step: 1) { markX0 = min(x1, x0 + d); bx0 = max(bx0, markX0) }
+        if xRange.upperBound < 1, let d = bindingDepth(from: x1 - 1, step: -1) { markX1 = max(x0, x1 - d); bx1 = min(bx1, markX1) }
         let by0 = bandEnd(from: 0, toward: g.height, span: g.height,
                           darkness: { max(rowDarkFraction($0, bx0, bx1), rowInk($0, bx0, bx1) > 0.85 ? 1 : 0) },
                           isStreak: { rowInk($0, bx0, bx1) > streak })
@@ -436,7 +577,9 @@ enum PageAnalyzer {
         // text near an edge leaves the gaps between its lines empty, and its
         // words end anywhere. Those runs, and the grey fringe along them, count
         // for nothing below. A run reaching far past the trimmed band is a
-        // picture, and stays.
+        // picture, and stays. So is a block with paper above and below it: a
+        // wedge of bed runs on from the scan's top or bottom, or narrows away
+        // to nothing at the region's edge.
         let leadIn = max(1, spanW * 3 / 100), reach = max(4, spanW * 8 / 100)
         func edgeRun(_ y: Int, from start: Int, step: Int, limit: Int) -> Int {
             func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
@@ -462,6 +605,7 @@ enum PageAnalyzer {
                 let near = runs[max(by0, y - half)..<min(by1, y + half + 1)].sorted()
                 return near[near.count / 2]
             }
+            let corner = max(2, (by1 - by0) / 50)
             var y = by0
             while y < by1 {
                 guard runs[y] > 0 else { y += 1; continue }
@@ -470,7 +614,8 @@ enum PageAnalyzer {
                 let rows = (y...end).filter { runs[$0] > 0 }
                 let steps = zip(rows, rows.dropFirst()).map { abs(runs[$1] - runs[$0]) }.sorted()
                 if end - y + 1 >= (by1 - by0) / 10, rows.count * 10 >= (end - y + 1) * 9,
-                   steps.isEmpty || steps[steps.count / 2] <= 2 {
+                   steps.isEmpty || steps[steps.count / 2] <= 2,
+                   y - by0 <= corner || by1 - 1 - end <= corner || runs[y] <= 5 || runs[end] <= 5 {
                     for r in rows { apply(r, edge[r]) }
                 }
                 y = end + 1
@@ -499,20 +644,32 @@ enum PageAnalyzer {
                 }
             }
         }
-        let rowX0 = min(bx1, bx0 + sideStrip), rowX1 = max(rowX0, bx1 - sideStrip)
+        let rowX0 = min(bx1, max(bx0, solid.lo + sideStrip)), rowX1 = max(rowX0, min(bx1, solid.hi - sideStrip))
         scanRows(rowX0..<rowX1)
         // Columns are judged against the height of the content the rows found, not
         // the whole page: a page holding a single line (a chapter's last line, a
         // footnote) would otherwise have no column dark enough and read as blank.
         let contentHeight = bottom >= top ? bottom - top + 1 : by1 - by0
-        var columnDark = [Int](repeating: 0, count: max(0, bx1 - bx0))
+        // Columns are judged away from the scan's top and bottom 4%, where the
+        // scanner bed's corners and the fold's head and tail spread a smudge
+        // (unless all there is lies there: a page's last line, low down).
+        let edgeRows = (by1 - by0) / 25
+        func midRow(_ y: Int) -> Bool { y >= by0 + edgeRows && y < by1 - edgeRows }
+        var columnDark = [Int](repeating: 0, count: max(0, bx1 - bx0)), columnMid = columnDark
         for x in bx0..<bx1 {
-            var darkInCol = 0
+            var darkInCol = 0, mid = 0
             for y in by0..<by1 where ink(x, y) {
                 darkInCol += 1
+                if midRow(y) { mid += 1 }
             }
-            columnDark[x - bx0] = darkInCol
-            if darkInCol > Int(Double(contentHeight) * minRunFraction) {
+            columnDark[x - bx0] = darkInCol; columnMid[x - bx0] = mid
+            if mid > Int(Double(contentHeight) * minRunFraction) {
+                left = min(left, x); right = max(right, x)
+            }
+        }
+        if right < left {
+            columnMid = columnDark
+            for x in bx0..<bx1 where columnDark[x - bx0] > Int(Double(contentHeight) * minRunFraction) {
                 left = min(left, x); right = max(right, x)
             }
         }
@@ -521,9 +678,11 @@ enum PageAnalyzer {
         // beside a scanner band or at the fold) is a narrow cluster of tall ink
         // at the very edge of what was found, then a clear gap before the text.
         // A folio is short and a column of line numbers is wide; they stay.
-        var leftLimit = x0, rightLimit = x1 - 1
+        var leftLimit = markX0, rightLimit = markX1 - 1
+        var countedRows: Range<Int>?        // the columns rows were last counted in, if only those
+        var streakEnd = (lo: x0 - 1, hi: x1)  // the inner side of a streak cut off at either edge
         if right > left {
-            let isContent = { (x: Int) in columnDark[x - bx0] > Int(Double(contentHeight) * minRunFraction) }
+            let isContent = { (x: Int) in columnMid[x - bx0] > Int(Double(contentHeight) * minRunFraction) }
             let narrow = max(2, (bx1 - bx0) / 50), clear = max(3, (bx1 - bx0) / 50)
             // The longest unbroken run of ink down column x: a streak runs on, a
             // column of line numbers breaks at every number.
@@ -547,23 +706,111 @@ enum PageAnalyzer {
                 let span = (rowsInked.max() ?? 0) - (rowsInked.min() ?? 0) + 1
                 let dashed = Double(span) >= 0.3 * Double(by1 - by0) && rowsInked.count * 2 >= span
                 // Tall, or right at the scan's own border (nothing printed sits
-                // there with a clear gap inside it), however short.
+                // there with a clear gap inside it), however short; but narrow over
+                // its full height too (a letter cut by the scan's top or bottom 4%
+                // isn't, there).
                 let border = max(2, (bx1 - bx0) * 15 / 1000)
-                let atBorder = step > 0 ? last - bx0 <= border : bx1 - 1 - last <= border
+                var lastFull = start, xf = start
+                while (xf - start) * step <= narrow + 2 && xf >= left && xf <= right {
+                    if columnDark[xf - bx0] > Int(Double(contentHeight) * minRunFraction) { lastFull = xf }
+                    xf += step
+                }
+                let atBorder = step > 0 ? lastFull - min(bx0, solid.lo) <= border : max(bx1, solid.hi) - 1 - lastFull <= border
                 let streak = Double(tallest) >= 0.12 * Double(by1 - by0) && (Double(longest) >= 0.04 * Double(by1 - by0) || dashed)
                 guard (last - start) * step <= narrow, streak || atBorder else { return nil }
                 var next = last + step
                 while next >= left && next <= right && !isContent(next) { next += step }
                 guard next >= left && next <= right, (next - last) * step >= clear else { return nil }
+                if step > 0 { streakEnd.lo = last } else { streakEnd.hi = last }
                 return next
             }
             let before = (left, right)
             if let n = strip(from: left, step: 1) { leftLimit = max(bx0, n - clear + 1); left = n }
             if let n = strip(from: right, step: -1) { rightLimit = min(bx1 - 1, n + clear - 1); right = n }
-            // The strip's ink was in every row: count the rows again without it.
-            if before != (left, right) {
-                let from = max(rowX0, left)
-                scanRows(from..<max(from, min(rowX1, right + 1)))
+            // Print in the scan's top and bottom 4%, outside the text's columns (a
+            // running head, a folio set off to the side), still widens them, even
+            // touching the scan's edge. Only junk shaped like it is left out: ink
+            // joined to bed or a band already left out, a line or streak running
+            // on far into the page (the fold's line below its head), a thin line
+            // much wider than any word, or anything past a streak or binding cut
+            // off.
+            var pieceKept = (lo: false, hi: false)
+            if edgeRows > 0 && rowX1 > rowX0 {
+                let reachIn = max(2, (by1 - by0) * 6 / 100)
+                for (band, beyond) in [(by0..<(by0 + edgeRows), (by0 + edgeRows)..<(by0 + edgeRows + reachIn)),
+                                       ((by1 - edgeRows)..<by1, (by1 - edgeRows - reachIn)..<(by1 - edgeRows))] {
+                    let p0 = max(x0, min(bx0, solid.lo)), p1 = min(x1, max(bx1, solid.hi))
+                    let inked = (p0..<p1).map { x in band.contains { y in Double(g.value(x, y)) < threshold && x >= lo[y] && x < hi[y] } }
+                    var i = 0
+                    while i < inked.count {
+                        guard inked[i] else { i += 1; continue }
+                        var j = i, gap = 0
+                        while j + 1 + gap < inked.count && gap <= 2 { if inked[j + 1 + gap] { j += 1 + gap; gap = 0 } else { gap += 1 } }
+                        let pieceLo = p0 + i, pieceHi = p0 + j
+                        // (Judged on the piece's columns outside the text's, and a few
+                        // pixels round them, but never on the text's own.)
+                        let near = (max(p0, pieceLo - 4)...min(p1 - 1, pieceHi + 4)).filter { $0 < left || $0 > right }
+                        let runsOn = beyond.filter { y in near.contains { ink($0, y) } }.count * 10 >= beyond.count * 9
+                        // Joined, in some row, by unbroken dark to a band left out (or, with
+                        // none, to the scan's edge): print beside the bed has paper
+                        // between, however little.
+                        func dark(_ x: Int, _ y: Int) -> Bool { Double(g.value(x, y)) < threshold }
+                        let attached = band.contains { y in
+                            (pieceLo > x0 && (max(x0, min(pieceLo, solid.lo) - 1)..<pieceLo).allSatisfy { dark($0, y) }
+                                && (solid.lo > x0 || (x0..<pieceLo).allSatisfy { dark($0, y) }))
+                            || (pieceHi + 1 < x1 && ((pieceHi + 1)...min(x1 - 1, max(pieceHi + 1, solid.hi))).allSatisfy { dark($0, y) }
+                                && (solid.hi < x1 || ((pieceHi + 1)..<x1).allSatisfy { dark($0, y) })) }
+                        // A line: one unbroken run a fifth of the width, under 3 rows thick
+                        // (a dotted rule is dashes).
+                        let rows = band.filter { y in (pieceLo...pieceHi).contains { dark($0, y) } }
+                        let longest = band.map { y -> Int in
+                            var best = 0, run = 0
+                            for x in pieceLo...pieceHi { if dark(x, y) { run += 1; best = max(best, run) } else { run = 0 } }
+                            return best }.max() ?? 0
+                        let line = (rows.max() ?? 0) - (rows.min() ?? 0) < 3 && longest * 5 >= bx1 - bx0
+                        // Out past a streak or binding cut off (between it and the edge).
+                        let beyondCut = pieceHi <= streakEnd.lo || pieceLo >= streakEnd.hi || pieceHi < markX0 || pieceLo >= markX1
+                        let junk = beyondCut || runsOn || attached || line
+                        if !junk {
+                            if pieceLo < left { left = pieceLo; pieceKept.lo = true }
+                            if pieceHi > right { right = pieceHi; pieceKept.hi = true }
+                        }
+                        i = j + 1
+                    }
+                }
+            }
+            // Rows again, now the columns are known. In the scan's top and bottom
+            // 4% a row counts only by its ink in those columns: the bed's corners,
+            // the fold's head and a binding's last loops leave ink outside them.
+            // A strip's ink was in every row: then no row counts ink outside the
+            // columns (marks found past the text later bring their rows back).
+            let stripped = before != (left, right)
+            let from = pieceKept.lo ? max(bx0, left) : max(rowX0, left)
+            let to = max(from, pieceKept.hi ? min(bx1, right + 1) : min(rowX1, right + 1))
+            if stripped { countedRows = from..<to }
+            top = by1; bottom = by0 - 1
+            for y in by0..<by1 {
+                let xs = stripped || !midRow(y) ? from..<to : rowX0..<rowX1
+                if xs.filter({ ink($0, y) }).count > Int(Double(bx1 - bx0) * minRunFraction) {
+                    top = min(top, y); bottom = max(bottom, y)
+                }
+            }
+        }
+
+        // A small folio or a mark just above or below the text has too few dark
+        // pixels a row to count as a line; rows of ink in the text's columns
+        // that carry straight on from the first or last line (gaps of a pixel
+        // or two) are taken in, up to a line's height or so (3% of the page).
+        if bottom >= top && right >= left {
+            let reach = max(3, (by1 - by0) * 3 / 100)
+            func inked(_ y: Int) -> Bool { (left...right).filter { ink($0, y) }.count >= 2 }
+            for step in [1, -1] {
+                var y = (step > 0 ? bottom : top) + step, last = step > 0 ? bottom : top
+                while y >= by0 && y < by1 && abs(y - last) <= 3 && abs(y - (step > 0 ? bottom : top)) <= reach {
+                    if inked(y) { last = y }
+                    y += step
+                }
+                if step > 0 { bottom = last } else { top = last }
             }
         }
 
@@ -590,6 +837,11 @@ enum PageAnalyzer {
                 // heading or above a footer is set well inside the page.
                 let nearBorder = step < 0 ? by1 - 1 - start <= (by1 - by0) / 25 : start - by0 <= (by1 - by0) / 25
                 guard nearBorder, (last - start) * step <= thin, Double(solid) >= 0.2 * Double(bx1 - bx0) else { return nil }
+                // A scan's edge stands alone; a printed rule can be joined to strokes
+                // running on from it (a frame's sides).
+                let joined = (left...right).contains { x in
+                    Double(g.value(x, last)) < threshold && last + step >= by0 && last + step < by1 && Double(g.value(x, last + step)) < threshold }
+                guard !joined else { return nil }
                 var next = last + step
                 while next >= top && next <= bottom && darkCount(next) <= rowLimit { next += step }
                 guard next >= top && next <= bottom, (next - last) * step >= clearRows else { return nil }
@@ -614,13 +866,27 @@ enum PageAnalyzer {
             // than the brightest pixel near it in its row (a smooth shadow never is).
             // A shadow is no valley: inside one, only a pixel clearly darker than
             // the brightest pixel on each side of it within a few pixels is ink.
-            // Those must be lit: in a black band, scanner noise makes valleys too.
+            // Those must be lit: in the scanner's black bed, or a black stripe by
+            // the fold, noise makes valleys too. Print can be on paper in deep
+            // shade, though, and there the shade itself is the light. Near a column
+            // whose middle level is under a tenth of the paper's (the bed), the
+            // light must be a fifth of the paper's; elsewhere a tenth will do.
+            var shade = [Double](repeating: 0, count: x1 - x0)
+            for x in x0..<x1 {
+                var hist = [Int](repeating: 0, count: 256), seen = 0
+                for y in by0..<by1 { hist[Int(g.value(x, y))] += 1 }
+                for (v, n) in hist.enumerated() {
+                    seen += n
+                    if seen * 2 > by1 - by0 { shade[x - x0] = Double(v); break }
+                }
+            }
             func valley(_ x: Int, _ y: Int) -> Bool {
                 var leftMax: UInt8 = 0, rightMax: UInt8 = 0
                 for xx in max(x0, x - 6)..<x { leftMax = max(leftMax, g.value(xx, y)) }
                 for xx in min(x1, x + 1)..<min(x1, x + 7) { rightMax = max(rightMax, g.value(xx, y)) }
                 let lit = Double(min(leftMax, rightMax))
-                return lit >= 0.2 * paper && Double(g.value(x, y)) < 0.7 * lit   // print, not mottling or noise
+                let bed = shade[max(0, x - x0 - 6)..<min(x1 - x0, x - x0 + 7)].contains { $0 < 0.1 * paper }
+                return lit >= (bed ? 0.2 : 0.1) * paper && Double(g.value(x, y)) < 0.7 * lit   // print, not mottling or noise
             }
             func isInk(_ x: Int, _ y: Int) -> Bool {
                 guard x < bx0 || x >= bx1 else { return x >= lo[y] && x < hi[y] && Double(g.value(x, y)) < pale }
@@ -631,14 +897,18 @@ enum PageAnalyzer {
             // own mottling leaves flecks of a pixel or two.
             // Nor does a stroke run on past a line's height (3% of the page): a
             // narrow black shadow between paper and the fold looks like print
-            // across, but runs unbroken down the page.
+            // across, but runs unbroken down the page, and its ragged edge leaves
+            // long runs and flecks of a pixel or two among them. A heading's stroke
+            // may run on to 12% of the page if no flecks share its column.
             func hasInk(_ x: Int) -> Bool {
                 let inShadow = x < bx0 || x >= bx1
-                var count = 0, run = 0, longest = 0
-                for y in top...bottom {
-                    if isInk(x, y) { count += 1; run += 1; longest = max(longest, run) } else { run = 0 }
+                var count = 0, run = 0, longest = 0, flecks = 0
+                for y in top...(bottom + 1) {
+                    if y <= bottom && isInk(x, y) { count += 1; run += 1; longest = max(longest, run) }
+                    else { if run > 0 && run < 3 { flecks += 1 }; run = 0 }
                 }
-                let stroke = longest >= 3 && longest <= max(3, (by1 - by0) * 3 / 100)
+                let stroke = longest >= 3 && (longest <= max(3, (by1 - by0) * 3 / 100)
+                                              || (longest <= (by1 - by0) * 12 / 100 && flecks == 0))
                 return count > 0 && count * 2 <= bottom - top + 1 && (stroke || !inShadow)
             }
             var gap = 0, x = right + 1
@@ -671,11 +941,19 @@ enum PageAnalyzer {
             // The trimmed zones: a band or shadow cut off the side, and any edge strip removed.
             // A printed mark is several pixels wide; a fleck of dust is one.
             func supported(_ x: Int) -> Bool { marks(x) && ((x > x0 && marks(x - 1)) || (x + 1 < x1 && marks(x + 1))) }
-            if let far = stride(from: x1 - 1, through: min(bx1, rightLimit + 1), by: -1).first(where: supported) {
+            if let far = stride(from: markX1 - 1, through: min(bx1, rightLimit + 1), by: -1).first(where: supported) {
                 right = max(right, far)
             }
-            if let far = stride(from: x0, through: max(bx0 - 1, leftLimit - 1), by: 1).first(where: supported) {
+            if let far = stride(from: markX0, through: max(bx0 - 1, leftLimit - 1), by: 1).first(where: supported) {
                 left = min(left, far)
+            }
+            // Rows counted only in the text's columns leave out marks found past
+            // them since: their rows come back with them.
+            if let counted = countedRows {
+                let past = Array(left..<min(right + 1, counted.lowerBound)) + Array(max(left, counted.upperBound)..<(right + 1))
+                for y in by0..<by1 where (y < top || y > bottom) && past.filter({ isInk($0, y) }).count >= 2 {
+                    top = min(top, y); bottom = max(bottom, y)
+                }
             }
         }
 
