@@ -57,8 +57,8 @@ enum PageAnalyzer {
         let splitX = isSpread ? (split ?? detectGutter(gray)) : 0.5
 
         if isSpread {
-            let left = contentBounds(gray, xRange: 0.0..<splitX)
-            let right = contentBounds(gray, xRange: splitX..<1.0)
+            let left = textBounds(gray, xRange: 0.0..<splitX)
+            let right = textBounds(gray, xRange: splitX..<1.0)
             return Result(classification: .spread,
                           splitX: splitX,
                           leftCrop: left.crop,
@@ -66,7 +66,7 @@ enum PageAnalyzer {
                           leftBlank: left.blank,
                           rightBlank: right.blank)
         } else {
-            let whole = contentBounds(gray, xRange: 0.0..<1.0)
+            let whole = textBounds(gray, xRange: 0.0..<1.0)
             return Result(classification: .single,
                           splitX: 0.5,
                           leftCrop: whole.crop,
@@ -180,9 +180,26 @@ enum PageAnalyzer {
     /// (the binding/gutter band, black scan borders) are trimmed off first so they
     /// aren't mistaken for content.
     static func contentBounds(_ g: GrayBuffer, xRange: Range<Double>) -> (crop: CropRect, blank: Bool) {
+        bounds(g, xRange: xRange, more: false)
+    }
+
+    /// The text block a page is cropped to: what `contentBounds` finds, widened
+    /// by print it leaves out (a picture by the edge, strokes over a shadow).
+    /// Never smaller than `contentBounds`, and blank only when that is.
+    static func textBounds(_ g: GrayBuffer, xRange: Range<Double>) -> (crop: CropRect, blank: Bool) {
+        let found = contentBounds(g, xRange: xRange), more = bounds(g, xRange: xRange, more: true)
+        guard !found.blank, !more.blank else { return found }
+        var crop = found.crop.union(more.crop)
+        let x0 = max(crop.x, xRange.lowerBound)
+        crop.width = max(0, min(crop.maxX, xRange.upperBound) - x0)
+        crop.x = x0
+        return (crop, false)
+    }
+
+    private static func bounds(_ g: GrayBuffer, xRange: Range<Double>, more: Bool) -> (crop: CropRect, blank: Bool) {
         // Every result stays inside its region, to the last fraction of a pixel
         // (some paths work in whole pixels and round).
-        var found = findContent(g, xRange: xRange)
+        var found = findContent(g, xRange: xRange, more: more)
         let x0 = max(found.crop.x, xRange.lowerBound)
         found.crop.width = max(0, min(found.crop.maxX, xRange.upperBound) - x0)
         found.crop.x = x0
@@ -272,7 +289,8 @@ enum PageAnalyzer {
         return CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
-    private static func findContent(_ g: GrayBuffer, xRange: Range<Double>) -> (crop: CropRect, blank: Bool) {
+    /// `more`: also keep the print the rules marked "(more)" below take in.
+    private static func findContent(_ g: GrayBuffer, xRange: Range<Double>, more: Bool) -> (crop: CropRect, blank: Bool) {
         let x0 = max(0, Int(Double(g.width) * xRange.lowerBound))
         let x1 = min(g.width, Int(Double(g.width) * xRange.upperBound))
         guard x1 > x0 else {
@@ -436,7 +454,9 @@ enum PageAnalyzer {
         // text near an edge leaves the gaps between its lines empty, and its
         // words end anywhere. Those runs, and the grey fringe along them, count
         // for nothing below. A run reaching far past the trimmed band is a
-        // picture, and stays.
+        // picture, and stays. (More:) so is a block with paper above and below
+        // it: a wedge of bed runs on from the scan's top or bottom, or narrows
+        // away to nothing at the region's edge.
         let leadIn = max(1, spanW * 3 / 100), reach = max(4, spanW * 8 / 100)
         func edgeRun(_ y: Int, from start: Int, step: Int, limit: Int) -> Int {
             func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
@@ -462,6 +482,7 @@ enum PageAnalyzer {
                 let near = runs[max(by0, y - half)..<min(by1, y + half + 1)].sorted()
                 return near[near.count / 2]
             }
+            let corner = max(2, (by1 - by0) / 50)
             var y = by0
             while y < by1 {
                 guard runs[y] > 0 else { y += 1; continue }
@@ -470,7 +491,8 @@ enum PageAnalyzer {
                 let rows = (y...end).filter { runs[$0] > 0 }
                 let steps = zip(rows, rows.dropFirst()).map { abs(runs[$1] - runs[$0]) }.sorted()
                 if end - y + 1 >= (by1 - by0) / 10, rows.count * 10 >= (end - y + 1) * 9,
-                   steps.isEmpty || steps[steps.count / 2] <= 2 {
+                   steps.isEmpty || steps[steps.count / 2] <= 2,
+                   !more || y - by0 <= corner || by1 - 1 - end <= corner || runs[y] <= 5 || runs[end] <= 5 {
                     for r in rows { apply(r, edge[r]) }
                 }
                 y = end + 1
@@ -614,13 +636,27 @@ enum PageAnalyzer {
             // than the brightest pixel near it in its row (a smooth shadow never is).
             // A shadow is no valley: inside one, only a pixel clearly darker than
             // the brightest pixel on each side of it within a few pixels is ink.
-            // Those must be lit: in a black band, scanner noise makes valleys too.
+            // Those must be lit: in the scanner's black bed, or a black stripe by
+            // the fold, noise makes valleys too: the light must be a fifth of the
+            // paper's. (More:) print can be on paper in deep shade, though, and
+            // there the shade itself is the light: away from a column whose middle
+            // level is under a tenth of the paper's (the bed), a tenth will do.
+            var shade = [Double](repeating: 0, count: x1 - x0)
+            for x in x0..<x1 where more {
+                var hist = [Int](repeating: 0, count: 256), seen = 0
+                for y in by0..<by1 { hist[Int(g.value(x, y))] += 1 }
+                for (v, n) in hist.enumerated() {
+                    seen += n
+                    if seen * 2 > by1 - by0 { shade[x - x0] = Double(v); break }
+                }
+            }
             func valley(_ x: Int, _ y: Int) -> Bool {
                 var leftMax: UInt8 = 0, rightMax: UInt8 = 0
                 for xx in max(x0, x - 6)..<x { leftMax = max(leftMax, g.value(xx, y)) }
                 for xx in min(x1, x + 1)..<min(x1, x + 7) { rightMax = max(rightMax, g.value(xx, y)) }
                 let lit = Double(min(leftMax, rightMax))
-                return lit >= 0.2 * paper && Double(g.value(x, y)) < 0.7 * lit   // print, not mottling or noise
+                let bed = shade[max(0, x - x0 - 6)..<min(x1 - x0, x - x0 + 7)].contains { $0 < 0.1 * paper }
+                return lit >= (more && !bed ? 0.1 : 0.2) * paper && Double(g.value(x, y)) < 0.7 * lit   // print, not mottling or noise
             }
             func isInk(_ x: Int, _ y: Int) -> Bool {
                 guard x < bx0 || x >= bx1 else { return x >= lo[y] && x < hi[y] && Double(g.value(x, y)) < pale }
@@ -631,14 +667,18 @@ enum PageAnalyzer {
             // own mottling leaves flecks of a pixel or two.
             // Nor does a stroke run on past a line's height (3% of the page): a
             // narrow black shadow between paper and the fold looks like print
-            // across, but runs unbroken down the page.
+            // across, but runs unbroken down the page, and its ragged edge leaves
+            // long runs and flecks of a pixel or two among them. (More:) a heading's
+            // stroke may run on to 12% of the page if no flecks share its column.
             func hasInk(_ x: Int) -> Bool {
                 let inShadow = x < bx0 || x >= bx1
-                var count = 0, run = 0, longest = 0
-                for y in top...bottom {
-                    if isInk(x, y) { count += 1; run += 1; longest = max(longest, run) } else { run = 0 }
+                var count = 0, run = 0, longest = 0, flecks = 0
+                for y in top...(bottom + 1) {
+                    if y <= bottom && isInk(x, y) { count += 1; run += 1; longest = max(longest, run) }
+                    else { if run > 0 && run < 3 { flecks += 1 }; run = 0 }
                 }
-                let stroke = longest >= 3 && longest <= max(3, (by1 - by0) * 3 / 100)
+                let stroke = longest >= 3 && (longest <= max(3, (by1 - by0) * 3 / 100)
+                                              || (more && longest <= (by1 - by0) * 12 / 100 && flecks == 0))
                 return count > 0 && count * 2 <= bottom - top + 1 && (stroke || !inShadow)
             }
             var gap = 0, x = right + 1

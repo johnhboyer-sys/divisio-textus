@@ -626,6 +626,78 @@ struct AnalysisTests {
         #expect(d.crop.minX > 0.3, "left \(d.crop.minX)")
     }
 
+    /// Lines of words on a page `h` px tall, between x0 and x1 and from y0 to
+    /// y1 (from the top), a line every 16 px.
+    static func body(_ c: CGContext, _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int, h: Int = 800) {
+        c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+        for (r, y) in stride(from: y0, to: y1 - 8, by: 16).enumerated() {
+            var x = x0
+            while x < x1 {
+                let len = 6 + (x * 7 + r * 13) % 12
+                c.fill(CGRect(x: x, y: h - y - 8, width: min(len, x1 - x), height: 8)); x += len + 4
+            }
+        }
+    }
+
+    @Test("A narrow picture by the edge, inside the page, is not taken for a wedge of scanner bed (Codex review 3)")
+    func pictureByEdgeKept() throws {
+        // A black block 20 px wide, 10 px in from the edge, 100–220 px from the
+        // top; text below it. Its edge is as steady as a wedge's, but it has
+        // paper above and below: a wedge of bed runs on from a corner of the scan.
+        let page = Fixtures.image(520, 800) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1)); c.fill(CGRect(x: 10, y: 800 - 220, width: 20, height: 120))
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 250, to: 690, by: 16) { c.fill(CGRect(x: 150, y: 800 - y - 8, width: 320, height: 8)) }
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.textBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.minX < 10.0 / 520, "left \(r.crop.minX * 520) px")
+        #expect(r.crop.minY < 100.0 / 800, "top \(r.crop.minY * 800) px")
+    }
+
+    @Test("Print over a dark edge shadow stays: tall strokes, and black on a near-black shadow (Codex review 3)",
+          arguments: [(0.475, 40), (0.133, 10)])
+    func printOverDarkShadow(shade: Double, strokeHeight: Int) throws {
+        // A shadow 40 px wide down the right edge, grey `shade` (140 and 45 of
+        // 255 once drawn); strokes of a heading 2 px wide run from the text over
+        // it, `strokeHeight` px tall.
+        let page = Fixtures.image(520, 800, gray: true) { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 250, to: 690, by: 16) { c.fill(CGRect(x: 150, y: 800 - y - 8, width: 320, height: 8)) }
+            c.setFillColor(CGColor(gray: shade, alpha: 1)); c.fill(CGRect(x: 480, y: 0, width: 40, height: 800))
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            for x in stride(from: 470, through: 510, by: 5) { c.fill(CGRect(x: x, y: 800 - 300 - strokeHeight, width: 2, height: strokeHeight)) }
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.textBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX >= 510.0 / 520, "right \(r.crop.maxX * 520) px")
+    }
+
+    /// Lines of words on a 520 × 800 page, between x0 and x1, from 60 px down.
+    static func words(_ c: CGContext, _ x0: Int, _ x1: Int, rows: Range<Int> = 0..<34) {
+        c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+        for r in rows {
+            var x = x0
+            while x < x1 {
+                let len = 6 + (x * 7 + r * 13) % 12
+                c.fill(CGRect(x: x, y: 800 - 60 - r * 20 - 8, width: min(len, x1 - x), height: 8)); x += len + 4
+            }
+        }
+    }
+
+    @Test("A heading's tall strokes over a shadow stay when a short stroke shares their columns (Codex review 4)")
+    func tallAndShortStrokesOverShadow() throws {
+        let page = Fixtures.image(520, 800, gray: true) { c in
+            Self.body(c, 150, 439, 100, 687)
+            c.setFillColor(CGColor(gray: 0.475, alpha: 1)); c.fill(CGRect(x: 480, y: 0, width: 40, height: 800))   // 140 of 255
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            for x in stride(from: 450, through: 510, by: 5) {
+                c.fill(CGRect(x: x, y: 800 - 300 - 40, width: 2, height: 40))
+                c.fill(CGRect(x: x, y: 800 - 400 - 8, width: 2, height: 8))
+            }
+        }
+        let r = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.textBounds($0, xRange: 0.0..<1.0) }
+        #expect(r.crop.maxX >= 510.0 / 520, "right \(r.crop.maxX * 520) px")
+    }
+
     @Test("Any page and any region: no crash, and the crop stays inside its region")
     func randomPages() throws {
         var rng = SplitMix(seed: 42)
