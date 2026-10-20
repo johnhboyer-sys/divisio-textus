@@ -90,12 +90,19 @@ struct PageStack: Identifiable {
 
     /// Pages whose crop is a different size from the rest. Position isn't judged:
     /// the book shifts on the scanner, so a good crop moves with its text block.
+    /// Width is measured on the page, not the side: the gutter moves from spread to
+    /// spread, so the same text block is a larger share of a narrower half.
     var outliers: [Member] {
-        let crops = members.map(\.crop)
-        let width = Self.median(crops.map(\.width)), height = Self.median(crops.map(\.height))
-        return members.filter {
-            abs($0.crop.width - width) > 0.04 || abs($0.crop.height - height) > 0.04
-        }.sorted { $0.page.sourceIndex < $1.page.sourceIndex }
+        let widths = members.map { pageWidth($0) }, heights = members.map(\.crop.height)
+        let width = Self.median(widths), height = Self.median(heights)
+        let tolerance = 0.04 * Self.median(members.map(\.regionWidth))
+        return zip(members, zip(widths, heights)).filter { _, size in
+            abs(size.0 - width) > tolerance || abs(size.1 - height) > 0.04
+        }.map(\.0).sorted { $0.page.sourceIndex < $1.page.sourceIndex }
+    }
+
+    private func pageWidth(_ member: Member) -> Double {
+        (member.side == .right ? member.page.rightCrop : member.page.leftCrop).width
     }
 
     /// Crops don't affect the blend; only page membership and geometry do.

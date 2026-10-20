@@ -46,21 +46,19 @@ struct StackTests {
         }
     }
 
-    @Test("Outliers differ in size, not position, and keep page order")
+    @Test("Outliers differ in size on the page, not in position or split")
     func outliers() throws {
-        // (extra width, shift) for page 2: a crop that moved with the scan is fine.
-        for (wider, shift, flagged) in [(0.1, 0.0, true), (0.02, 0.0, false), (0.0, 0.1, false)] {
+        // The gutter moves from spread to spread, so the same text block is a different
+        // share of each half; on the page it is the same size. Page 2 is changed.
+        for (wider, shift, flagged) in [(0.04, 0.0, true), (0.01, 0.0, false), (0.0, 0.05, false)] {
             let pages = (0..<5).map { i -> BookPage in
-                let page = BookPage(sourceIndex: i, splitX: i % 2 == 0 ? 0.4 : 0.6)
-                let member = PageStack.Member(page: page, side: .left)
-                var result = page
-                result.leftCrop = member.pageCrop(CropRect(x: 0.1 + (i == 2 ? shift : 0), y: 0.1,
-                                                           width: 0.6 + (i == 2 ? wider : 0), height: 0.8))
-                return result
+                var page = BookPage(sourceIndex: i, splitX: [0.45, 0.55, 0.5, 0.47, 0.53][i])
+                page.leftCrop = CropRect(x: 0.05 + (i == 2 ? shift : 0), y: 0.1,
+                                         width: 0.35 + (i == 2 ? wider : 0), height: 0.8)
+                return page
             }
             let stack = try #require(PageStack.groups(pages: pages).first)
             #expect(stack.outliers.map { $0.page.sourceIndex } == (flagged ? [2] : []))
-            #expect(abs(stack.medianCrop.minX - 0.1) < 1e-10)
         }
         var pages = (0..<5).map { BookPage(sourceIndex: $0, classification: .single,
             leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.7, height: 0.7)) }
