@@ -102,6 +102,7 @@ func testModel(ocr: Bool = false) -> AppModel {
     let m = AppModel()
     m.ocrEnabled = ocr
     m.revealExportInFinder = false
+    m.setCropTarget(.text)   // most tests were written for text-block crops
     return m
 }
 

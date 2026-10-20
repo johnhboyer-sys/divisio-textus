@@ -74,8 +74,8 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    trimming dark scanner bands along the edges first (even behind a thin light
    strip, with ragged streaks). When analysis finishes, blank and nearly empty
    pages (part titles, chapter ends) get the book's usual crop and split, so
-   every page comes out a matching size. **Crop to: Whole page** crops to the
-   sheet of paper instead, margins included: it leaves out the scanner
+   every page comes out a matching size. **Crop to: Whole page** (the default
+   for new books) crops to the sheet of paper instead, margins included: it leaves out the scanner
    background around the sheet and a black fold at the gutter, and keeps clear
    of the corners straightening leaves empty (but never cuts printed text).
    It then gives the whole book one page size: measured on the pages whose

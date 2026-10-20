@@ -26,8 +26,11 @@ struct PageSizeTests {
         static let opening = 3, short = 5
         let count: Int
         let strips: Bool
+        /// A last spread whose fold lies well right of the others and whose right
+        /// page is blank: analysis moves its split to the book's usual one.
+        var oddLast = false
 
-        func fold(_ i: Int) -> Double { 504 + Self.shifts[i % Self.shifts.count].0 }
+        func fold(_ i: Int) -> Double { oddLast && i == count - 1 ? 604 : 504 + Self.shifts[i % Self.shifts.count].0 }
         /// The sheet's top, from the top of the scan.
         func top(_ i: Int) -> Double { 36 + Self.shifts[i % Self.shifts.count].1 }
 
@@ -62,6 +65,7 @@ struct PageSizeTests {
             // Text: 0.75 in from the outer edge, 0.6 in from the fold, 0.75 in
             // from the top, 0.85 in from the bottom.
             for (x0, side) in [(f - w + 54, 0), (f + 43, 1)] {
+                if oddLast && i == count - 1 && side == 1 { continue }
                 var y0 = t + 54, y1 = t + h - 61
                 if i == Self.opening && side == 1 { y0 = t + 260 }
                 if i == Self.short && side == 0 { y1 = t + 250 }
@@ -200,5 +204,79 @@ struct PageSizeTests {
             let a = AppModel.analyzePage(cg, deskew: true, target: .text)
             #expect(p.leftCrop == a.result.leftCrop && p.rightCrop == a.result.rightCrop)
         }
+    }
+
+    @Test("Every crop stays inside its half, even where analysis moved the split")
+    func insideHalves() async throws {
+        let (m, _, _) = await load(Book(count: 12, strips: true, oddLast: true))
+        let last = try #require(m.pages.last)
+        #expect(abs(last.splitX - 0.5) < 0.03, "the blank page's split was moved to the usual one: \(last.splitX)")
+        for p in m.pages {
+            #expect(p.leftCrop.maxX <= p.splitX + 1e-9 && p.rightCrop.minX >= p.splitX - 1e-9,
+                    "page \(p.sourceIndex): split \(p.splitX), left \(p.leftCrop), right \(p.rightCrop)")
+        }
+    }
+
+    @Test("Undoing a switch of crop target brings back the measurements, so the size still works")
+    func cropTargetUndoKeepsClaims() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let measured = m.pages, size = try #require(m.pageSize)
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        let set = m.pages
+        undoable(undo) { m.setCropTarget(.text) }
+        await waitUntilIdle(m)
+        undo.undo()
+        await waitUntilIdle(m)
+        #expect(m.cropTarget == .page && m.pages == set)
+        undo.redo()                                          // the switch to text blocks, again
+        await waitUntilIdle(m)
+        #expect(m.cropTarget == .text)
+        undo.undo()
+        await waitUntilIdle(m)
+        #expect(m.cropTarget == .page && m.pages == set)
+        #expect(m.pageSize?.width == size.width && m.pageSize?.measured == size.measured, "\(String(describing: m.pageSize))")
+        undoable(undo) { m.setPageSize(nil) }
+        #expect(zip(m.pages, measured).allSatisfy { $0.leftCrop == $1.leftCrop && $0.rightCrop == $1.rightCrop })
+    }
+
+    @Test("Clearing a typed size puts back what analysis gave, on axes it never measured too")
+    func clearUnmeasured() async throws {
+        let (m, undo, _) = await load(Book(count: 4, strips: true))
+        let found = m.pages
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        #expect(m.pages != found)
+        undoable(undo) { m.setPageSize(nil) }
+        #expect(m.pages == found)
+    }
+
+    @Test("A typed page size: two sizes in inches, or nothing", arguments: [
+        ("6 x 9", PageSize(width: 6, height: 9)), ("6×9", PageSize(width: 6, height: 9)),
+        ("5.5 X 8.25 in", PageSize(width: 5.5, height: 8.25)), ("6 by 9", PageSize(width: 6, height: 9)),
+        ("6\" × 9\"", PageSize(width: 6, height: 9)), (" 6 in x 9 in ", PageSize(width: 6, height: 9)),
+        ("inf × 9", nil), ("nan x 9", nil), ("1e308 x 9", nil), ("6xgarbagex9", nil), ("6 x 9 cm", nil),
+        ("6 x", nil), ("6 x 9 x 2", nil), ("0 x 9", nil), ("-6 x 9", nil), ("0.5 x 9", nil), ("6 x 40", nil),
+        ("6,5 x 9", nil), ("", nil)] as [(String, PageSize?)])
+    func parseSize(_ input: String, _ expected: PageSize?) {
+        #expect(PageSize(parsing: input) == expected, "\(input)")
+    }
+
+    @Test("A size that can't be saved is refused")
+    func refusesBadSize() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let before = m.pages
+        undoable(undo) { m.setPageSize(PageSize(width: .infinity, height: 9)) }
+        undoable(undo) { m.setPageSize(PageSize(width: 6, height: 0)) }
+        #expect(m.pageSize?.override == nil && m.pages == before)
+    }
+}
+
+@Suite("Saving edits")
+struct SaveFailureTests {
+    @Test("A save that fails says so instead of failing silently")
+    func saveThrows() {
+        _ = Fixtures.directory
+        let saved = ProjectStore.Saved(pages: [BookPage(sourceIndex: 0)], direction: .leftToRight, cropTarget: .page,
+                                       pageSize: PageSize(width: .infinity, height: 9), claims: nil)
+        #expect(throws: (any Error).self) { try ProjectStore.save(saved, key: "unencodable-\(UUID().uuidString)") }
     }
 }

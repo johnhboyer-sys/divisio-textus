@@ -118,3 +118,23 @@ struct PageSize: Codable, Equatable {
     var width: Double
     var height: Double
 }
+
+extension PageSize {
+    /// The sizes a book page can sensibly have, in inches.
+    static let sensible: ClosedRange<Double> = 1...30
+
+    var isSensible: Bool { Self.sensible.contains(width) && Self.sensible.contains(height) }
+
+    /// A size as typed: two numbers in inches, such as "6 × 9", "6 x 9 in",
+    /// "5.5 by 8.5" or 6" × 9". Nil for anything else, or a size outside `sensible`.
+    init?(parsing text: String) {
+        let number = #"(\d+(?:\.\d+)?|\.\d+)"#, unit = #"\s*(?:in|"|″)?\s*"#
+        let pattern = "^\\s*" + number + unit + "(?:×|x|by)" + "\\s*" + number + unit + "$"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let a = Range(match.range(at: 1), in: text), let b = Range(match.range(at: 2), in: text),
+              let width = Double(text[a]), let height = Double(text[b]) else { return nil }
+        self.init(width: width, height: height)
+        guard isSensible else { return nil }
+    }
+}

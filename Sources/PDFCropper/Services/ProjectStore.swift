@@ -44,11 +44,13 @@ enum ProjectStore {
         return saved
     }
 
-    static func save(_ saved: Saved, key: String) {
-        guard let url = fileURL(for: key), let data = try? JSONEncoder().encode(saved) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
+    /// Throws when the edits can't be encoded or written, so the app can say so.
+    static func save(_ saved: Saved, key: String) throws {
+        guard let url = fileURL(for: key) else { return }
+        let data = try JSONEncoder().encode(saved)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
     }
 
     /// Where saves go. Tests point this at a temporary folder so they never

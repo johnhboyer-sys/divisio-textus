@@ -163,6 +163,11 @@ struct ModelTests {
         #expect(reopened.pages[i].leftCrop == quick)
     }
 
+    @Test("New books crop to the whole page")
+    func wholePageByDefault() {
+        #expect(AppModel().cropTarget == .page)
+    }
+
     @Test("Auto-detect all pages, undo, redo")
     func redetectAll() async {
         let (m, undo, _) = await loadedSample()

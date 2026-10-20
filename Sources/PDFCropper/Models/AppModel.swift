@@ -19,7 +19,7 @@ final class AppModel: ObservableObject {
 
     @Published var direction: ReadingDirection = .leftToRight
     /// What auto-detection crops each book page to (see setCropTarget).
-    @Published private(set) var cropTarget: CropTarget = .text
+    @Published private(set) var cropTarget: CropTarget = .page
     /// The page size typed in for Whole page crops (see setPageSize); nil: measured.
     @Published private(set) var pageSizeOverride: PageSize?
     @Published var exportDPI: Double = 300
@@ -617,10 +617,10 @@ final class AppModel: ObservableObject {
     func setCropTarget(_ target: CropTarget) {
         guard target != cropTarget, !isBusy else { return }
         guard document != nil else { cropTarget = target; return }
-        let before = pages, old = cropTarget
+        let before = pages, old = cropTarget, claims = setByAnalysis
         cropTarget = target
         for i in pages.indices { pages[i].analyzed = false }
-        registerUndo(restoring: before, actionName: "Crop to \(target.label)", cropTarget: old)
+        registerUndo(restoring: before, actionName: "Crop to \(target.label)", cropTarget: old, claims: claims)
         analyzeAll()
     }
 
@@ -669,7 +669,7 @@ final class AppModel: ObservableObject {
     /// Set the book's page size by hand (nil: back to the measured size). Pages
     /// analysis set get the new size; pages edited by hand keep theirs. One undo step.
     func setPageSize(_ size: PageSize?) {
-        guard size != pageSizeOverride, !isBusy else { return }
+        guard size != pageSizeOverride, !isBusy, size?.isSensible ?? true else { return }
         let before = pages, old = pageSizeOverride
         pageSizeOverride = size
         placeSheets()
@@ -783,16 +783,18 @@ final class AppModel: ObservableObject {
     /// size (not measured, none typed in) keeps the crop analysis found.
     private func placeSheets(only: Set<BookPage.ID>? = nil) {
         guard cropTarget == .page else { return }
-        // What analysis found is kept, so a new size always starts from it.
-        for i in pages.indices {
+        // What analysis found is kept, so a new size always starts from it. (Only
+        // for the pages placed now: others may still await the book-wide steps.)
+        for i in pages.indices where only?.contains(pages[i].id) ?? true {
             guard var claim = setByAnalysis[pages[i].id], claim.leftFound == nil else { continue }
             claim.leftFound = pages[i].leftCrop
             claim.rightFound = pages[i].rightCrop
             setByAnalysis[pages[i].id] = claim
         }
         for (_, plan) in sheetPlans() {
+            // An axis without a size gets what analysis found, so a size cleared
+            // or never measured leaves nothing of an earlier one behind.
             let W = pageSizeOverride?.width ?? plan.width, H = pageSizeOverride?.height ?? plan.height
-            guard W != nil || H != nil else { continue }
             let horizontal = W.map { axis(plan, size: $0, vertical: false) }
             let vertical = H.map { axis(plan, size: $0, vertical: true) }
             for side in plan.sides where only?.contains(side.member.id) ?? true {
@@ -801,23 +803,28 @@ final class AppModel: ObservableObject {
                 // trusted edges (a box overhanging them would take in scanner
                 // background or the neighbouring leaves), and the text block, so
                 // print is never cut.
-                func span(_ box: (Double, Double), _ paper: (Double, Double), _ text: (Double, Double)?) -> (Double, Double) {
+                // All of it inside the page's half: the text was found before
+                // analysis may have moved the split (see evenOutNearlyEmptyPages).
+                func span(_ box: (Double, Double), _ paper: (Double, Double), _ text: (Double, Double)?,
+                          within region: (Double, Double)) -> (Double, Double) {
                     // Slid onto the paper, if it fits there; cut to it, if not.
                     let length = box.1 - box.0
                     var a = max(paper.0, min(box.0, paper.1 - length)), b = min(paper.1, a + length)
                     if let text { a = min(a, text.0); b = max(b, text.1) }
+                    a = max(a, region.0); b = min(b, region.1)
                     return (a, max(a, b))
                 }
+                let region = (side.member.regionMinX, side.member.regionMinX + side.member.regionWidth)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
                     let paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
-                    let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) })
+                    let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) }, within: region)
                     crop.x = s.0; crop.width = s.1 - s.0
                 }
                 if let vertical, let H, let y = vertical(side) {
                     let h = side.inches.height
                     let paper = (max(crop.minY, side.sheet?.minY ?? 0), min(crop.maxY, side.sheet?.maxY ?? 1))
-                    let s = span((y / h, (y + H) / h), paper, side.text.map { ($0.minY, $0.maxY) })
+                    let s = span((y / h, (y + H) / h), paper, side.text.map { ($0.minY, $0.maxY) }, within: (0, 1))
                     crop.y = s.0; crop.height = s.1 - s.0
                 }
                 if side.isLeft { pages[i].leftCrop = crop } else { pages[i].rightCrop = crop }
@@ -952,18 +959,24 @@ final class AppModel: ObservableObject {
     /// Undo puts back only the pages the edit changed, so it never reverts
     /// analysis results that arrived after the edit. An edit that changed the
     /// crop target passes the one it replaced, to be put back first.
-    private func registerUndo(restoring saved: [BookPage], actionName: String, cropTarget savedTarget: CropTarget? = nil) {
+    /// A change of crop target also passes the claims it replaced (every page's,
+    /// as all are re-detected), to be put back with the pages they describe.
+    private func registerUndo(restoring saved: [BookPage], actionName: String, cropTarget savedTarget: CropTarget? = nil,
+                              claims savedClaims: [BookPage.ID: AnalysisClaim]? = nil) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 let current = saved.compactMap { p in model.pages.first { $0.id == p.id } }
                 let currentTarget = savedTarget.map { _ in model.cropTarget }
+                let currentClaims = savedClaims.map { _ in model.setByAnalysis }
                 if let savedTarget { model.cropTarget = savedTarget }
                 for p in saved {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                     model.setByAnalysis[p.id] = nil
                 }
-                model.registerUndo(restoring: current, actionName: actionName, cropTarget: currentTarget)  // redo
+                if let savedClaims { model.setByAnalysis = savedClaims }
+                model.registerUndo(restoring: current, actionName: actionName, cropTarget: currentTarget,
+                                   claims: currentClaims)  // redo
                 // Undoing or redoing "Auto-detect All Pages" can bring back pages that
                 // still need analysis; start a fresh pass for them.
                 if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }
@@ -1065,11 +1078,13 @@ final class AppModel: ObservableObject {
         guard let key = projectKey, !pages.isEmpty else { return }
         let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
                                        pageSize: pageSizeOverride, claims: setByAnalysis)
-        if wait {
-            saveQueue.sync { ProjectStore.save(saved, key: key) }
-        } else {
-            saveQueue.async { ProjectStore.save(saved, key: key) }
+        // A failed save is said, not swallowed: later edits would go unsaved too.
+        let save = { [weak self] in
+            do { try ProjectStore.save(saved, key: key) } catch {
+                Task { @MainActor in self?.statusText = "Couldn't save your edits: \(error.localizedDescription)" }
+            }
         }
+        if wait { saveQueue.sync(execute: save) } else { saveQueue.async(execute: save) }
     }
 
     nonisolated private static func exportMessage(_ name: String, _ report: PDFExporter.Report) -> String {

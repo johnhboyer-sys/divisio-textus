@@ -184,6 +184,11 @@ private struct PageSizeRow: View {
         get { entryState.wrappedValue }
         nonmutating set { entryState.wrappedValue = newValue }
     }
+    private let problemState = State<String?>(initialValue: nil)
+    private var problem: String? {
+        get { problemState.wrappedValue }
+        nonmutating set { problemState.wrappedValue = newValue }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -196,6 +201,9 @@ private struct PageSizeRow: View {
                 .onSubmit(commit)
                 .disabled(model.isBusy)
                 .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(.red)
+            }
         }
         .help(size.details.joined(separator: "\n"))
         .onAppear { entry = size.override.map(Self.describe) ?? "" }
@@ -215,13 +223,14 @@ private struct PageSizeRow: View {
 
     private func commit() {
         let text = entry.trimmingCharacters(in: .whitespaces)
-        if text.isEmpty { model.setPageSize(nil); return }
-        let parts = text.split(whereSeparator: { "x×X* ".contains($0) }).compactMap { Double($0) }
-        guard parts.count == 2, parts.allSatisfy({ $0 > 0 }) else {
-            entry = size.override.map(Self.describe) ?? ""
+        if text.isEmpty { problem = nil; model.setPageSize(nil); return }
+        guard let typed = PageSize(parsing: text) else {
+            problem = "“\(text)” isn't a page size. Type width × height in inches, each between "
+                + "\(Int(PageSize.sensible.lowerBound)) and \(Int(PageSize.sensible.upperBound)), like 6 × 9."
             return
         }
-        model.setPageSize(PageSize(width: parts[0], height: parts[1]))
+        problem = nil
+        model.setPageSize(typed)
     }
 
     private static func describe(_ v: (Double?, Double?)) -> String {
