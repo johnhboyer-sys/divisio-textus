@@ -11,6 +11,11 @@ final class AppModel: ObservableObject {
     @Published var sourceURL: URL?
     @Published var pages: [BookPage] = []
     @Published var selectedPageID: BookPage.ID?
+    @Published var showsStack = false
+    /// The stack on show and each stack's draft crop, kept here so a visit to a
+    /// flagged page comes back to the same stack and box.
+    @Published var stackKind: PageStack.Kind = .left
+    @Published var stackCrops: [PageStack.Kind: CropRect] = [:]
 
     @Published var direction: ReadingDirection = .leftToRight
     /// What auto-detection crops each book page to (see setCropTarget).
@@ -49,6 +54,13 @@ final class AppModel: ObservableObject {
     private var previewOrder: [Int] = []          // least recently used first
     private let previewCacheLimit = 12
     private let previewDPI: Double = 110
+
+    // Stack images keep their geometry so crop edits can reuse the blend.
+    private struct CachedStack {
+        let geometry: [PageStack.Geometry]
+        let image: CGImage
+    }
+    private var stackCache: [PageStack.Kind: CachedStack] = [:]
 
     // Thumbnails are small (unstraightened) renders, cheap enough to keep for every page.
     private var thumbnailCache: [Int: NSImage] = [:]
@@ -146,6 +158,8 @@ final class AppModel: ObservableObject {
         clearImageCaches()
         undoManager?.removeAllActions()
         editSnapshot = nil
+        stackKind = .left
+        stackCrops = [:]
         document = doc
         sourceURL = url
         documentPassword = password
@@ -221,6 +235,32 @@ final class AppModel: ObservableObject {
         return img
     }
 
+    /// Background jobs own their PDFDocument and discard results for an old PDF.
+    func stackImage(for stack: PageStack, refresh: Bool = false) async -> CGImage? {
+        if !refresh, let cached = stackCache[stack.id], cached.geometry == stack.geometry {
+            return cached.image
+        }
+        guard let current = document, let url = sourceURL else { return nil }
+        let password = documentPassword
+        // The renderer's worker threads aren't tasks, so cancellation reaches them as a flag.
+        let cancel = CancelFlag()
+        let workers = max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
+        let job = Task.detached { () -> CGImage? in
+            StackRenderer.render(stack, workers: workers, open: { Self.reopen(url, password: password) },
+                                 isCancelled: { cancel.isSet })
+        }
+        let image = await withTaskCancellationHandler {
+            await job.value
+        } onCancel: {
+            cancel.set()
+        }
+        guard !Task.isCancelled, document === current,
+              PageStack.groups(pages: pages).first(where: { $0.id == stack.id })?.geometry == stack.geometry,
+              let image else { return nil }
+        stackCache[stack.id] = CachedStack(geometry: stack.geometry, image: image)
+        return image
+    }
+
     func thumbnail(for page: BookPage) -> NSImage? {
         if let t = thumbnailCache[page.sourceIndex] { return t }
         guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
@@ -243,6 +283,7 @@ final class AppModel: ObservableObject {
         previewCache.removeAll()
         previewOrder.removeAll()
         thumbnailCache.removeAll()
+        stackCache.removeAll()
     }
 
     /// Detect skew for each book page on the raw render, measured inside that
@@ -466,6 +507,22 @@ final class AppModel: ObservableObject {
         statusText = alternate
             ? "Applied this crop to every other single page (same side of the book)."
             : "Applied this crop to every single page."
+    }
+
+    func applyStackCrop(_ crop: CropRect, to members: [PageStack.Member]) {
+        var count = 0
+        perform("Apply Crop to Stack") {
+            for member in members {
+                guard let i = pages.firstIndex(where: { $0.id == member.id }),
+                      pages[i].classification == member.page.classification else { continue }
+                let live = PageStack.Member(page: pages[i], side: member.side)
+                let c = live.clampedCrop(crop)
+                if member.side == .right { pages[i].rightCrop = c }
+                else { pages[i].leftCrop = c }
+                count += 1
+            }
+        }
+        statusText = "Applied this crop to \(count) pages in the stack."
     }
 
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {

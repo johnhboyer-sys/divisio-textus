@@ -85,6 +85,11 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
    pinch or ⌘= / ⌘− / ⌘0 to zoom. Edits are saved automatically and come back
    when you reopen the same PDF (Edit ▸ Re-detect All Pages starts over).
+   **Stack** view (⌘2; ⌘1 back to Page) lays every left-hand page on top of the
+   others, likewise right-hand and single pages, with each page's crop drawn
+   over the blend. Pages whose crop is a different size from the rest turn red
+   and are listed; click one to open it. The orange box can be applied to every
+   page in the stack, or only to the flagged ones.
 6. **Export** renders each page at its scan's own resolution (150–600 DPI; a
    fixed DPI for pages without a scan), at its own size (never padded or scaled;
    the page keeps its physical size), adds an invisible OCR text layer, and
@@ -98,12 +103,14 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
 |------|------|
 | `Models/CropRect.swift` | Normalized (top-left origin) crop rectangle |
 | `Models/BookPage.swift` | Per-source-page state: type, split, crops |
+| `Models/PageStack.swift` | Stack view groups, side coordinates, flagged pages |
 | `Models/AppModel.swift` | `ObservableObject` document/app state + actions |
 | `Services/GrayBuffer.swift` | Fast downsampled grayscale for analysis |
 | `Services/PageAnalyzer.swift` | Gutter + content-bounds + classification heuristics |
 | `Services/PDFRenderer.swift` | Render PDF pages to bitmaps; crop |
 | `Services/PDFExporter.swift` | Crops → output PDF with OCR text layer |
-| `Views/*` | Thumbnail rail, page editor canvas, inspector |
+| `Services/StackRenderer.swift` | Blends a stack's pages into one image |
+| `Views/*` | Thumbnail rail, page editor canvas, stack view, inspector |
 | `Tools/make_sample.swift` | Standalone generator for `sample-book.pdf` |
 | `Tests/PDFCropperTests/` | `swift test` suite (Swift Testing) |
 

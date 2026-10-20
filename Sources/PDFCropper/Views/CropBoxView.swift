@@ -9,6 +9,7 @@ struct CropBoxView: View {
     let imageFrame: CGRect
     let color: Color
     let label: String
+    var tracksPageEdits = true
 
     // Snapshot of the crop when a drag begins, so deltas are stable.
     // (Spelled State(initialValue:) rather than @State: in the macOS 27 SDK @State is a
@@ -69,7 +70,7 @@ struct CropBoxView: View {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 let start = dragStart ?? crop
-                if dragStart == nil { dragStart = crop; model.beginEdit() }
+                if dragStart == nil { dragStart = crop; if tracksPageEdits { model.beginEdit() } }
                 var c = start
                 c.x = start.x + value.translation.width / imageFrame.width
                 c.y = start.y + value.translation.height / imageFrame.height
@@ -78,7 +79,7 @@ struct CropBoxView: View {
                 c.y = max(0, min(c.y, 1 - c.height))
                 crop = c
             }
-            .onEnded { _ in dragStart = nil; model.endEdit("Adjust Crop") }
+            .onEnded { _ in dragStart = nil; if tracksPageEdits { model.endEdit("Adjust Crop") } }
     }
 
     // MARK: Edge handles
@@ -98,7 +99,7 @@ struct CropBoxView: View {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 let start = dragStart ?? crop
-                if dragStart == nil { dragStart = crop; model.beginEdit() }
+                if dragStart == nil { dragStart = crop; if tracksPageEdits { model.beginEdit() } }
                 let dx = value.translation.width / imageFrame.width
                 let dy = value.translation.height / imageFrame.height
 
@@ -119,7 +120,7 @@ struct CropBoxView: View {
                 c.normalize()
                 crop = c
             }
-            .onEnded { _ in dragStart = nil; model.endEdit("Adjust Crop") }
+            .onEnded { _ in dragStart = nil; if tracksPageEdits { model.endEdit("Adjust Crop") } }
     }
 
     // MARK: Corner handles
@@ -139,7 +140,7 @@ struct CropBoxView: View {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 let start = dragStart ?? crop
-                if dragStart == nil { dragStart = crop; model.beginEdit() }
+                if dragStart == nil { dragStart = crop; if tracksPageEdits { model.beginEdit() } }
                 let dx = value.translation.width / imageFrame.width
                 let dy = value.translation.height / imageFrame.height
 
@@ -160,6 +161,6 @@ struct CropBoxView: View {
                 c.normalize()
                 crop = c
             }
-            .onEnded { _ in dragStart = nil; model.endEdit("Adjust Crop") }
+            .onEnded { _ in dragStart = nil; if tracksPageEdits { model.endEdit("Adjust Crop") } }
     }
 }

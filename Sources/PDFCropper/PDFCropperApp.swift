@@ -46,6 +46,11 @@ struct PDFCropperApp: App {
                 Divider()
             }
             CommandMenu("Go") {
+                Button("Page View") { model.showsStack = false }
+                    .keyboardShortcut("1")
+                Button("Stack View") { model.showsStack = true }
+                    .keyboardShortcut("2")
+                Divider()
                 Button("Previous Page") { model.selectAdjacentPage(-1) }
                     .keyboardShortcut(.upArrow, modifiers: [])
                     .disabled(model.pages.isEmpty)
