@@ -78,6 +78,11 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    sheet of paper instead, margins included: it leaves out the scanner
    background around the sheet and a black fold at the gutter, and keeps clear
    of the corners straightening leaves empty (but never cuts printed text).
+   It then gives the whole book one page size: measured on the pages whose
+   sheet edges show (paper meeting the scanner bed, or the strip of
+   neighbouring leaves beyond it), placed on each page where its sheet is, so
+   those strips are left out. The inspector shows the size, and you can type
+   the book's real size instead.
 5. **Edit** in the UI: drag the orange split line, drag/resize the blue (left) and
    green (right) crop boxes, right-click a thumbnail to change its type.
    "Apply layout to all spreads" copies one spread's layout everywhere; for

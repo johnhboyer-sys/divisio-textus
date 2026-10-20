@@ -112,3 +112,9 @@ enum CropTarget: String, Codable, CaseIterable, Identifiable {
         }
     }
 }
+
+/// A book page's physical size, in inches.
+struct PageSize: Codable, Equatable {
+    var width: Double
+    var height: Double
+}

@@ -95,6 +95,9 @@ struct InspectorView: View {
                 }
                 .disabled(model.isBusy)
                 .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+                if let size = model.pageSize {
+                    PageSizeRow(size: size)
+                }
                 Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
 
@@ -168,4 +171,63 @@ struct InspectorView: View {
         Binding(get: { model.pages[idx].rightSkew },
                 set: { model.pages[idx].rightSkew = $0 })
     }
+}
+
+/// Whole page: the book's page size, as measured or as typed in ("6 × 9"; empty
+/// goes back to the measured size).
+private struct PageSizeRow: View {
+    @EnvironmentObject var model: AppModel
+    let size: AppModel.PageSizeSummary
+    // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
+    private let entryState = State(initialValue: "")
+    private var entry: String {
+        get { entryState.wrappedValue }
+        nonmutating set { entryState.wrappedValue = newValue }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Page size: \(Self.describe(shown)) in")
+            Text(note).font(.caption).foregroundStyle(.secondary)
+            if let disagreement = size.disagreement {
+                Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
+            }
+            TextField("Width × height, in inches", text: entryState.projectedValue)
+                .onSubmit(commit)
+                .disabled(model.isBusy)
+                .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+        }
+        .help(size.details.joined(separator: "\n"))
+        .onAppear { entry = size.override.map(Self.describe) ?? "" }
+        .onChange(of: size.override) { _, new in entry = new.map(Self.describe) ?? "" }
+    }
+
+    private var shown: (Double?, Double?) {
+        if let o = size.override { return (o.width, o.height) }
+        return (size.width, size.height)
+    }
+
+    private var note: String {
+        if size.override != nil { return "(set by you)" }
+        if size.width == nil && size.height == nil { return "(not measured: too few pages show their sheet's edges)" }
+        return "(measured on \(size.measured) of \(size.total) pages)"
+    }
+
+    private func commit() {
+        let text = entry.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty { model.setPageSize(nil); return }
+        let parts = text.split(whereSeparator: { "x×X* ".contains($0) }).compactMap { Double($0) }
+        guard parts.count == 2, parts.allSatisfy({ $0 > 0 }) else {
+            entry = size.override.map(Self.describe) ?? ""
+            return
+        }
+        model.setPageSize(PageSize(width: parts[0], height: parts[1]))
+    }
+
+    private static func describe(_ v: (Double?, Double?)) -> String {
+        func f(_ x: Double?) -> String { x.map { String(format: "%.2f", $0) } ?? "—" }
+        return "\(f(v.0)) × \(f(v.1))"
+    }
+
+    private static func describe(_ p: PageSize) -> String { describe((p.width, p.height)) }
 }

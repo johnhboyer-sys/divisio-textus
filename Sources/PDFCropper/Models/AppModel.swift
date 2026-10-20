@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     @Published var direction: ReadingDirection = .leftToRight
     /// What auto-detection crops each book page to (see setCropTarget).
     @Published private(set) var cropTarget: CropTarget = .text
+    /// The page size typed in for Whole page crops (see setPageSize); nil: measured.
+    @Published private(set) var pageSizeOverride: PageSize?
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
@@ -82,19 +84,19 @@ final class AppModel: ObservableObject {
     /// Numbers analysis passes so that a newer pass makes an older one stand down.
     private var analysisRun = 0
 
-    /// Pages whose crops the current analysis pass set and nobody has edited since,
-    /// with which of their sides were blank.
-    private var setByAnalysis: [BookPage.ID: (leftBlank: Bool, rightBlank: Bool)] = [:]
+    /// Pages whose crops analysis set and nobody has edited since, with what it
+    /// found on them. Saved with the edits.
+    private var setByAnalysis: [BookPage.ID: AnalysisClaim] = [:]
 
     /// Set while an export runs; cancelExport() trips it.
     private var exportCancel: CancelFlag?
 
     init() {
         // Save a moment after the last change, and immediately on quit.
-        autosave = Publishers.CombineLatest($pages, $direction)
+        autosave = Publishers.CombineLatest3($pages, $direction, $pageSizeOverride)
             .dropFirst()
             .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
-            .sink { [weak self] pages, direction in self?.saveEdits(pages, direction, wait: false) }
+            .sink { [weak self] pages, direction, _ in self?.saveEdits(pages, direction, wait: false) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -172,9 +174,13 @@ final class AppModel: ObservableObject {
             pages = saved.pages
             direction = saved.direction
             cropTarget = saved.cropTarget ?? .text   // what these edits were made with; a new PDF keeps the current choice
+            pageSizeOverride = saved.pageSize
+            setByAnalysis = saved.claims ?? [:]
             statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
         } else {
             pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
+            pageSizeOverride = nil
+            setByAnalysis = [:]
             statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…"
         }
         selectedPageID = pages.first?.id
@@ -347,7 +353,9 @@ final class AppModel: ObservableObject {
         guard !todo.isEmpty else { return }
         analysisRun += 1
         let run = analysisRun
-        setByAnalysis = [:]
+        // This pass's pages, whose claims it replaces; older claims stay.
+        let passIDs = Set(pages.filter { !$0.analyzed }.map(\.id))
+        for id in passIDs { setByAnalysis[id] = nil }
         isAnalyzing = true
         let deskew = autoDeskewEnabled, target = cropTarget
         let password = documentPassword
@@ -369,7 +377,7 @@ final class AppModel: ObservableObject {
                     if let analysis, let i = self.pages.firstIndex(where: { $0.sourceIndex == index }),
                        !self.pages[i].analyzed {
                         self.apply(analysis, to: i)
-                        self.setByAnalysis[self.pages[i].id] = (analysis.result.leftBlank, analysis.result.rightBlank)
+                        self.setByAnalysis[self.pages[i].id] = AnalysisClaim(analysis.result)
                     }
                     self.statusText = "Analyzing page \(n + 1) of \(todo.count)…"
                     return true
@@ -378,7 +386,8 @@ final class AppModel: ObservableObject {
             }
             await MainActor.run {
                 guard self.document === current, self.analysisRun == run else { return }
-                self.evenOutNearlyEmptyPages(self.setByAnalysis)
+                self.evenOutNearlyEmptyPages(self.setByAnalysis.filter { passIDs.contains($0.key) })
+                self.placeSheets()
                 self.isAnalyzing = false
                 self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
             }
@@ -394,7 +403,7 @@ final class AppModel: ObservableObject {
     /// never anything edited by hand. Whole-page crops are the paper, found
     /// whether or not anything is printed on it: only a spread whose split had
     /// to move gets the book's usual crops, which its old ones no longer fit.
-    private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: (leftBlank: Bool, rightBlank: Bool)]) {
+    private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: AnalysisClaim]) {
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
         func usual(_ crops: [CropRect]) -> CropRect? {
             guard crops.count >= 3 else { return nil }
@@ -457,7 +466,14 @@ final class AppModel: ObservableObject {
         apply(analysis, to: idx)
         // The same book-wide treatment the full pass gives a blank or nearly
         // empty page, so re-detecting one page gives what opening the book gave.
-        evenOutNearlyEmptyPages([pages[idx].id: (analysis.result.leftBlank, analysis.result.rightBlank)])
+        let claim = AnalysisClaim(analysis.result)
+        evenOutNearlyEmptyPages([pages[idx].id: claim])
+        // And the book's page size, as measured on the other pages. (The edit
+        // that called this then counts the page as edited by hand.)
+        if cropTarget == .page {
+            setByAnalysis[pages[idx].id] = claim
+            placeSheets(only: [pages[idx].id])
+        }
     }
 
     func reanalyzeSelected() {
@@ -606,6 +622,270 @@ final class AppModel: ObservableObject {
         for i in pages.indices { pages[i].analyzed = false }
         registerUndo(restoring: before, actionName: "Crop to \(target.label)", cropTarget: old)
         analyzeAll()
+    }
+
+    // MARK: - Page size (Whole page)
+
+    /// What the inspector shows of the book's page size. Widths and heights are
+    /// what was measured (nil: not measured); `measured` of `total` pages gave a
+    /// measurement. `disagreement` names stacks whose sizes differ by over 2%.
+    struct PageSizeSummary: Equatable {
+        var width: Double?
+        var height: Double?
+        var override: PageSize?
+        var measured: Int
+        var total: Int
+        var disagreement: String?
+        /// Each stack's own measurement, for a tooltip.
+        var details: [String] = []
+    }
+
+    /// nil outside Whole page mode.
+    var pageSize: PageSizeSummary? {
+        guard cropTarget == .page, document != nil else { return nil }
+        let plans = sheetPlans()
+        func pooled(_ axis: (SheetPlan) -> [Double], _ measured: (SheetPlan) -> Bool) -> Double? {
+            let samples = plans.values.filter(measured).flatMap(axis)
+            return samples.isEmpty ? nil : PageStack.median(samples)
+        }
+        var summary = PageSizeSummary(width: pooled(\.widths, \.widthMeasured), height: pooled(\.heights, \.heightMeasured),
+                                      override: pageSizeOverride,
+                                      measured: plans.values.reduce(0) { $0 + $1.measuredSides },
+                                      total: plans.values.reduce(0) { $0 + $1.sides.count })
+        func inches(_ v: Double?) -> String { v.map { String(format: "%.2f", $0) } ?? "—" }
+        summary.details = plans.sorted { $0.key.rawValue < $1.key.rawValue }.map { kind, plan in
+            "\(kind.label): \(inches(plan.width)) × \(inches(plan.height)) in, widths on \(plan.widths.count), "
+                + "heights on \(plan.heights.count) of \(plan.sides.count) pages"
+        }
+        let own = plans.filter { $0.value.ownSize }
+        if !own.isEmpty {
+            summary.disagreement = own.sorted { $0.key.rawValue < $1.key.rawValue }.map { kind, plan in
+                "\(kind.label): \(inches(plan.width)) × \(inches(plan.height)) in"
+            }.joined(separator: "; ")
+        }
+        return summary
+    }
+
+    /// Set the book's page size by hand (nil: back to the measured size). Pages
+    /// analysis set get the new size; pages edited by hand keep theirs. One undo step.
+    func setPageSize(_ size: PageSize?) {
+        guard size != pageSizeOverride, !isBusy else { return }
+        let before = pages, old = pageSizeOverride
+        pageSizeOverride = size
+        placeSheets()
+        let changed = pages.indices.filter { before[$0] != pages[$0] }.map { before[$0] }
+        registerPageSizeUndo(restoring: changed, size: old)
+    }
+
+    /// Undo for setPageSize: puts back the size and the pages, which stay
+    /// analysis's (unlike other undos, which count them as edited).
+    private func registerPageSizeUndo(restoring saved: [BookPage], size: PageSize?) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                let current = saved.compactMap { p in model.pages.first { $0.id == p.id } }
+                let currentSize = model.pageSizeOverride
+                model.pageSizeOverride = size
+                for p in saved {
+                    if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
+                }
+                model.registerPageSizeUndo(restoring: current, size: currentSize)   // redo
+            }
+        }
+        undoManager.setActionName("Set Page Size")
+    }
+
+    /// One book page (a side of a spread, or a single page) as the page size sees it.
+    private struct SheetSide {
+        let member: PageStack.Member
+        let claim: AnalysisClaim
+        let inches: CGSize               // the page's displayed size
+        var isLeft: Bool { member.side != .right }
+        var sheet: PageAnalyzer.Sheet? { isLeft ? claim.leftSheet : claim.rightSheet }
+        var found: CropRect? { isLeft ? claim.leftFound : claim.rightFound }
+        var text: CropRect? { sheet?.text }
+        var split: Double { member.page.splitX }
+    }
+
+    /// A stack's page size, margins and usual place, in inches.
+    private struct SheetPlan {
+        var sides: [SheetSide] = []
+        var widths: [Double] = [], heights: [Double] = []
+        var marginLeft: [Double] = [], marginRight: [Double] = [], marginTop: [Double] = [], marginBottom: [Double] = []
+        var measuredSides = 0
+        var width: Double?, height: Double?              // measured
+        var ownSize = false                              // differs from the other stacks
+        var widthMeasured: Bool { width != nil }
+        var heightMeasured: Bool { height != nil }
+    }
+
+    /// Measure each stack's sheets: the width edge to edge (for spreads, half the
+    /// spread's, on those with both outer edges trusted), the
+    /// height edge to edge, and the margins from each trusted edge to the text. A
+    /// size counts as measured on at least max(5, 20% of the stack) pages. Stacks
+    /// that agree within 2% share their sizes, so the book has one.
+    private func sheetPlans() -> [PageStack.Kind: SheetPlan] {
+        guard let doc = document else { return [:] }
+        var plans: [PageStack.Kind: SheetPlan] = [:]
+        for stack in PageStack.groups(pages: pages) {
+            var plan = SheetPlan()
+            for member in stack.members {
+                guard let claim = setByAnalysis[member.id], let page = doc.page(at: member.page.sourceIndex) else { continue }
+                let size = PDFRenderer.displaySize(of: page)
+                let side = SheetSide(member: member, claim: claim, inches: CGSize(width: size.width / 72, height: size.height / 72))
+                plan.sides.append(side)
+                guard let s = side.sheet, let t = s.text else { continue }
+                let w = side.inches.width, h = side.inches.height
+                var gave = false
+                switch member.side {
+                case .left, .right:
+                    // Half the spread's width, outer edge to outer edge: the fold
+                    // needn't lie where the split was put.
+                    if let a = claim.leftSheet?.minX, let b = claim.rightSheet?.maxX { plan.widths.append((b - a) / 2 * w); gave = true }
+                    if member.side == .left, let a = s.minX { plan.marginLeft.append((t.minX - a) * w) }
+                    if member.side == .right, let b = s.maxX { plan.marginRight.append((b - t.maxX) * w) }
+                case .single:
+                    if let a = s.minX { plan.marginLeft.append((t.minX - a) * w) }
+                    if let b = s.maxX { plan.marginRight.append((b - t.maxX) * w) }
+                    if let a = s.minX, let b = s.maxX { plan.widths.append((b - a) * w); gave = true }
+                }
+                if let a = s.minY { plan.marginTop.append((t.minY - a) * h) }
+                if let b = s.maxY { plan.marginBottom.append((b - t.maxY) * h) }
+                if let a = s.minY, let b = s.maxY { plan.heights.append((b - a) * h); gave = true }
+                if gave { plan.measuredSides += 1 }
+            }
+            let needed = max(5, Int((0.2 * Double(plan.sides.count)).rounded(.up)))
+            if plan.widths.count >= needed { plan.width = PageStack.median(plan.widths) }
+            if plan.heights.count >= needed { plan.height = PageStack.median(plan.heights) }
+            if plan.width == nil && plan.height == nil { plan.measuredSides = 0 }
+            plans[stack.id] = plan
+        }
+        // One size for the book where the stacks agree.
+        for axis in [\SheetPlan.width, \SheetPlan.height] {
+            let samples = axis == \SheetPlan.width ? \SheetPlan.widths : \SheetPlan.heights
+            let measured = plans.filter { $0.value[keyPath: axis] != nil }
+            let sizes = measured.values.compactMap { $0[keyPath: axis] }
+            guard let lo = sizes.min(), let hi = sizes.max() else { continue }
+            if hi <= lo * 1.02 {
+                let pooled = PageStack.median(measured.values.flatMap { $0[keyPath: samples] })
+                for kind in measured.keys { plans[kind]![keyPath: axis] = pooled }
+            } else {
+                for kind in measured.keys { plans[kind]!.ownSize = true }
+            }
+        }
+        return plans
+    }
+
+    /// Whole page: put a box of the book's page size on each page analysis set
+    /// (or only those in `only`), where its sheet is, and crop to that box (within
+    /// the paper analysis found, so inside the page's half) and the text block, so
+    /// print is never cut. An axis with no
+    /// size (not measured, none typed in) keeps the crop analysis found.
+    private func placeSheets(only: Set<BookPage.ID>? = nil) {
+        guard cropTarget == .page else { return }
+        // What analysis found is kept, so a new size always starts from it.
+        for i in pages.indices {
+            guard var claim = setByAnalysis[pages[i].id], claim.leftFound == nil else { continue }
+            claim.leftFound = pages[i].leftCrop
+            claim.rightFound = pages[i].rightCrop
+            setByAnalysis[pages[i].id] = claim
+        }
+        for (_, plan) in sheetPlans() {
+            let W = pageSizeOverride?.width ?? plan.width, H = pageSizeOverride?.height ?? plan.height
+            guard W != nil || H != nil else { continue }
+            let horizontal = W.map { axis(plan, size: $0, vertical: false) }
+            let vertical = H.map { axis(plan, size: $0, vertical: true) }
+            for side in plan.sides where only?.contains(side.member.id) ?? true {
+                guard let i = pages.firstIndex(where: { $0.id == side.member.id }), var crop = side.found else { continue }
+                // The box, on the paper analysis found and inside the sheet's
+                // trusted edges (a box overhanging them would take in scanner
+                // background or the neighbouring leaves), and the text block, so
+                // print is never cut.
+                func span(_ box: (Double, Double), _ paper: (Double, Double), _ text: (Double, Double)?) -> (Double, Double) {
+                    // Slid onto the paper, if it fits there; cut to it, if not.
+                    let length = box.1 - box.0
+                    var a = max(paper.0, min(box.0, paper.1 - length)), b = min(paper.1, a + length)
+                    if let text { a = min(a, text.0); b = max(b, text.1) }
+                    return (a, max(a, b))
+                }
+                if let horizontal, let W, let x = horizontal(side) {
+                    let w = side.inches.width
+                    let paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
+                    let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) })
+                    crop.x = s.0; crop.width = s.1 - s.0
+                }
+                if let vertical, let H, let y = vertical(side) {
+                    let h = side.inches.height
+                    let paper = (max(crop.minY, side.sheet?.minY ?? 0), min(crop.maxY, side.sheet?.maxY ?? 1))
+                    let s = span((y / h, (y + H) / h), paper, side.text.map { ($0.minY, $0.maxY) })
+                    crop.y = s.0; crop.height = s.1 - s.0
+                }
+                if side.isLeft { pages[i].leftCrop = crop } else { pages[i].rightCrop = crop }
+            }
+        }
+    }
+
+    /// Where a box `size` inches long starts on each side, along one axis, in
+    /// inches from the page's left or top (nil: leave the side's crop alone).
+    /// A spread's box runs from its outer edge, if trusted, else that far out
+    /// from the text as the usual outer margin, else from the split. Otherwise it
+    /// sits on the sheet's trusted edges; failing those, it is set off the text by the usual margins,
+    /// from the text's start or its end, whichever puts it nearer the stack's
+    /// usual place: a chapter's opening page starts low, its last page stops short.
+    private func axis(_ plan: SheetPlan, size S: Double, vertical: Bool) -> (SheetSide) -> Double? {
+        func length(_ side: SheetSide) -> Double { vertical ? side.inches.height : side.inches.width }
+        func edges(_ side: SheetSide) -> (Double?, Double?) {
+            let s = side.sheet, n = length(side)
+            return vertical ? (s?.minY.map { $0 * n }, s?.maxY.map { $0 * n }) : (s?.minX.map { $0 * n }, s?.maxX.map { $0 * n })
+        }
+        func text(_ side: SheetSide) -> (Double, Double)? {
+            guard let t = side.text else { return nil }
+            let n = length(side)
+            return vertical ? (t.minY * n, t.maxY * n) : (t.minX * n, t.maxX * n)
+        }
+        // Margins: measured where at least three pages show them; else what the
+        // usual text block leaves, split evenly.
+        let extents = plan.sides.compactMap(text).map { $0.1 - $0.0 }
+        let usualText = extents.isEmpty ? S : PageStack.median(extents)
+        let samples = vertical ? (plan.marginTop, plan.marginBottom) : (plan.marginLeft, plan.marginRight)
+        let measured = (samples.0.count >= 3 ? PageStack.median(samples.0) : nil,
+                        samples.1.count >= 3 ? PageStack.median(samples.1) : nil)
+        var (before, after) = measured
+        switch (before, after) {
+        case (nil, nil): before = (S - usualText) / 2; after = before
+        case (nil, let a?): before = S - usualText - a
+        case (let b?, nil): after = S - usualText - b
+        default: break
+        }
+        func fromEdges(_ side: SheetSide) -> Double? {
+            switch edges(side) {
+            case let (a?, b?): return abs(b - a - S) <= 0.03 * S ? (a + b) / 2 - S / 2 : nil
+            case let (a?, nil): return a
+            case let (nil, b?): return b - S
+            default: return nil
+            }
+        }
+        func fromText(_ side: SheetSide) -> (Double, Double)? {
+            text(side).map { ($0.0 - before!, $0.1 + after! - S) }
+        }
+        // The usual place: where trusted edges put the box, else the text's start.
+        let anchored = plan.sides.compactMap(fromEdges)
+        let usual = !anchored.isEmpty ? PageStack.median(anchored)
+            : plan.sides.compactMap(fromText).isEmpty ? nil : PageStack.median(plan.sides.compactMap(fromText).map(\.0))
+        return { side in
+            if !vertical && side.member.side != .single {
+                let left = side.member.side == .left, (a, b) = edges(side)
+                if left, let a { return a }
+                if !left, let b { return b - S }
+                if let t = text(side), let m = left ? measured.0 : measured.1 { return left ? t.0 - m : t.1 + m - S }
+                return left ? side.split * side.inches.width - S : side.split * side.inches.width
+            }
+            if let e = fromEdges(side) { return e }
+            guard let (a, b) = fromText(side) else { return usual }
+            if abs(a - b) <= 0.02 * S { return (a + b) / 2 }
+            guard let usual else { return a }
+            return abs(a - usual) <= abs(b - usual) ? a : b
+        }
     }
 
     func zoomIn() { zoom = min(8, zoom * 1.25) }
@@ -783,7 +1063,8 @@ final class AppModel: ObservableObject {
 
     private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {
         guard let key = projectKey, !pages.isEmpty else { return }
-        let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget)
+        let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
+                                       pageSize: pageSizeOverride, claims: setByAnalysis)
         if wait {
             saveQueue.sync { ProjectStore.save(saved, key: key) }
         } else {
@@ -808,4 +1089,23 @@ private final class CancelFlag: @unchecked Sendable {
     private var value = false
     var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     func set() { lock.lock(); value = true; lock.unlock() }
+}
+
+/// What analysis found on a page it set, kept until the page is edited by hand:
+/// which sides were blank, and for Whole page crops, what each side shows of its
+/// sheet and the crops analysis found before the book's page size was applied.
+struct AnalysisClaim: Codable {
+    var leftBlank: Bool
+    var rightBlank: Bool
+    var leftSheet: PageAnalyzer.Sheet?
+    var rightSheet: PageAnalyzer.Sheet?
+    var leftFound: CropRect?
+    var rightFound: CropRect?
+
+    init(_ result: PageAnalyzer.Result) {
+        leftBlank = result.leftBlank
+        rightBlank = result.rightBlank
+        leftSheet = result.leftSheet
+        rightSheet = result.rightSheet
+    }
 }

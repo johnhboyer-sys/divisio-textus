@@ -1,0 +1,204 @@
+import Testing
+import Foundation
+import CoreGraphics
+import PDFKit
+@testable import PDFCropper
+
+/// Whole page: one page size for the whole book, measured on the sheets whose
+/// edges can be trusted, and placed on every page without the neighbouring
+/// leaves' edges.
+@Suite("Book page size", .serialized)
+@MainActor
+struct PageSizeTests {
+
+    /// A synthetic scanned book: spreads of two 6 × 9 in sheets meeting at a black
+    /// fold, on a black scanner bed, 14 × 10 in scans. Beyond each outer edge, a
+    /// strip of the neighbouring leaves' edges (grey, with dark lines). The book
+    /// moves a little on the scanner from spread to spread.
+    struct Book {
+        static let media = CGRect(x: 0, y: 0, width: 1008, height: 720)
+        static let sheetW = 432.0, sheetH = 648.0
+        static let shifts: [(Double, Double)] = [(0, 0), (6, 4), (-5, -6), (3, 8), (-8, 2), (2, -4),
+                                                 (5, 6), (-3, -2), (7, 0), (-6, 5), (0, -7), (4, 3)]
+        /// Spread 3's right page opens a chapter (text starts low); spread 5's left
+        /// page is a chapter's short last page. Those and spread 8 run off the
+        /// scan's top and bottom.
+        static let opening = 3, short = 5
+        let count: Int
+        let strips: Bool
+
+        func fold(_ i: Int) -> Double { 504 + Self.shifts[i % Self.shifts.count].0 }
+        /// The sheet's top, from the top of the scan.
+        func top(_ i: Int) -> Double { 36 + Self.shifts[i % Self.shifts.count].1 }
+
+        func write() -> URL {
+            let pages: [(CGContext) -> Void] = (0..<count).map { i in { c in self.draw(i, c) } }
+            return Fixtures.writePDF("book-\(UUID().uuidString).pdf", media: Self.media, pages: pages)
+        }
+
+        private func draw(_ i: Int, _ c: CGContext) {
+            let H = Self.media.height
+            func fill(_ gray: Double, _ x: Double, _ yTop: Double, _ w: Double, _ h: Double) {
+                c.setFillColor(CGColor(gray: gray, alpha: 1))
+                c.fill(CGRect(x: x, y: H - yTop - h, width: w, height: h))
+            }
+            fill(0.04, 0, 0, Self.media.width, H)                       // the bed
+            let f = fold(i), t = top(i), w = Self.sheetW, h = Self.sheetH
+            if strips {
+                // Three leaves beyond each outer edge, a little lower than the sheet.
+                for k in 0..<3 {
+                    let x = f - w - 15 + Double(k) * 5
+                    fill(0.8, x, t + 2, 5, h); fill(0.25, x, t + 2, 1, h)
+                    let xr = f + w + Double(k) * 5
+                    fill(0.8, xr, t + 2, 5, h); fill(0.25, xr + 4, t + 2, 1, h)
+                }
+            }
+            // The two sheets. On a few spreads (the opening and short pages among
+            // them) the paper runs past the scan's top and bottom: no edge there,
+            // so the box must be placed from the text.
+            if [Self.opening, Self.short, 8].contains(i) { fill(1, f - w, 0, 2 * w, H) }
+            else { fill(1, f - w, t, 2 * w, h) }
+            fill(0.04, f - 2, t, 4, h)                                  // the fold
+            // Text: 0.75 in from the outer edge, 0.6 in from the fold, 0.75 in
+            // from the top, 0.85 in from the bottom.
+            for (x0, side) in [(f - w + 54, 0), (f + 43, 1)] {
+                var y0 = t + 54, y1 = t + h - 61
+                if i == Self.opening && side == 1 { y0 = t + 260 }
+                if i == Self.short && side == 0 { y1 = t + 250 }
+                var y = y0
+                while y + 6 <= y1 {
+                    fill(0.1, x0, y, w - 97, 6)
+                    y += 14
+                }
+                fill(0.1, x0, y1 - 6, w - 97, 6)
+            }
+        }
+    }
+
+    private func load(_ book: Book, target: CropTarget = .page) async -> (AppModel, UndoManager, URL) {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(target)
+        let url = book.write()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        return (m, undo, url)
+    }
+
+    /// A crop in points on the scan, top-left origin.
+    private func points(_ c: CropRect) -> (x0: Double, y0: Double, x1: Double, y1: Double) {
+        let W = Book.media.width, H = Book.media.height
+        return (c.minX * W, c.minY * H, c.maxX * W, c.maxY * H)
+    }
+
+    @Test("A sheet's edge is where the neighbouring leaves begin; the scan's own border is no edge")
+    func sheetEdges() throws {
+        let book = Book(count: 1, strips: true)
+        let doc = try #require(PDFDocument(url: book.write()))
+        let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: 0)!, dpi: 110))
+        let r = PageAnalyzer.analyze(cgImage: cg, target: .page)
+        let left = try #require(r.leftSheet), right = try #require(r.rightSheet)
+        let W = Book.media.width, H = Book.media.height
+        let minX = try #require(left.minX), maxX = try #require(right.maxX)
+        #expect(abs(minX * W - (book.fold(0) - Book.sheetW)) < 2, "left edge at \(minX * W) pt")
+        #expect(abs(maxX * W - (book.fold(0) + Book.sheetW)) < 2, "right edge at \(maxX * W) pt")
+        let top = try #require(left.minY), bottom = try #require(left.maxY)
+        #expect(abs(top * H - book.top(0)) < 2 && abs(bottom * H - book.top(0) - Book.sheetH) < 2)
+        // The same page cut inside the paper: no edge there.
+        let cut = try #require(PDFRenderer.crop(cg, to: CropRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6)))
+        let rc = PageAnalyzer.analyze(cgImage: cut, as: .spread, target: .page)
+        #expect(rc.leftSheet?.minX == nil && rc.leftSheet?.minY == nil && rc.rightSheet?.maxX == nil,
+                "\(String(describing: rc.leftSheet)) \(String(describing: rc.rightSheet)) split \(rc.splitX)")
+    }
+
+    @Test("The book's page size is measured, and every page gets it, without the leaves beyond the sheet")
+    func oneSize() async throws {
+        let book = Book(count: 12, strips: true)
+        let (m, _, _) = await load(book)
+        let size = try #require(m.pageSize)
+        let w = try #require(size.width), h = try #require(size.height)
+        #expect(abs(w - 6) < 0.06 && abs(h - 9) < 0.09, "measured \(w) × \(h) in")
+        #expect(size.override == nil && size.measured >= 20 && size.total == 24, "\(size)")
+        for (i, p) in m.pages.enumerated() {
+            for (side, crop) in [("left", p.leftCrop), ("right", p.rightCrop)] {
+                let c = points(crop), f = book.fold(i), t = book.top(i)
+                // One size: the sheet's, within 1%.
+                #expect(abs(c.x1 - c.x0 - Book.sheetW) < 4.4 && abs(c.y1 - c.y0 - Book.sheetH) < 6.5,
+                        "spread \(i) \(side): \(c.x1 - c.x0) × \(c.y1 - c.y0) pt")
+                // Where the sheet is, the leaves' strips left out, even where the
+                // text starts low or stops short.
+                #expect(abs(c.y0 - t) < 4, "spread \(i) \(side): top \(c.y0), sheet at \(t)")
+                if side == "left" { #expect(c.x0 >= f - Book.sheetW - 3, "spread \(i) left: \(c.x0), sheet at \(f - Book.sheetW)") }
+                else { #expect(c.x1 <= f + Book.sheetW + 3, "spread \(i) right: \(c.x1), sheet ends \(f + Book.sheetW)") }
+            }
+        }
+    }
+
+    @Test("A page edited by hand keeps its crop when the page size is set")
+    func handEditKept() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let edited = CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.6)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[2].leftCrop = edited } }
+        let before = m.pages
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        #expect(m.pages[2] == before[2])
+        #expect(m.pages.indices.filter { m.pages[$0] != before[$0] } == m.pages.indices.filter { $0 != 2 })
+    }
+
+    @Test("The page size can be set by hand: one undo step, kept with the edits, empty goes back to measured")
+    func override() async throws {
+        let (m, undo, url) = await load(Book(count: 12, strips: true))
+        let measured = m.pages
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        #expect(m.pageSize?.override == PageSize(width: 5.8, height: 8.5))
+        for p in m.pages {
+            for crop in [p.leftCrop, p.rightCrop] {
+                let c = points(crop)
+                #expect(abs(c.x1 - c.x0 - 417.6) < 1 && abs(c.y1 - c.y0 - 612) < 1, "\(c.x1 - c.x0) × \(c.y1 - c.y0) pt")
+            }
+        }
+        let set = m.pages
+        #expect(undo.undoActionName == "Set Page Size")
+        undo.undo()
+        #expect(m.pages == measured && m.pageSize?.override == nil)
+        undo.redo()
+        #expect(m.pages == set && m.pageSize?.override != nil)
+
+        try await Task.sleep(nanoseconds: 1_200_000_000)    // autosave waits for a pause
+        let reopened = testModel()
+        reopened.load(url: url)
+        await waitUntilIdle(reopened)
+        #expect(reopened.pageSize?.override == PageSize(width: 5.8, height: 8.5))
+        #expect(reopened.pages == set)
+        reopened.setPageSize(nil)                           // an empty entry
+        #expect(reopened.pageSize?.override == nil)
+        #expect(zip(reopened.pages, measured).allSatisfy { $0.leftCrop == $1.leftCrop && $0.rightCrop == $1.rightCrop })
+    }
+
+    @Test("Too few pages to measure on: the crops are left as found")
+    func tooFew() async throws {
+        let book = Book(count: 4, strips: true)
+        let (m, _, url) = await load(book)
+        #expect(m.pageSize?.width == nil && m.pageSize?.height == nil)
+        let doc = try #require(PDFDocument(url: url))
+        for (i, p) in m.pages.enumerated() {
+            let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: i)!, dpi: 110))
+            let a = AppModel.analyzePage(cg, deskew: true, target: .page)
+            #expect(p.leftCrop == a.result.leftCrop && p.rightCrop == a.result.rightCrop)
+        }
+    }
+
+    @Test("Text block crops are untouched by the page size")
+    func textBlockUnchanged() async throws {
+        let (m, _, url) = await load(Book(count: 12, strips: true), target: .text)
+        #expect(m.pageSize == nil)
+        let doc = try #require(PDFDocument(url: url))
+        for (i, p) in m.pages.enumerated() where i != Book.short {
+            let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: i)!, dpi: 110))
+            let a = AppModel.analyzePage(cg, deskew: true, target: .text)
+            #expect(p.leftCrop == a.result.leftCrop && p.rightCrop == a.result.rightCrop)
+        }
+    }
+}

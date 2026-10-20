@@ -13,6 +13,9 @@ enum PageAnalyzer {
         /// No content was found on that side (a blank page).
         var leftBlank = false
         var rightBlank = false
+        /// Whole page only: what each side shows of its sheet (see `sheet`).
+        var leftSheet: Sheet?
+        var rightSheet: Sheet?
     }
 
     /// Analyze one rendered page. `forced` (spread or single) overrides the
@@ -32,10 +35,16 @@ enum PageAnalyzer {
             let paper = paperBounds(g, xRange: side, turned: turned)
             return blank ? paper : paper.union(text)
         }
+        // The sheet's edges are looked for in finer detail: a page size is
+        // measured to the percent.
+        let fine = GrayBuffer(cgImage: cgImage, maxDim: 1600) ?? g
         if r.classification == .spread {
+            r.leftSheet = sheet(fine, xRange: 0..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
+            r.rightSheet = sheet(fine, xRange: r.splitX..<1, turned: turns.right, text: r.rightBlank ? nil : r.rightCrop)
             r.leftCrop = page(0..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
             r.rightCrop = page(r.splitX..<1, turns.right, r.rightCrop, r.rightBlank)
         } else {
+            r.leftSheet = sheet(fine, xRange: 0..<1, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
             r.leftCrop = page(0..<1, turns.left, r.leftCrop, r.leftBlank)
         }
         return r
@@ -213,11 +222,18 @@ enum PageAnalyzer {
     /// the region was straightened by, about its own center; the crop keeps clear
     /// of the corners that turn left empty.
     static func paperBounds(_ g: GrayBuffer, xRange: Range<Double>, turned degrees: Double = 0) -> CropRect {
+        paperBox(g, xRange: xRange, turned: degrees).rect
+    }
+
+    /// paperBounds, and for each edge (left, right, top, bottom) whether it is
+    /// paper meeting background: false where the paper ran to the region's own
+    /// edge or the turn's empty corners moved it.
+    private static func paperBox(_ g: GrayBuffer, xRange: Range<Double>, turned degrees: Double)
+        -> (rect: CropRect, seen: [Bool]) {
         let x0 = max(0, Int(Double(g.width) * xRange.lowerBound))
         let x1 = min(g.width, Int(Double(g.width) * xRange.upperBound))
-        guard x1 > x0, g.height > 0 else {
-            return CropRect(x: xRange.lowerBound, y: 0, width: max(0, xRange.upperBound - xRange.lowerBound), height: 1)
-        }
+        let whole = CropRect(x: xRange.lowerBound, y: 0, width: max(0, xRange.upperBound - xRange.lowerBound), height: 1)
+        guard x1 > x0, g.height > 0 else { return (whole, [false, false, false, false]) }
 
         // Which pixels the turn filled in: those outside the turned rectangle.
         let cx = Double(x0 + x1) / 2, cy = Double(g.height) / 2
@@ -272,21 +288,100 @@ enum PageAnalyzer {
         // sizes (a, b) with both of its corners' constraints just met,
         // a·cos + b·sin = w/2 and a·sin + b·cos = h/2 (less a pixel and a half).
         // Straightening turns a few degrees; past 45° no upright box is meant.
+        let found = (left, right, top, bottom)
         if turned {
             let c = abs(cosT), s = abs(sinT), W = hw - 1.5, H = hh - 1.5
             let a = c > s ? (W * c - H * s) / (c * c - s * s) : 0, b = c > s ? (H * c - W * s) / (c * c - s * s) : 0
             left = max(left, Int((cx - a).rounded(.up))); right = min(right, Int((cx + a).rounded(.down)))
             top = max(top, Int((cy - b).rounded(.up))); bottom = min(bottom, Int((cy + b).rounded(.down)))
         }
-        guard right > left, bottom > top else {
-            return CropRect(x: xRange.lowerBound, y: 0, width: max(0, xRange.upperBound - xRange.lowerBound), height: 1)
-        }
+        guard right > left, bottom > top else { return (whole, [false, false, false, false]) }
+        let seen = [left == found.0 && left != x0, right == found.1 && right != x1,
+                    top == found.2 && top != 0, bottom == found.3 && bottom != g.height]
         // An edge that stayed at the region's own edge is exactly that edge.
         let minX = left == x0 ? xRange.lowerBound : Double(left) / Double(g.width)
         let maxX = right == x1 ? xRange.upperBound : Double(right) / Double(g.width)
         let minY = top == 0 ? 0 : Double(top) / Double(g.height)
         let maxY = bottom == g.height ? 1 : Double(bottom) / Double(g.height)
-        return CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        return (CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY), seen)
+    }
+
+    /// What one book page shows of its own sheet, for the book's page size: its
+    /// text block (nil on a blank page) and each sheet edge that can be trusted,
+    /// normalized like a crop (nil where it can't).
+    struct Sheet: Codable, Equatable {
+        var text: CropRect?
+        var minX, maxX, minY, maxY: Double?
+    }
+
+    /// The sheet's edges around `text`. Walking out from the text, the margin is
+    /// clean paper up to the sheet's edge. There the paper meets the scanner
+    /// background or a fold, and the edge can be trusted; or it meets a strip of
+    /// the neighbouring leaves' edges (lines, or a grey band, the height of the
+    /// page), and the sheet ends where the strip begins. A scan cut inside the
+    /// paper (the image's own border), a corner left empty by straightening, or a
+    /// stray mark in the margin give no edge.
+    static func sheet(_ g: GrayBuffer, xRange: Range<Double>, turned degrees: Double = 0, text: CropRect?) -> Sheet {
+        guard let text else { return Sheet() }
+        let (paper, seen) = paperBox(g, xRange: xRange, turned: degrees)
+        let W = Double(g.width), H = Double(g.height)
+        let L = Int((paper.minX * W).rounded()), R = Int((paper.maxX * W).rounded())
+        let T = Int((paper.minY * H).rounded()), B = Int((paper.maxY * H).rounded())
+        let tx0 = max(L, Int((text.minX * W).rounded(.down))), tx1 = min(R, Int((text.maxX * W).rounded(.up)))
+        let ty0 = max(T, Int((text.minY * H).rounded(.down))), ty1 = min(B, Int((text.maxY * H).rounded(.up)))
+        guard R > L, B > T, tx1 > tx0, ty1 > ty0 else { return Sheet(text: text) }
+        let level = g.paperLevel(columns: L..<R)
+        // A line of the margin (a column beside the text, or a row above or below
+        // it, across the text's own extent): clean paper, or part of a strip.
+        func line(_ i: Int, vertical: Bool) -> (clean: Bool, strip: Bool) {
+            let span = vertical ? ty0..<ty1 : tx0..<tx1
+            var dark = 0, sum = 0
+            for j in span {
+                let v = Int(vertical ? g.value(i, j) : g.value(j, i))
+                sum += v
+                if Double(v) < 0.75 * level { dark += 1 }
+            }
+            let share = Double(dark) / Double(span.count), mean = Double(sum) / Double(span.count)
+            return (share <= 0.02 && mean >= 0.88 * level, share >= 0.5 || mean < 0.88 * level)
+        }
+        // From the text's edge `from` out to the paper's edge `to` (exclusive of it).
+        func edge(from: Int, to: Int, step: Int, vertical: Bool, seen: Bool, extent: Int) -> Int? {
+            var i = from
+            while i != to {
+                if !line(i, vertical: vertical).clean { break }
+                i += step
+            }
+            // A margin of clean paper first (not the text block running out to
+            // the paper's edge, or print cut off by the scan's border).
+            guard abs(i - from) >= max(2, extent / 50) else { return nil }
+            if i == to { return seen ? to : nil }               // clean to the paper's edge
+            // A strip of leaves, out to the paper's edge: thin, and a line of it
+            // the page's length (a stray mark in the margin is short).
+            guard abs(to - i) <= max(4, extent * 8 / 100) else { return nil }
+            var k = i, hit = false
+            while k != to {
+                if line(k, vertical: vertical).strip { hit = true; break }
+                k += step
+            }
+            return hit ? i - step : nil                          // the last clean line
+        }
+        let spanX = R - L, spanY = B - T
+        var s = Sheet(text: text)
+        // Edges as normalized positions: a left/top edge sits before its first
+        // clean line, a right/bottom one after its last.
+        if let e = edge(from: tx0 - 1, to: L - 1, step: -1, vertical: true, seen: seen[0], extent: spanX) {
+            s.minX = e == L - 1 ? paper.minX : Double(e) / W
+        }
+        if let e = edge(from: tx1, to: R, step: 1, vertical: true, seen: seen[1], extent: spanX) {
+            s.maxX = e == R ? paper.maxX : Double(e + 1) / W
+        }
+        if let e = edge(from: ty0 - 1, to: T - 1, step: -1, vertical: false, seen: seen[2], extent: spanY) {
+            s.minY = e == T - 1 ? paper.minY : Double(e) / H
+        }
+        if let e = edge(from: ty1, to: B, step: 1, vertical: false, seen: seen[3], extent: spanY) {
+            s.maxY = e == B ? paper.maxY : Double(e + 1) / H
+        }
+        return s
     }
 
     /// `more`: also keep the print the rules marked "(more)" below take in.

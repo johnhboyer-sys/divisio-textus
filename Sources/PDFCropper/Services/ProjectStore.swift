@@ -17,6 +17,11 @@ enum ProjectStore {
         var direction: ReadingDirection
         /// Absent in saves made before whole-page crops existed: text block.
         var cropTarget: CropTarget?
+        /// The page size typed in for Whole page crops; absent: measured.
+        var pageSize: PageSize?
+        /// Pages whose crops analysis set and nobody has edited since, with what
+        /// it found on them (see AppModel.setByAnalysis); absent in older saves.
+        var claims: [BookPage.ID: AnalysisClaim]?
     }
 
     /// Identifies a PDF by its size plus a hash of its first 4 MB: unique enough
