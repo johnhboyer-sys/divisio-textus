@@ -389,13 +389,16 @@ final class AppModel: ObservableObject {
                 }
                 if !stillCurrent { return }
             }
-            // Spreads whose split must move (see splitMoves) are
+            // Spreads whose split must move (see splitMoves, foldMoves) are
             // analysed again at the new split: each half's angle and text depend
             // on where the halves meet.
             // The pages as this last phase starts: it changes only pages still so.
-            let (moves, start) = await MainActor.run { () -> ([(id: BookPage.ID, index: Int, split: Double)], [BookPage]) in
+            let (moves, start) = await MainActor.run { () -> ([SplitMove], [BookPage]) in
                 guard self.document === current, self.analysisRun == run else { return ([], []) }
-                return (self.splitMoves(self.setByAnalysis.filter { passIDs.contains($0.key) }), self.pages)
+                let found = self.setByAnalysis.filter { passIDs.contains($0.key) }
+                let moves = self.splitMoves(found)
+                let moved = Set(moves.map(\.id))
+                return (moves + self.foldMoves(found.filter { !moved.contains($0.key) }), self.pages)
             }
             if let hook = await MainActor.run(body: { self.beforeReanalysis }) { await hook() }
             var redone: [BookPage.ID: Analysis] = [:]
@@ -403,7 +406,8 @@ final class AppModel: ObservableObject {
                 autoreleasepool {
                     guard let pdfPage = doc?.page(at: move.index),
                           let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-                    redone[move.id] = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split)
+                    let analysis = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split)
+                    if !move.fold || Self.foldHolds(analysis.result) { redone[move.id] = analysis }
                 }
             }
             let results = redone
@@ -444,15 +448,55 @@ final class AppModel: ObservableObject {
     /// one beside a blank page get the usual split instead; they must then be
     /// analysed again there (each half's angle and text depend on it). A book's
     /// gutter can genuinely move from spread to spread, so only those.
-    private func splitMoves(_ sides: [BookPage.ID: AnalysisClaim]) -> [(id: BookPage.ID, index: Int, split: Double)] {
+    private func splitMoves(_ sides: [BookPage.ID: AnalysisClaim]) -> [SplitMove] {
         let spreads = pages.indices.filter { pages[$0].classification == .spread }
         guard spreads.count >= 3 else { return [] }
         let usualSplit = spreads.map { pages[$0].splitX }.sorted()[spreads.count / 2]
         return spreads.compactMap { i in
             guard let found = sides[pages[i].id], abs(pages[i].splitX - usualSplit) > 0.06,
                   found.leftBlank || found.rightBlank else { return nil }
-            return (pages[i].id, pages[i].sourceIndex, usualSplit)
+            return SplitMove(id: pages[i].id, index: pages[i].sourceIndex, split: usualSplit, fold: false)
         }
+    }
+
+    /// A spread to analyse again with its split at `split`; `fold`: moved onto
+    /// the fold (see foldMoves).
+    private struct SplitMove {
+        let id: BookPage.ID, index: Int, split: Double, fold: Bool
+    }
+
+    /// Whole page: the split must be on the fold, or one page's box is squeezed
+    /// (no crop crosses the split). On a spread whose two outer sheet edges are
+    /// trusted, the fold lies midway between them. The spreads in `sides` (what
+    /// an analysis pass just set) whose split lies off that by more than a
+    /// little, and by at most a tenth of the scan, move there, if the move
+    /// carries no print across: the side giving up the strip has its print
+    /// (the text block without its shading, less its room) clear of the fold.
+    private func foldMoves(_ sides: [BookPage.ID: AnalysisClaim]) -> [SplitMove] {
+        guard cropTarget == .page else { return [] }
+        let pad = PageAnalyzer.textPadding
+        return pages.indices.compactMap { i in
+            let page = pages[i]
+            guard page.classification == .spread, let found = sides[page.id], !found.leftBlank, !found.rightBlank,
+                  let a = found.leftSheet?.minX, let b = found.rightSheet?.maxX,
+                  let left = found.leftSheet?.text, let right = found.rightSheet?.text else { return nil }
+            let fold = (a + b) / 2, split = page.splitX
+            guard abs(fold - split) > 0.002, abs(fold - split) <= 0.1 else { return nil }
+            // Text cut off at the split may have print right up to it.
+            let clear = fold < split ? left.maxX < split - 1e-9 && left.maxX - pad <= fold
+                                     : right.minX > split + 1e-9 && right.minX + pad >= fold
+            guard clear else { return nil }
+            return SplitMove(id: page.id, index: page.sourceIndex, split: fold, fold: true)
+        }
+    }
+
+    /// Analysed again at the fold, the spread bears it out: both outer edges
+    /// still trusted, and the fold midway between them still where the split is.
+    /// (Otherwise the page keeps what it had.)
+    nonisolated private static func foldHolds(_ r: PageAnalyzer.Result) -> Bool {
+        guard r.classification == .spread, !r.leftBlank, !r.rightBlank,
+              let a = r.leftSheet?.minX, let b = r.rightSheet?.maxX else { return false }
+        return abs((a + b) / 2 - r.splitX) <= 0.004
     }
 
     /// Nearly empty pages (a part title, a chapter's last few lines) get crops far
@@ -521,10 +565,13 @@ final class AppModel: ObservableObject {
         let id = pages[idx].id
         var claim = AnalysisClaim(analysis.result)
         let found = pages
-        if let move = splitMoves([id: claim]).first {
-            analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: .spread, target: cropTarget, split: move.split)
-            apply(analysis, to: idx)
-            claim = AnalysisClaim(analysis.result)
+        if let move = splitMoves([id: claim]).first ?? foldMoves([id: claim]).first {
+            let moved = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: .spread, target: cropTarget, split: move.split)
+            if !move.fold || Self.foldHolds(moved.result) {
+                analysis = moved
+                apply(analysis, to: idx)
+                claim = AnalysisClaim(analysis.result)
+            }
         }
         // And the book's page size, as measured on the other pages. (The edit
         // that called this then counts the page as edited by hand.)
@@ -858,8 +905,8 @@ final class AppModel: ObservableObject {
 
     /// Whole page: put a box of the book's page size on each page analysis set
     /// (or only those in `only`), where its sheet is, and crop to that box (within
-    /// the paper analysis found, so inside the page's half) and the text block, so
-    /// print is never cut. An axis with no
+    /// the paper analysis found, or at a spread's gutter its half) and the text
+    /// block, so print is never cut. An axis with no
     /// size (not measured, none typed in) keeps the crop analysis found.
     private func placeSheets(only: Set<BookPage.ID>? = nil) {
         guard cropTarget == .page else { return }
@@ -897,7 +944,12 @@ final class AppModel: ObservableObject {
                 let region = (side.member.regionMinX, side.member.regionMinX + side.member.regionWidth)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
-                    let paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
+                    var paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
+                    // A spread's page runs on into the fold: an edge found at its
+                    // gutter (the paper's or the sheet's) is where the binding's
+                    // shade, a crease or the fold's dark line begins. Its half ends it.
+                    if side.member.side == .left { paper.1 = region.1 }
+                    if side.member.side == .right { paper.0 = region.0 }
                     let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) }, within: region)
                     crop.x = s.0; crop.width = s.1 - s.0
                 }

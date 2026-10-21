@@ -41,6 +41,10 @@ enum PageAnalyzer {
         if r.classification == .spread {
             r.leftSheet = sheet(fine, xRange: 0..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
             r.rightSheet = sheet(fine, xRange: r.splitX..<1, turned: turns.right, text: r.rightBlank ? nil : r.rightCrop)
+            // The page size is placed by, and never cuts, the text without the
+            // binding's shading (the sheet's edges were found from all of it).
+            if !r.leftBlank { r.leftSheet?.text = withoutGutterShade(fine, text: r.leftCrop, xRange: 0..<r.splitX, gutterRight: true) }
+            if !r.rightBlank { r.rightSheet?.text = withoutGutterShade(fine, text: r.rightCrop, xRange: r.splitX..<1, gutterRight: false) }
             r.leftCrop = page(0..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
             r.rightCrop = page(r.splitX..<1, turns.right, r.rightCrop, r.rightBlank)
         } else {
@@ -382,6 +386,146 @@ enum PageAnalyzer {
             s.maxY = e == B ? paper.maxY : Double(e + 1) / H
         }
         return s
+    }
+
+    /// The room a text block is given around its print, as a share of the page.
+    static let textPadding = 0.012
+
+    /// A spread side's text block without the binding's shading at the gutter
+    /// (`gutterRight`: the gutter is at the region's right). The text block takes
+    /// in shading, a crease or the paper beyond the fold as if printed; this
+    /// walks in from its gutter edge to the first column holding print and
+    /// keeps the usual room past that. Print is a mark clearly darker than the
+    /// paper or shade beside it, across or along (a letter's stroke, a digit's
+    /// bar), and big enough to be more than a speck: a shadow is smooth, its
+    /// mottling is specks, a crease is a long pale line down the page, and the
+    /// page's dark top or bottom edge lies at the scan's own edge. A dark line
+    /// down the page (a printed rule, or the fold itself) counts as print, so
+    /// the walk stops there.
+    /// At most 12% of the region is taken off.
+    static func withoutGutterShade(_ g: GrayBuffer, text: CropRect, xRange: Range<Double>, gutterRight: Bool) -> CropRect {
+        let W = g.width, H = g.height
+        let hx0 = max(0, Int(Double(W) * xRange.lowerBound)), hx1 = min(W, Int(Double(W) * xRange.upperBound))
+        let tx0 = max(hx0, Int((text.minX * Double(W)).rounded(.down))), tx1 = min(hx1, Int((text.maxX * Double(W)).rounded(.up)))
+        let ty0 = max(0, Int((text.minY * Double(H)).rounded(.down))), ty1 = min(H, Int((text.maxY * Double(H)).rounded(.up)))
+        let cap = (hx1 - hx0) * 12 / 100
+        guard tx1 - tx0 > 2 * cap, ty1 - ty0 > 8, cap > 0 else { return text }
+        // The columns walked, and some beyond, so a glyph across the far end is
+        // whole, out to the region's gutter edge, so a shadow there is too.
+        let walk = gutterRight ? (tx1 - cap)..<tx1 : tx0..<(tx0 + cap)
+        let rx0 = gutterRight ? max(hx0, walk.lowerBound - 30) : hx0, rx1 = gutterRight ? hx1 : min(hx1, walk.upperBound + 30)
+        let rw = rx1 - rx0, rh = ty1 - ty0
+        let paper = g.paperLevel(columns: hx0..<hx1)
+        // Two kinds of mark. A stroke: darker than 60% of the light on both
+        // sides of it within 6 px, across (both sides inside the region) or along;
+        // that light at least a third of the paper's, so the noise in a black
+        // shadow is none. And ink: darker than half the paper, so a black box or
+        // bar too thick to be a stroke is seen (a black shadow is too; see below).
+        var stroke = [Bool](repeating: false, count: rw * rh), ink = stroke
+        var ratio = [Double](repeating: 1, count: rw * rh)
+        for y in ty0..<ty1 {
+            for x in rx0..<rx1 {
+                let v = Double(g.value(x, y)), i = (y - ty0) * rw + (x - rx0)
+                ink[i] = v < 0.5 * paper
+                var lit = 0.0
+                if x - 6 >= hx0 && x + 6 < hx1 {
+                    var l: UInt8 = 0, r: UInt8 = 0
+                    for k in 1...6 { l = max(l, g.value(x - k, y)); r = max(r, g.value(x + k, y)) }
+                    lit = Double(min(l, r))
+                }
+                if y - 6 >= 0 && y + 6 < H {
+                    var u: UInt8 = 0, d: UInt8 = 0
+                    for k in 1...6 { u = max(u, g.value(x, y - k)); d = max(d, g.value(x, y + k)) }
+                    lit = max(lit, Double(min(u, d)))
+                }
+                guard lit >= 0.3 * paper, v < 0.6 * lit else { continue }
+                stroke[i] = true
+                ratio[i] = v / lit
+            }
+        }
+        // Marks touching (8 ways) make one piece. Print: the columns of the
+        // pieces `isPrint` keeps, more than specks.
+        var printed = [Bool](repeating: false, count: rw)
+        func pieces(_ mark: [Bool], isPrint: (_ pixels: [Int], _ xs: ClosedRange<Int>, _ ys: ClosedRange<Int>) -> Bool) {
+            var seen = [Bool](repeating: false, count: rw * rh)
+            for start in 0..<(rw * rh) where mark[start] && !seen[start] {
+                var stack = [start], pixels: [Int] = []
+                seen[start] = true
+                var minX = rw, maxX = -1, minY = rh, maxY = -1
+                while let i = stack.popLast() {
+                    pixels.append(i)
+                    let px = i % rw, py = i / rw
+                    minX = min(minX, px); maxX = max(maxX, px); minY = min(minY, py); maxY = max(maxY, py)
+                    for dy in -1...1 {
+                        for dx in -1...1 {
+                            let nx = px + dx, ny = py + dy
+                            guard nx >= 0, nx < rw, ny >= 0, ny < rh else { continue }
+                            let j = ny * rw + nx
+                            if mark[j] && !seen[j] { seen[j] = true; stack.append(j) }
+                        }
+                    }
+                }
+                guard pixels.count >= 4, isPrint(pixels, minX...maxX, minY...maxY) else { continue }
+                for x in minX...maxX { printed[x] = true }
+            }
+        }
+        func toGutter(_ xs: ClosedRange<Int>) -> Bool { gutterRight ? rx0 + xs.upperBound >= hx1 - 7 : rx0 + xs.lowerBound <= hx0 + 6 }
+        // The page's dark top or bottom edge (where it curls into the fold): a
+        // piece at the scan's very top or bottom, reaching no further than 7%
+        // into the page; or a line across a little lower, running on to the
+        // gutter. (A running head or a rule stops short of the scan's edge and
+        // of the fold.)
+        func pageEdge(_ xs: ClosedRange<Int>, _ ys: ClosedRange<Int>) -> Bool {
+            let top = ty0 + ys.lowerBound, bottom = ty0 + ys.upperBound
+            if top <= H / 100 && bottom < H * 7 / 100 { return true }
+            if bottom >= H - 1 - H / 100 && top >= H - H * 7 / 100 { return true }
+            let atEdge = bottom < H * 6 / 100 || top >= H - H * 6 / 100
+            return xs.count >= 20 && xs.count >= 5 * ys.count && toGutter(xs) && atEdge
+        }
+        pieces(stroke) { pixels, xs, ys in
+            let w = xs.count, h = ys.count
+            if pageEdge(xs, ys) { return false }
+            // A line down: print only if dark (a crease is pale).
+            if h >= 20 && h >= 5 * w {
+                let dark = pixels.map { ratio[$0] }.sorted()
+                return dark[dark.count / 2] <= 0.35
+            }
+            // A sliver a pixel wide is a darker bit of a crease; a letter's
+            // strokes are wider, or have others within the room kept past them.
+            return w >= 2
+        }
+        // Ink running on to the gutter is the shadow there, if it runs down half
+        // the text's height or more, or fades into the page (a black block or a
+        // picture at the gutter has paper right beside it). Other ink too thick
+        // to be strokes is print (a dark spot in a crease is small).
+        func fades(_ pixels: [Int]) -> Bool {
+            var inner = [Int: Int]()                                   // row: the pixel furthest from the gutter
+            for i in pixels {
+                let x = i % rw, y = i / rw
+                inner[y] = gutterRight ? min(inner[y] ?? x, x) : max(inner[y] ?? x, x)
+            }
+            let sharp = inner.filter { y, x in
+                let beyond = rx0 + x + (gutterRight ? -3 : 3)
+                return beyond >= hx0 && beyond < hx1 && Double(g.value(beyond, ty0 + y)) >= 0.8 * paper
+            }.count
+            return sharp * 2 < inner.count
+        }
+        pieces(ink) { pixels, xs, ys in
+            guard !pageEdge(xs, ys), pixels.count >= 40, min(xs.count, ys.count) >= 6 else { return false }
+            return !(toGutter(xs) && (ys.count * 2 >= rh || fades(pixels)))
+        }
+        let columns = gutterRight ? Array(walk.reversed()) : Array(walk)
+        let stop = columns.first { printed[$0 - rx0] } ?? (gutterRight ? walk.lowerBound : walk.upperBound - 1)
+        var c = text
+        if gutterRight {
+            let edge = min(text.maxX, Double(stop + 1) / Double(W) + textPadding)
+            c.width = edge - c.x
+        } else {
+            let edge = max(text.minX, Double(stop) / Double(W) - textPadding)
+            c.width = c.maxX - edge
+            c.x = edge
+        }
+        return c
     }
 
     /// `more`: also keep the print the rules marked "(more)" below take in.
@@ -859,7 +1003,7 @@ enum PageAnalyzer {
             return (r, true)
         }
 
-        let pad = 0.012 // ~1.2% normalized padding around the detected content
+        let pad = textPadding // ~1.2% normalized padding around the detected content
         var rect = CropRect(
             x: Double(left) / Double(g.width) - pad,
             y: Double(top) / Double(g.height) - pad,

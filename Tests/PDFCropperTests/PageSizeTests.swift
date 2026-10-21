@@ -360,20 +360,20 @@ struct MovedSplitTests {
                     "page \(p.sourceIndex) changed: \(p.leftCrop) \(p.rightCrop), expected \(left) \(right)")
         }
         #expect(target == .page || evened == 1)              // the short page
-        try check(m, doc)
+        try Self.checkPrint(m, doc)
         if target == .page {                    // a size re-places every page from its text
             undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
-            try check(m, doc)
+            try Self.checkPrint(m, doc)
         }
         // Re-detecting one of them alone gives the same treatment.
         m.selectedPageID = m.pages[4].id
         undoable(undo) { m.reanalyzeSelected() }
-        try check(m, doc)
+        try Self.checkPrint(m, doc)
     }
 
     /// Straighten each page as export does, at its final split and angles, and
     /// look for dark pixels outside the crop of the half they are in.
-    private func check(_ m: AppModel, _ doc: PDFDocument) throws {
+    static func checkPrint(_ m: AppModel, _ doc: PDFDocument) throws {
         for p in m.pages {
             #expect(p.leftCrop.maxX <= p.splitX + 1e-9 && p.rightCrop.minX >= p.splitX - 1e-9)
             let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: p.sourceIndex)!, dpi: 110))

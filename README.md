@@ -81,7 +81,9 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    It then gives the whole book one page size: measured on the pages whose
    sheet edges show (paper meeting the scanner bed, or the strip of
    neighbouring leaves beyond it), placed on each page where its sheet is, so
-   those strips are left out. The inspector shows the size, and you can type
+   those strips are left out. A spread whose two outer edges show has its
+   split moved onto the fold, midway between them, and the binding's shading
+   by the gutter isn't taken for print. The inspector shows the size, and you can type
    the book's real size instead.
 5. **Edit** in the UI: drag the orange split line, drag/resize the blue (left) and
    green (right) crop boxes, right-click a thumbnail to change its type.
