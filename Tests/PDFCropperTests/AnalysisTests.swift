@@ -150,6 +150,81 @@ struct AnalysisTests {
         #expect(abs(r.splitX - 0.5) < 0.01, "split \(r.splitX)")
     }
 
+    @Test("A dashed fold line down the middle of a white gutter is the split", arguments: [0.47, 0.5, 0.53])
+    func dashedFoldLine(fold: Double) {
+        // As on Freudenthal 1999 p74: the fold is a thin line, broken every few
+        // lines, in a pale shade, with a white margin on each side of it.
+        let f = Int(fold * Double(Self.width))
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, f - 105)
+            Self.text(c, f + 95, 1850)
+            c.setFillColor(CGColor(gray: 0.88, alpha: 1))
+            c.fill(CGRect(x: f - 20, y: 0, width: 40, height: Self.height))         // the shade
+            c.setFillColor(CGColor(gray: 0.4, alpha: 1))
+            for y in stride(from: 0, to: Self.height, by: 50) {
+                c.fill(CGRect(x: f - 1, y: y, width: 3, height: 32))                // the line, 64% of it
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - fold) < 0.004, "split \(r.splitX), fold \(fold)")
+    }
+
+    /// Frames two thirds of the page tall: thin lines with white on both sides, yet not the fold.
+    @Test("Two framed pages: the split is the middle of the gap between the frames, on neither frame")
+    func framedPages() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 200, 880)
+            Self.text(c, 1120, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            for x in [150, 930, 1070, 1850] {                                        // each page's frame
+                c.fill(CGRect(x: x, y: 250, width: 3, height: 850))
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 935.0 / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
+    }
+
+    @Test("One page's frame beside the gutter is not the fold (Codex review)")
+    func oneFrameBesideGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 900)
+            Self.text(c, 1100, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            c.fill(CGRect(x: 1070, y: 250, width: 3, height: 850))                   // the right page's frame
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 900.0 / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
+    }
+
+    @Test("A box on one page, as far from its text as from the gutter, is not the fold; its heading stays whole (Codex review 2)")
+    func boxBesideGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 900)
+            Self.text(c, 1180, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            c.fill(CGRect(x: 1040, y: 200, width: 3, height: 850))                   // the box's side,
+            c.fill(CGRect(x: 1040, y: 200, width: 810, height: 3))                   // bottom
+            c.fill(CGRect(x: 1040, y: 1047, width: 810, height: 3))                  // and top
+            c.fill(CGRect(x: 1020, y: Self.height - 40, width: 280, height: 12))     // a heading above it
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 900.0 / 2000 && r.splitX < 1020.0 / 2000, "split \(r.splitX)")
+    }
+
+    @Test("A thin rule in a table that the margin test turns down leaves the gutter as it was (Codex review 2)")
+    func tableRuleLeavesGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 960)
+            Self.text(c, 1040, 1100)                                                 // a table's first column,
+            Self.text(c, 1190, 1850)                                                 // then the rest
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            c.fill(CGRect(x: 1118, y: 300, width: 3, height: 800))                   // a rule between them
+            c.fill(CGRect(x: 1100, y: Self.height - 40, width: 250, height: 12))     // the page's heading
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 960.0 / 2000 && r.splitX < 1040.0 / 2000, "split \(r.splitX)")
+    }
+
     @Test("A binding shadow is still taken as the gutter")
     func shadowGutter() {
         let image = Fixtures.image(Self.width, Self.height) { c in

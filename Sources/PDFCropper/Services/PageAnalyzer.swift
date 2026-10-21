@@ -126,27 +126,63 @@ enum PageAnalyzer {
             }
             return true
         }
-        let mid = Double(g.width) / 2
-        var best: (start: Int, length: Int)?
+        var runs: [(start: Int, length: Int)] = []
         var runStart: Int?
         for x in lo...hi {
             if x < hi && isEmpty(x) {
                 if runStart == nil { runStart = x }
             } else if let start = runStart {
-                let length = x - start
-                // Widest run wins; on a tie, the one nearer the middle.
-                if let b = best {
-                    let center = Double(start) + Double(length) / 2
-                    let bestCenter = Double(b.start) + Double(b.length) / 2
-                    if length > b.length || (length == b.length && abs(center - mid) < abs(bestCenter - mid)) {
-                        best = (start, length)
-                    }
-                } else {
-                    best = (start, length)
-                }
+                runs.append((start, x - start))
                 runStart = nil
             }
         }
+        // A fold drawn as a thin line, too broken (or tilted) for step 1, cuts
+        // the gap in two: the gap is both halves, and the fold is the line.
+        func line(_ xs: Range<Int>) -> Int? {
+            guard !xs.isEmpty, xs.count <= max(2, g.width / 160) else { return nil }
+            let share = { (x: Int) in Double((y0..<y1).filter { Double(g.value(x, $0)) < inkLevel }.count) / Double(y1 - y0) }
+            guard let x = xs.max(by: { share($0) < share($1) }), share(x) >= 0.5 else { return nil }
+            return x
+        }
+        // A box's side has rules running off from its ends; a fold has none.
+        func cornered(_ x: Int) -> Bool {
+            let inked = (y0..<y1).filter { y in (x - 1...x + 1).contains { Double(g.value($0, y)) < inkLevel } }
+            guard let top = inked.first, let bottom = inked.last else { return false }
+            let reach = max(3, g.width * 3 / 100)
+            func rule(_ y: Int, _ step: Int) -> Bool {
+                var n = 0, cx = x + 2 * step
+                while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < inkLevel { n += 1; cx += step }
+                return n >= reach
+            }
+            return [top, bottom].contains { end in
+                (max(0, end - 2)...min(g.height - 1, end + 2)).contains { rule($0, -1) || rule($0, 1) }
+            }
+        }
+        // Two runs with one such line between them, and no other beside them
+        // (each page's frame, say), are one gap whose middle is the fold, if
+        // the two pages' inner margins either side of it are much alike (one
+        // page's frame has its narrow inside margin on one side).
+        let links = runs.indices.dropLast().map { line((runs[$0].start + runs[$0].length)..<runs[$0 + 1].start) }
+        var gaps: [(start: Int, length: Int, fold: Int?)] = []
+        var k = 0
+        while k < runs.count {
+            if k < links.count, let x = links[k], k == 0 || links[k - 1] == nil, k + 1 >= links.count || links[k + 1] == nil,
+               3 * min(runs[k].length, runs[k + 1].length) >= max(runs[k].length, runs[k + 1].length), !cornered(x) {
+                gaps.append((runs[k].start, runs[k + 1].start + runs[k + 1].length - runs[k].start, x))
+                k += 2
+            } else {
+                gaps.append((runs[k].start, runs[k].length, nil))
+                k += 1
+            }
+        }
+        // Widest gap wins; on a tie, the one nearer the middle.
+        let mid = Double(g.width) / 2
+        func center(_ gap: (start: Int, length: Int, fold: Int?)) -> Double { Double(gap.start) + Double(gap.length) / 2 }
+        let widest = gaps.max { a, b in
+            a.length < b.length || (a.length == b.length && abs(center(a) - mid) > abs(center(b) - mid))
+        }
+        if let fold = widest?.fold { return Double(fold) / Double(g.width) }
+        let best = widest.map { (start: $0.start, length: $0.length) }
         // A real gutter (two page margins) is wide; a narrow gap is more likely a
         // gap in a table or between columns of one page.
         // A gap's middle can land on a running head or folio that the test above
