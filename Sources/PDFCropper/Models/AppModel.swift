@@ -406,6 +406,7 @@ final class AppModel: ObservableObject {
                     redone[move.id] = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split)
                 }
             }
+            let results = redone
             await MainActor.run {
                 guard self.document === current, self.analysisRun == run else { return }
                 // A switch of crop target undone meanwhile: these results are for
@@ -418,7 +419,7 @@ final class AppModel: ObservableObject {
                 // Pages edited or undone meanwhile keep what they are now.
                 let now = self.pages, claims = self.setByAnalysis
                 let changed = Set(zip(now, start).filter { $0.0 != $0.1 }.map(\.0.id))
-                for (id, analysis) in redone where !changed.contains(id) {
+                for (id, analysis) in results where !changed.contains(id) {
                     guard self.setByAnalysis[id] != nil, let i = self.pages.firstIndex(where: { $0.id == id }) else { continue }
                     self.apply(analysis, to: i)
                     self.setByAnalysis[id] = AnalysisClaim(analysis.result)
