@@ -69,8 +69,9 @@ final class AppModel: ObservableObject {
     private var thumbnailCache: [Int: NSImage] = [:]
     private let thumbnailDPI: Double = 30
 
-    /// The page as it was when a drag or slider edit began (see beginEdit / endEdit).
-    private var editSnapshot: BookPage?
+    /// The page, and analysis's claim on it, as they were when a drag or slider
+    /// edit began (see beginEdit / endEdit).
+    private var editSnapshot: (page: BookPage, claim: AnalysisClaim?)?
 
     // Edits are saved automatically (see ProjectStore) under this PDF's key.
     private var projectKey: String?
@@ -663,9 +664,30 @@ final class AppModel: ObservableObject {
     /// Throw away every edit and auto-detect all pages again (undoable).
     func autoDetectAllPages() {
         guard document != nil, !isBusy else { return }
-        perform("Auto-detect All Pages", claimPages: false) {
-            for i in pages.indices { pages[i].analyzed = false }
+        redetectAllPages()
+    }
+
+    /// Undo puts back the pages and their analysis claims as they were,
+    /// stopping the pass. Redo detects every page afresh, so it never brings
+    /// back a pass left half done.
+    private func redetectAllPages() {
+        let before = pages, claims = setByAnalysis
+        for i in pages.indices { pages[i].analyzed = false }
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                model.analysisRun += 1            // the pass stands down
+                model.isAnalyzing = false
+                for p in before {
+                    if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
+                }
+                model.setByAnalysis = claims
+                model.undoManager?.registerUndo(withTarget: model) { model in
+                    MainActor.assumeIsolated { model.redetectAllPages() }   // redo
+                }
+                model.undoManager?.setActionName("Auto-detect All Pages")
+            }
         }
+        undoManager?.setActionName("Auto-detect All Pages")
         analyzeAll()
     }
 
@@ -757,8 +779,7 @@ final class AppModel: ObservableObject {
         registerPageSizeUndo(restoring: changed, size: old)
     }
 
-    /// Undo for setPageSize: puts back the size and the pages, which stay
-    /// analysis's (unlike other undos, which count them as edited).
+    /// Undo for setPageSize: puts back the size and the pages, which stay analysis's.
     private func registerPageSizeUndo(restoring saved: [BookPage], size: PageSize?) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
@@ -994,11 +1015,11 @@ final class AppModel: ObservableObject {
     // MARK: - Undo
 
     /// Make a one-step change undoable. Pages it changes count as hand-edited
-    /// (analysis still running won't overwrite them) unless `claimPages` is false.
-    func perform(_ actionName: String, claimPages: Bool = true, _ change: () -> Void) {
-        let before = pages
+    /// (analysis still running won't overwrite them).
+    func perform(_ actionName: String, _ change: () -> Void) {
+        let before = pages, claims = setByAnalysis
         change()
-        finishEdit(before: before, actionName: actionName, claimPages: claimPages)
+        finishEdit(before: before, claims: claims, actionName: actionName)
     }
 
     /// Continuous edits (drags, sliders) of the selected page call beginEdit when
@@ -1007,55 +1028,62 @@ final class AppModel: ObservableObject {
     /// mid-gesture and must not be swept into the undo.
     func beginEdit() {
         guard editSnapshot == nil, let idx = selectedIndex else { return }
-        editSnapshot = pages[idx]
+        editSnapshot = (pages[idx], setByAnalysis[pages[idx].id])
         // Claim the page now so analysis still running can't overwrite the gesture.
         pages[idx].analyzed = true
         setByAnalysis[pages[idx].id] = nil
     }
 
     func endEdit(_ actionName: String) {
-        guard let before = editSnapshot else { return }
+        guard let snapshot = editSnapshot else { return }
         editSnapshot = nil
+        let before = snapshot.page
         guard let i = pages.firstIndex(where: { $0.id == before.id }) else { return }
         var after = pages[i]
         after.analyzed = before.analyzed
-        setByAnalysis[before.id] = nil
         guard after != before else {
             // Nothing changed: release the claim beginEdit made, so a page that
             // was waiting for analysis still gets analyzed.
+            setByAnalysis[before.id] = snapshot.claim
             if !before.analyzed {
                 pages[i].analyzed = false
                 analyzeAll()
             }
             return
         }
-        registerUndo(restoring: [before], actionName: actionName)
+        setByAnalysis[before.id] = nil      // an undo mid-gesture may have put it back
+        registerUndo(restoring: [before], claims: [before.id: snapshot.claim].compactMapValues { $0 },
+                     actionName: actionName)
     }
 
-    private func finishEdit(before: [BookPage], actionName: String, claimPages: Bool) {
+    private func finishEdit(before: [BookPage], claims: [BookPage.ID: AnalysisClaim], actionName: String) {
         guard before.count == pages.count else { return }
         let changed = pages.indices.filter { before[$0] != pages[$0] }
         guard !changed.isEmpty else { return }
         // A hand-edited page must not be overwritten by analysis still running.
-        if claimPages { for i in changed { pages[i].analyzed = true } }
+        for i in changed { pages[i].analyzed = true }
         for i in changed { setByAnalysis[pages[i].id] = nil }
-        registerUndo(restoring: changed.map { before[$0] }, actionName: actionName)
+        registerUndo(restoring: changed.map { before[$0] }, claims: claims, actionName: actionName)
     }
 
     /// Undo puts back only the pages the edit changed, so it never reverts
-    /// analysis results that arrived after the edit.
-    private func registerUndo(restoring saved: [BookPage], actionName: String) {
+    /// analysis results that arrived after the edit. Their analysis claims come
+    /// back with them (`claims`: as they were before the edit), so a page undone
+    /// to what analysis set is analysis's again.
+    private func registerUndo(restoring saved: [BookPage], claims: [BookPage.ID: AnalysisClaim], actionName: String) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 let current = saved.compactMap { p in model.pages.first { $0.id == p.id } }
+                let ids = Set(saved.map(\.id))
+                let currentClaims = model.setByAnalysis.filter { ids.contains($0.key) }
                 for p in saved {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
-                    model.setByAnalysis[p.id] = nil
+                    model.setByAnalysis[p.id] = claims[p.id]
                 }
-                model.registerUndo(restoring: current, actionName: actionName)  // redo
-                // Undoing or redoing "Auto-detect All Pages" can bring back pages that
-                // still need analysis; start a fresh pass for them.
+                model.registerUndo(restoring: current, claims: currentClaims, actionName: actionName)  // redo
+                // Undoing an edit made to a page still waiting for analysis brings
+                // it back unanalysed; start a fresh pass for it.
                 if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }
             }
         }

@@ -503,6 +503,85 @@ struct UndoDuringAnalysisTests {
                     "page \(p.sourceIndex): split \(p.splitX) vs \(q.splitX), \(p.leftCrop) \(p.rightCrop) vs \(q.leftCrop) \(q.rightCrop)")
         }
     }
+
+    @Test("Undo then redo of Auto-detect All mid-pass gives a complete pass", arguments: [CropTarget.text, .page])
+    func autoDetectUndoRedoMidPass(_ target: CropTarget) async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(target)
+        let url = MovedSplitTests.book()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        let gate = Gate()
+        m.beforeReanalysis = { await gate.wait() }
+        undoable(undo) { m.autoDetectAllPages() }
+        while !gate.isWaiting { try await Task.sleep(nanoseconds: 10_000_000) }
+        undo.undo()
+        gate.release()
+        await waitUntilIdle(m)
+        undo.redo()
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        #expect(!m.isBusy)
+        try await expectFresh(m, url, target)
+    }
+
+    @Test("A moved spread edited and undone while a pass finishes gets the pass's result", arguments: [CropTarget.text, .page])
+    func editUndoneMidPass(_ start: CropTarget) async throws {
+        let (m, undo, gate, url) = try await heldSwitch(from: start)
+        let mark = CropRect(x: 0.1, y: 0.2, width: 0.3, height: 0.5)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[5].leftCrop = mark } }       // a moved spread
+        m.selectedPageID = m.pages[6].id                                                 // and a drag on the other
+        undoable(undo) { m.beginEdit(); m.pages[6].rightCrop = mark; m.endEdit("Adjust Crop") }
+        undo.undo()
+        undo.undo()
+        gate.release()
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        let other: CropTarget = start == .text ? .page : .text
+        #expect(m.cropTarget == other && !m.isBusy)
+        #expect(m.pages.suffix(2).allSatisfy { abs($0.splitX - 0.5) < 0.03 }, "\(m.pages.map(\.splitX))")   // both moved
+        try await expectFresh(m, url, other)
+    }
+
+    @Test("A drag that goes on after an undo of the page's last edit counts as a hand edit")
+    func dragAfterUndo() async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(.page)
+        m.load(url: MovedSplitTests.book())
+        await waitUntilIdle(m)
+        let mark = CropRect(x: 0.1, y: 0.2, width: 0.3, height: 0.5)
+        m.selectedPageID = m.pages[1].id
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[1].leftCrop = CropRect(x: 0.05, y: 0.1, width: 0.3, height: 0.6) } }
+        m.beginEdit()
+        undo.undo()                              // mid-drag: the page is analysis's again
+        undoable(undo) { m.pages[1].leftCrop = mark; m.endEdit("Adjust Crop") }
+        undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
+        #expect(m.pages[1].leftCrop == mark)
+    }
+
+    /// Every page of `m` as a fresh pass over a copy of `url` with `target` leaves it.
+    private func expectFresh(_ m: AppModel, _ url: URL, _ target: CropTarget) async throws {
+        let fresh = testModel()
+        fresh.setCropTarget(target)
+        var data = try Data(contentsOf: url)
+        data.append(Data("\n%copy\n".utf8))                 // its own saved-edits key
+        let copy = Fixtures.url("copy-\(UUID().uuidString).pdf")
+        try data.write(to: copy)
+        fresh.load(url: copy)
+        await waitUntilIdle(fresh)
+        #expect(m.pages.count == fresh.pages.count)
+        for (p, q) in zip(m.pages, fresh.pages) {
+            #expect(p.splitX == q.splitX && p.leftSkew == q.leftSkew && p.rightSkew == q.rightSkew
+                    && p.leftCrop == q.leftCrop && p.rightCrop == q.rightCrop && p.classification == q.classification,
+                    "page \(p.sourceIndex): split \(p.splitX) vs \(q.splitX), \(p.leftCrop) \(p.rightCrop) vs \(q.leftCrop) \(q.rightCrop)")
+        }
+    }
 }
 
 /// A value a test hook can fill in.
