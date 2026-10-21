@@ -5,12 +5,21 @@ spread) into clean PDFs with **one book page per PDF page**, cropped to the
 content, straightened, searchable, and in correct reading order. Inspired by [Briss](https://briss.sourceforge.net/).
 
 Built with Swift + SwiftUI using only Apple frameworks (PDFKit, Core Image,
-Vision — no third-party dependencies).
+Vision — no third-party dependencies). Everything runs on your Mac: the app has
+no networking code and sends nothing anywhere.
+
+**Public beta (0.9).** Download the app from
+[Releases](https://github.com/johnhboyer-sys/divisio-textus/releases). If something
+goes wrong (a crash, a crop that cuts text, a page split in the wrong place),
+please [open an issue](https://github.com/johnhboyer-sys/divisio-textus/issues)
+saying which Mac and macOS version you use and, if you can, which book or scan.
 
 ## Requirements
 
-- macOS 14+
-- Swift 6 toolchain (Command Line Tools is enough — full Xcode not required)
+- macOS 14 or later, on Apple Silicon or Intel. So far it has been tested only
+  on macOS 27 (Apple Silicon, and Intel code under Rosetta); reports from
+  macOS 14, 15 and 26 are especially welcome.
+- To build it: a Swift 6 toolchain (Command Line Tools is enough — full Xcode not required)
 
 ## Run
 

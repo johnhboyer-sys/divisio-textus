@@ -1,11 +1,14 @@
 #!/bin/bash
-# Builds "Divisio Textus.app" — a self-contained, ad-hoc-signed macOS bundle from the
-# SwiftPM executable. Re-runnable; output goes to dist/.
+# Builds "Divisio Textus.app" — a self-contained macOS bundle from the SwiftPM
+# executable. Re-runnable; output goes to dist/. Signed with the Developer ID
+# Application identity when the keychain has one (or SIGN_IDENTITY names one),
+# otherwise ad hoc. NOTARIZE=1 also notarizes and staples it, using the
+# notarytool keychain profile "divisio-notary", and zips it for release.
 set -euo pipefail
 
 APP_NAME="Divisio Textus"
 BUNDLE_ID="com.johnboyer.divisiotextus"
-VERSION="1.0"
+VERSION="0.9"
 BUILD="1"
 
 PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -80,9 +83,31 @@ PLIST
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "==> Ad-hoc code signing"
 xattr -cr "$APP"   # strip extended attributes codesign rejects as "detritus"
-codesign --force --deep --sign - "$APP"
-codesign --verify --verbose "$APP" || true
+IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"' || true)}"
+if [ -n "$IDENTITY" ]; then
+    echo "==> Signing as $IDENTITY"
+    # Hardened runtime and a secure timestamp: notarization requires both.
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+    codesign --verify --strict --verbose "$APP"
+else
+    [ "${NOTARIZE:-0}" = 1 ] && { echo "NOTARIZE=1 needs a Developer ID Application identity"; exit 1; }
+    echo "==> Ad-hoc code signing (no Developer ID Application identity found)"
+    codesign --force --deep --sign - "$APP"
+    codesign --verify --verbose "$APP" || true
+fi
+
+if [ "${NOTARIZE:-0}" = 1 ]; then
+    ZIP="$PROJ_DIR/dist/${APP_NAME// /-}-$VERSION.zip"   # no spaces: GitHub renames those
+    echo "==> Notarizing"
+    rm -f "$ZIP"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    xcrun notarytool submit "$ZIP" --keychain-profile divisio-notary --wait
+    xcrun stapler staple "$APP"
+    rm -f "$ZIP"
+    ditto -c -k --keepParent "$APP" "$ZIP"     # the release download, ticket included
+    spctl --assess --type execute --verbose "$APP"
+    echo "    release zip: $ZIP"
+fi
 
 echo "==> Done: $APP"
