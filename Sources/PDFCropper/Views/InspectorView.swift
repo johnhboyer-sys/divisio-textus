@@ -1,145 +1,108 @@
 import SwiftUI
 
-/// Right panel: per-page controls + document-wide export settings.
+/// Right panel, in three tabs: this page (or, in Stack view, the stack), the whole
+/// book, and the export.
 struct InspectorView: View {
     @EnvironmentObject var model: AppModel
 
+    enum Tab: Hashable { case page, book, export }
+    // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
+    private let tabState = State(initialValue: Tab.page)
+
     var body: some View {
-        Form {
-            if let page = model.selectedPage, let idx = model.selectedIndex {
-                Section("Page \(page.sourceIndex + 1)") {
-                    Picker("Type", selection: Binding(
-                        get: { model.pages[idx].classification },
-                        set: { model.setClassification($0, for: page.id) })
-                    ) {
-                        ForEach(PageClassification.allCases) { c in
-                            Label(c.label, systemImage: c.symbol).tag(c)
-                        }
-                    }
+        VStack(spacing: 0) {
+            Picker("Inspector", selection: tabState.projectedValue) {
+                Text(model.showsStack ? "Stack" : "Page").tag(Tab.page)
+                Text("Book").tag(Tab.book)
+                Text("Export").tag(Tab.export)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2)
 
-                    Button {
-                        model.reanalyzeSelected()
-                    } label: {
-                        Label("Auto-detect this page", systemImage: "wand.and.stars")
-                    }
-
-                    switch page.classification {
-                    case .spread:
-                        Button {
-                            model.applyLayoutToAllSpreads()
-                        } label: {
-                            Label("Apply layout to all spreads", systemImage: "rectangle.on.rectangle")
-                        }
-                        .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
-                    case .single:
-                        Button {
-                            model.applySingleCrop(alternate: false)
-                        } label: {
-                            Label("Apply crop to all single pages", systemImage: "rectangle.on.rectangle")
-                        }
-                        Button {
-                            model.applySingleCrop(alternate: true)
-                        } label: {
-                            Label("Apply crop to alternate pages", systemImage: "rectangle.split.2x1")
-                        }
-                        .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
-                    case .skip:
-                        EmptyView()
-                    }
-
-                    if page.classification != .skip {
-                        Button {
-                            model.autoStraightenSelected()
-                        } label: {
-                            Label("Auto-straighten", systemImage: "wand.and.stars")
-                        }
-                        if page.classification == .spread {
-                            skewControl("Straighten left", leftSkewBinding(idx))
-                            skewControl("Straighten right", rightSkewBinding(idx))
-                        } else {
-                            skewControl("Straighten", leftSkewBinding(idx))
-                        }
-                    }
+            Form {
+                switch tabState.wrappedValue {
+                case .page:
+                    if model.showsStack { StackSections() } else { PageSections() }
+                case .book: BookSections()
+                case .export: ExportSections()
                 }
             }
-
-            if model.document != nil {
-                Section("Whole book") {
-                    Button {
-                        model.autoDetectAllPages()
-                    } label: {
-                        Label("Auto-detect all pages", systemImage: "wand.and.stars")
-                    }
-                    .help("Finds every page's split, type and crops again, replacing hand edits (⌘Z undoes it). Straightens too when Auto-straighten on import is on.")
-                    Button {
-                        Task { await model.autoStraightenAllPages() }
-                    } label: {
-                        Label("Auto-straighten all pages", systemImage: "wand.and.stars")
-                    }
-                    .help("Finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
-                }
-                .disabled(model.isBusy)
-            }
-
-            Section("Output") {
-                Picker("Color", selection: $model.enhanceMode) {
-                    ForEach(EnhanceMode.allCases) { m in
-                        Text(m.label).tag(m)
-                    }
-                }
-                Picker("Crop to", selection: Binding(get: { model.cropTarget },
-                                                     set: { model.setCropTarget($0) })) {
-                    ForEach(CropTarget.allCases) { t in
-                        Text(t.label).tag(t)
-                    }
-                }
-                .disabled(model.isBusy)
-                .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
-                if let size = model.pageSize {
-                    PageSizeRow(size: size)
-                }
-                Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
-                Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
-
-                Picker("Reading order", selection: $model.direction) {
-                    ForEach(ReadingDirection.allCases) { d in
-                        Text(d.label).tag(d)
-                    }
-                }
-
-                Toggle("Match scan resolution", isOn: $model.matchScanResolution)
-                    .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
-                VStack(alignment: .leading) {
-                    Text(model.matchScanResolution
-                         ? "Pages without a scan: \(Int(model.exportDPI)) DPI"
-                         : "Export resolution: \(Int(model.exportDPI)) DPI")
-                    Slider(value: $model.exportDPI, in: 150...600, step: 50)
-                }
-
-                LabeledContent("Source pages", value: "\(model.pages.count)")
-                LabeledContent("Output pages", value: "\(model.outputPageCount)")
-            }
-
-            Section {
-                Button {
-                    model.exportPanel()
-                } label: {
-                    Label("Export PDF…", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canExport)
-
-                if model.isExporting {
-                    HStack {
-                        ProgressView(value: model.exportProgress)
-                        Button("Cancel") { model.cancelExport() }
-                    }
-                }
-            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 240)
+        .frame(minWidth: 260)
+    }
+}
+
+/// The selected page's type, straightening and detection.
+private struct PageSections: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let page = model.selectedPage, let idx = model.selectedIndex {
+            Section("Page \(page.sourceIndex + 1)") {
+                Picker("Type", selection: Binding(
+                    get: { model.pages[idx].classification },
+                    set: { model.setClassification($0, for: page.id) })
+                ) {
+                    ForEach(PageClassification.allCases) { c in
+                        Text(c.label).tag(c)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if page.classification == .skip {
+                    Text("Left out of the export.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if page.classification != .skip {
+                Section("Straighten") {
+                    if page.classification == .spread {
+                        skewControl("Left", leftSkewBinding(idx))
+                        skewControl("Right", rightSkewBinding(idx))
+                    } else {
+                        skewControl("Angle", leftSkewBinding(idx))
+                    }
+                    Button {
+                        model.autoStraightenSelected()
+                    } label: {
+                        Label("Auto-straighten", systemImage: "level")
+                    }
+                }
+            }
+
+            Section("Crops") {
+                Button {
+                    model.reanalyzeSelected()
+                } label: {
+                    Label("Auto-detect this page", systemImage: "wand.and.stars")
+                }
+                switch page.classification {
+                case .spread:
+                    Button {
+                        model.applyLayoutToAllSpreads()
+                    } label: {
+                        Label("Apply layout to all spreads", systemImage: "rectangle.on.rectangle")
+                    }
+                    .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
+                case .single:
+                    Menu {
+                        Button("To All Single Pages") { model.applySingleCrop(alternate: false) }
+                        Button("To Alternate Pages") { model.applySingleCrop(alternate: true) }
+                            .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
+                    } label: {
+                        Label("Apply crop", systemImage: "rectangle.on.rectangle")
+                    }
+                    .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
+                case .skip:
+                    EmptyView()
+                }
+            }
+        } else {
+            Text("Select a page in the sidebar.")
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
@@ -155,9 +118,11 @@ struct InspectorView: View {
                 Slider(value: value, in: -8...8, step: 0.1) { editing in
                     if editing { model.beginEdit() } else { model.endEdit("Straighten") }
                 }
+                .labelsHidden()     // else the Form gives it only the value column
                 Button { model.perform("Straighten") { value.wrappedValue = 0 } } label: {
                     Image(systemName: "arrow.counterclockwise")
                 }
+                .buttonStyle(.borderless)
                 .help("Reset to 0°")
             }
         }
@@ -170,6 +135,146 @@ struct InspectorView: View {
     private func rightSkewBinding(_ idx: Int) -> Binding<Double> {
         Binding(get: { model.pages[idx].rightSkew },
                 set: { model.pages[idx].rightSkew = $0 })
+    }
+}
+
+/// Stack view: the pages in the stack on show whose crop differs in size.
+private struct StackSections: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let stacks = PageStack.groups(pages: model.pages)
+        if let stack = stacks.first(where: { $0.id == model.stackKind }) ?? stacks.first {
+            Section {
+                // Until analysis is done the crops are placeholders, so judging them misleads.
+                if model.isAnalyzing {
+                    Text("Waiting for page analysis to finish…")
+                        .foregroundStyle(.secondary)
+                } else if stack.outliers.isEmpty {
+                    Text("No page differs in size.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(stack.outliers) { member in
+                        Button {
+                            model.selectedPageID = member.id
+                            model.showsStack = false
+                        } label: {
+                            HStack {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundStyle(.red)
+                                Text("p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                                Spacer()
+                                Text("Show").foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open this page in Page view")
+                    }
+                }
+            } header: {
+                Text("\(stack.id.label) (\(stack.members.count))")
+            } footer: {
+                if !model.isAnalyzing, !stack.outliers.isEmpty {
+                    Text("\(stack.outliers.count) \(stack.outliers.count == 1 ? "page differs" : "pages differ") in size from the rest of this stack. Apply Crop above the stack sets them to the orange box.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            Text("No pages to stack.")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Work on every page at once, and the settings that steer detection.
+private struct BookSections: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Section("Whole book") {
+            Button {
+                model.autoDetectAllPages()
+            } label: {
+                Label("Auto-detect all pages", systemImage: "wand.and.stars")
+            }
+            .help("Finds every page's split, type and crops again, replacing hand edits (⌘Z undoes it). Straightens too when Auto-straighten on import is on.")
+            Button {
+                Task { await model.autoStraightenAllPages() }
+            } label: {
+                Label("Auto-straighten all pages", systemImage: "level")
+            }
+            .help("Finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
+        }
+        .disabled(model.isBusy)
+
+        Section("Detection") {
+            Picker("Crop to", selection: Binding(get: { model.cropTarget },
+                                                 set: { model.setCropTarget($0) })) {
+                ForEach(CropTarget.allCases) { t in
+                    Text(t.label).tag(t)
+                }
+            }
+            .disabled(model.isBusy)
+            .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+            if let size = model.pageSize {
+                PageSizeRow(size: size)
+            }
+            Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
+        }
+    }
+}
+
+/// How the exported PDF is made, and the Export button.
+private struct ExportSections: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Section("Output") {
+            Picker("Color", selection: $model.enhanceMode) {
+                ForEach(EnhanceMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
+            Picker("Reading order", selection: $model.direction) {
+                ForEach(ReadingDirection.allCases) { d in
+                    Text(d.label).tag(d)
+                }
+            }
+            Toggle("Match scan resolution", isOn: $model.matchScanResolution)
+                .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
+            VStack(alignment: .leading) {
+                Text(model.matchScanResolution
+                     ? "Pages without a scan: \(Int(model.exportDPI)) DPI"
+                     : "Export resolution: \(Int(model.exportDPI)) DPI")
+                Slider(value: $model.exportDPI, in: 150...600, step: 50)
+                    .labelsHidden()
+            }
+        }
+
+        Section {
+            LabeledContent("Source pages", value: "\(model.pages.count)")
+            LabeledContent("Output pages", value: "\(model.outputPageCount)")
+        }
+
+        Section {
+            Button {
+                model.exportPanel()
+            } label: {
+                Label("Export PDF…", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canExport)
+
+            if model.isExporting {
+                HStack {
+                    ProgressView(value: model.exportProgress)
+                    Button("Cancel") { model.cancelExport() }
+                }
+            }
+        }
     }
 }
 
@@ -192,12 +297,13 @@ private struct PageSizeRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Page size: \(Self.describe(shown)) in")
+            Text(shown.0 == nil && shown.1 == nil ? "Page size" : "Page size: \(Self.describe(shown)) in")
             Text(note).font(.caption).foregroundStyle(.secondary)
             if let disagreement = size.disagreement {
                 Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
             }
-            TextField("Width × height, in inches", text: entryState.projectedValue)
+            TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
+                .labelsHidden()
                 .onSubmit(commit)
                 .disabled(model.isBusy)
                 .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
@@ -216,9 +322,9 @@ private struct PageSizeRow: View {
     }
 
     private var note: String {
-        if size.override != nil { return "(set by you)" }
-        if size.width == nil && size.height == nil { return "(not measured: too few pages show their sheet's edges)" }
-        return "(measured on \(size.measured) of \(size.total) pages)"
+        if size.override != nil { return "Set by you. Clear the field to use the measured size." }
+        if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
+        return "Measured on \(size.measured) of \(size.total) pages. Type a size to override it."
     }
 
     private func commit() {

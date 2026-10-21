@@ -9,6 +9,8 @@ struct CropBoxView: View {
     let imageFrame: CGRect
     let color: Color
     let label: String
+    /// Which end of the box's top edge the label sits over.
+    var labelEdge: HorizontalEdge = .leading
     var tracksPageEdits = true
 
     // Snapshot of the crop when a drag begins, so deltas are stable.
@@ -20,7 +22,7 @@ struct CropBoxView: View {
         nonmutating set { dragStartState.wrappedValue = newValue }
     }
 
-    private let handle: CGFloat = 12
+    private let handle: CGFloat = 11
 
     private var viewRect: CGRect {
         CGRect(x: imageFrame.minX + crop.x * imageFrame.width,
@@ -34,20 +36,23 @@ struct CropBoxView: View {
         ZStack(alignment: .topLeading) {
             // Body: drag to move.
             Rectangle()
-                .fill(color.opacity(0.10))
-                .overlay(Rectangle().stroke(color, lineWidth: 2))
+                .fill(color.opacity(0.07))
+                .overlay(Rectangle().stroke(color, lineWidth: 1.5))
                 .frame(width: r.width, height: r.height)
                 .offset(x: r.minX, y: r.minY)
                 .gesture(moveGesture)
 
-            // Label chip.
+            // Label chip, just above the box so it hides neither the page nor a handle.
             Text(label)
                 .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 5).padding(.vertical, 2)
-                .background(color.opacity(0.85))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(color, in: RoundedRectangle(cornerRadius: 4))
                 .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .offset(x: r.minX + 4, y: r.minY + 4)
+                .fixedSize()
+                // A zero-height frame along the top edge; the chip stands on it.
+                .frame(width: max(0, r.width - handle * 2), height: 0,
+                       alignment: labelEdge == .leading ? .bottomLeading : .bottomTrailing)
+                .offset(x: r.minX + handle, y: r.minY - 3)
                 .allowsHitTesting(false)
 
             // Edge midpoint handles (drag one side at a time).
@@ -89,7 +94,7 @@ struct CropBoxView: View {
     private func edgeHandle(_ edge: Edge, at point: CGPoint) -> some View {
         Circle()
             .fill(.white)
-            .overlay(Circle().stroke(color, lineWidth: 2))
+            .overlay(Circle().stroke(color, lineWidth: 1.5))
             .frame(width: handle, height: handle)
             .position(x: point.x, y: point.y)
             .gesture(edgeResizeGesture(edge))
@@ -130,7 +135,7 @@ struct CropBoxView: View {
     private func cornerHandle(_ corner: Corner, at point: CGPoint) -> some View {
         Circle()
             .fill(.white)
-            .overlay(Circle().stroke(color, lineWidth: 2))
+            .overlay(Circle().stroke(color, lineWidth: 1.5))
             .frame(width: handle, height: handle)
             .position(x: point.x, y: point.y)
             .gesture(resizeGesture(corner))

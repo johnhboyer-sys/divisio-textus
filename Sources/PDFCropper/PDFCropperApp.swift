@@ -59,6 +59,9 @@ struct PDFCropperApp: App {
                 Button("Next Page") { model.selectAdjacentPage(1) }
                     .keyboardShortcut(.downArrow, modifiers: [])
                     .disabled(model.pages.isEmpty)
+                Button("Next Page Needing a Look") { model.selectNextFlaggedPage() }
+                    .keyboardShortcut("'")
+                    .disabled(model.flaggedSides.isEmpty)
             }
         }
     }

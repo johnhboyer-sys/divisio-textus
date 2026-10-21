@@ -73,28 +73,9 @@ struct StackView: View {
             }
             .padding([.horizontal, .top])
             if let stack {
-                HSplitView {
-                    canvas(stack)
-                        .frame(minWidth: 240, minHeight: 240)
-                    VStack(alignment: .leading, spacing: 0) {
-                        // Until analysis is done the crops are placeholders, so judging them misleads.
-                        if !model.isAnalyzing {
-                            Text(stack.outliers.isEmpty ? "No page differs in size"
-                                 : "\(stack.outliers.count) differ in size")
-                                .font(.headline).padding(8)
-                                .help("Pages whose crop is a different size from the rest of this stack")
-                            List(stack.outliers) { member in
-                                Button("p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)") {
-                                    model.selectedPageID = member.id
-                                    model.showsStack = false
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minWidth: 110, idealWidth: 130, maxWidth: 170)
-                }
+                // The pages that differ in size are listed in the inspector's Stack tab.
+                canvas(stack)
+                    .frame(minWidth: 240, minHeight: 240)
             } else {
                 Text("No pages to stack.").foregroundStyle(.secondary)
                 Spacer()

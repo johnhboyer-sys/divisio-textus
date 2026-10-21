@@ -77,7 +77,8 @@ struct PageEditorView: View {
             CropBoxView(crop: rightBinding(idx),
                         imageFrame: frame,
                         color: .green,
-                        label: "Right")
+                        label: "Right",
+                        labelEdge: .trailing)
             SplitLine(splitX: splitBinding(idx), imageFrame: frame)
             // Shared top/bottom margin guides: drag once to move BOTH pages'
             // top (or bottom) crop edge together.
@@ -192,7 +193,8 @@ struct PageEditorView: View {
     }
 }
 
-/// Vertical draggable gutter indicator for spreads.
+/// Vertical draggable gutter indicator for spreads. Its grip sits above the page,
+/// clear of the crop labels and handles.
 private struct SplitLine: View {
     @EnvironmentObject var model: AppModel
     @Binding var splitX: Double
@@ -200,17 +202,21 @@ private struct SplitLine: View {
 
     var body: some View {
         let x = imageFrame.minX + splitX * imageFrame.width
-        ZStack {
+        let grip: CGFloat = 18
+        VStack(spacing: 0) {
+            Image(systemName: "arrow.left.and.right")
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: grip + 8, height: grip)
+                .background(.orange, in: Capsule())
+                .foregroundStyle(.white)
             Rectangle()
                 .fill(.orange)
-                .frame(width: 2, height: imageFrame.height)
-            Image(systemName: "arrow.left.and.right")
-                .font(.caption)
-                .padding(4)
-                .background(.orange, in: Circle())
-                .foregroundStyle(.white)
+                .frame(width: 1.5, height: imageFrame.height + 12)   // clear of the corner handles
+                .frame(width: 4)            // a little easier to grab than the line itself
+                .contentShape(Rectangle())
         }
-        .position(x: x, y: imageFrame.midY)
+        .position(x: x, y: imageFrame.midY - grip / 2)
+        .help("Split line: drag to move the fold")
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
@@ -223,7 +229,8 @@ private struct SplitLine: View {
     }
 }
 
-/// Horizontal draggable guide that moves a shared top/bottom margin for a spread.
+/// Horizontal draggable guide that moves a shared top/bottom margin for a spread:
+/// a tab in the margin left of the page, and a faint line across it.
 private struct HGuide: View {
     enum Edge { case top, bottom }
     @EnvironmentObject var model: AppModel
@@ -233,17 +240,21 @@ private struct HGuide: View {
 
     var body: some View {
         let yy = imageFrame.minY + y * imageFrame.height
-        ZStack {
-            Rectangle()
-                .fill(.purple)
-                .frame(width: imageFrame.width, height: 2)
+        let tab: CGFloat = 18
+        HStack(spacing: 2) {
             Image(systemName: "arrow.up.and.down")
-                .font(.caption)
-                .padding(4)
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: tab, height: tab)
                 .background(.purple, in: Circle())
                 .foregroundStyle(.white)
+            Line()
+                .stroke(.purple.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .frame(width: imageFrame.width, height: 5)
+                // Only the tab drags: the line lies on the crops' own top or bottom
+                // edges and would take their handles' drags.
+                .allowsHitTesting(false)
         }
-        .position(x: imageFrame.midX, y: yy)
+        .position(x: imageFrame.midX - (tab + 2) / 2, y: yy)
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
@@ -253,6 +264,16 @@ private struct HGuide: View {
                 .onEnded { _ in model.endEdit("Move Margin") }
         )
         .help(edge == .top ? "Shared top margin (both pages)" : "Shared bottom margin (both pages)")
+    }
+}
+
+/// A horizontal line through the middle of its frame.
+private struct Line: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.midY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        }
     }
 }
 
