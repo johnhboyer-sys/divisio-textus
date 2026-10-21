@@ -84,6 +84,10 @@ final class AppModel: ObservableObject {
     /// Numbers analysis passes so that a newer pass makes an older one stand down.
     private var analysisRun = 0
 
+    /// Tests only: awaited by an analysis pass once it knows which spreads moved,
+    /// before it analyses them again (see splitMoves).
+    var beforeReanalysis: (@Sendable () async -> Void)?
+
     /// Pages whose crops analysis set and nobody has edited since, with what it
     /// found on them. Saved with the edits.
     private var setByAnalysis: [BookPage.ID: AnalysisClaim] = [:]
@@ -322,9 +326,10 @@ final class AppModel: ObservableObject {
 
     /// Classify a rendered page (or use `forced`), find its gutter and each side's
     /// skew, then find the crops on the straightened image so they line up.
+    /// `split` keeps a spread's gutter where it is given instead of finding it.
     nonisolated static func analyzePage(_ cg: CGImage, deskew: Bool, as forced: PageClassification? = nil,
-                                        target: CropTarget = .text) -> Analysis {
-        let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced)
+                                        target: CropTarget = .text, split: Double? = nil) -> Analysis {
+        let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced, split: split)
         let spread = r0.classification == .spread
         let skews = deskew ? detectSkews(cg, splitX: r0.splitX, isSpread: spread) : (left: 0.0, right: 0.0)
         let composite = ImageTransform.deskewedComposite(
@@ -384,26 +389,80 @@ final class AppModel: ObservableObject {
                 }
                 if !stillCurrent { return }
             }
+            // Spreads whose split must move (see splitMoves) are
+            // analysed again at the new split: each half's angle and text depend
+            // on where the halves meet.
+            // The pages as this last phase starts: it changes only pages still so.
+            let (moves, start) = await MainActor.run { () -> ([(id: BookPage.ID, index: Int, split: Double)], [BookPage]) in
+                guard self.document === current, self.analysisRun == run else { return ([], []) }
+                return (self.splitMoves(self.setByAnalysis.filter { passIDs.contains($0.key) }), self.pages)
+            }
+            if let hook = await MainActor.run(body: { self.beforeReanalysis }) { await hook() }
+            var redone: [BookPage.ID: Analysis] = [:]
+            for move in moves {
+                autoreleasepool {
+                    guard let pdfPage = doc?.page(at: move.index),
+                          let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
+                    redone[move.id] = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split)
+                }
+            }
             await MainActor.run {
                 guard self.document === current, self.analysisRun == run else { return }
-                self.evenOutNearlyEmptyPages(self.setByAnalysis.filter { passIDs.contains($0.key) })
+                // A switch of crop target undone meanwhile: these results are for
+                // the other one, and the pages are back as they were. Drop them.
+                guard self.cropTarget == target else {
+                    self.isAnalyzing = false
+                    self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
+                    return
+                }
+                // Pages edited or undone meanwhile keep what they are now.
+                let now = self.pages, claims = self.setByAnalysis
+                let changed = Set(zip(now, start).filter { $0.0 != $0.1 }.map(\.0.id))
+                for (id, analysis) in redone where !changed.contains(id) {
+                    guard self.setByAnalysis[id] != nil, let i = self.pages.firstIndex(where: { $0.id == id }) else { continue }
+                    self.apply(analysis, to: i)
+                    self.setByAnalysis[id] = AnalysisClaim(analysis.result)
+                }
+                // The book's usual crops are taken as the pass found them, so pages
+                // whose split stayed put get exactly what they got before.
+                self.evenOutNearlyEmptyPages(self.setByAnalysis.filter { passIDs.contains($0.key) }, usualFrom: now)
                 self.placeSheets()
+                for (i, page) in now.enumerated() where changed.contains(page.id) {
+                    self.pages[i] = page
+                    self.setByAnalysis[page.id] = claims[page.id]
+                }
                 self.isAnalyzing = false
                 self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
             }
         }
     }
 
+    /// A blank page next to the gutter leaves no white gap to find the split by.
+    /// The spreads in `sides` (what an analysis pass just set, with which of
+    /// their sides it found blank) whose split lies far from the book's usual
+    /// one beside a blank page get the usual split instead; they must then be
+    /// analysed again there (each half's angle and text depend on it). A book's
+    /// gutter can genuinely move from spread to spread, so only those.
+    private func splitMoves(_ sides: [BookPage.ID: AnalysisClaim]) -> [(id: BookPage.ID, index: Int, split: Double)] {
+        let spreads = pages.indices.filter { pages[$0].classification == .spread }
+        guard spreads.count >= 3 else { return [] }
+        let usualSplit = spreads.map { pages[$0].splitX }.sorted()[spreads.count / 2]
+        return spreads.compactMap { i in
+            guard let found = sides[pages[i].id], abs(pages[i].splitX - usualSplit) > 0.06,
+                  found.leftBlank || found.rightBlank else { return nil }
+            return (pages[i].id, pages[i].sourceIndex, usualSplit)
+        }
+    }
+
     /// Nearly empty pages (a part title, a chapter's last few lines) get crops far
-    /// smaller than the rest of the book and would export as odd little pages,
-    /// and a blank page next to the gutter leaves no white gap to find the split
-    /// by. Give those the book's usual split and crop instead, keeping each crop
-    /// on its own side of the split. Only the pages in `sides` (what an analysis
-    /// pass just set, with which of their sides it found blank) are changed,
-    /// never anything edited by hand. Whole-page crops are the paper, found
-    /// whether or not anything is printed on it: only a spread whose split had
-    /// to move gets the book's usual crops, which its old ones no longer fit.
-    private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: AnalysisClaim]) {
+    /// smaller than the rest of the book and would export as odd little pages.
+    /// Give those the book's usual crop instead, keeping what was found and each
+    /// crop on its own side of the split. Only the pages in `sides` (what an
+    /// analysis pass just set, with which of their sides it found blank) are
+    /// changed, never anything edited by hand. Whole-page crops are the paper,
+    /// found whether or not anything is printed on it, and are left alone.
+    /// `usualFrom`: the pages the book's usual crops are taken from (default: as they are).
+    private func evenOutNearlyEmptyPages(_ sides: [BookPage.ID: AnalysisClaim], usualFrom basis: [BookPage]? = nil) {
         func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
         func usual(_ crops: [CropRect]) -> CropRect? {
             guard crops.count >= 3 else { return nil }
@@ -413,6 +472,7 @@ final class AppModel: ObservableObject {
         func tooSmall(_ crop: CropRect, _ usual: CropRect) -> Bool {
             crop.width < 0.6 * usual.width || crop.height < 0.6 * usual.height
         }
+        guard cropTarget == .text else { return }
         let spreads = pages.indices.filter { pages[$0].classification == .spread }
         let singles = pages.indices.filter { pages[$0].classification == .single }
         let candidates = { (indices: [Int]) in indices.filter { sides[self.pages[$0].id] != nil } }
@@ -420,29 +480,19 @@ final class AppModel: ObservableObject {
             guard let found = sides[pages[i].id] else { return false }
             return left ? found.leftBlank : found.rightBlank
         }
-        let wholePage = cropTarget == .page
-        var moved = Set<Int>()
-        if spreads.count >= 3 {
-            let usualSplit = median(spreads.map { pages[$0].splitX })
-            // Only where a blank page left no gap to find the gutter by; a book's
-            // gutter can genuinely move from spread to spread.
-            for i in candidates(spreads) where abs(pages[i].splitX - usualSplit) > 0.06
-                && (blank(i, left: true) || blank(i, left: false)) {
-                pages[i].splitX = usualSplit
-                moved.insert(i)
-            }
-        }
-        if let u = usual(spreads.map { pages[$0].leftCrop }) {
-            for i in candidates(spreads) where wholePage ? moved.contains(i) : tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
-                var c = wholePage || blank(i, left: true) ? u : u.union(pages[i].leftCrop)   // keep what was found
+        let basis = basis ?? pages
+        let basisSpreads = basis.filter { $0.classification == .spread }
+        if let u = usual(basisSpreads.map(\.leftCrop)) {
+            for i in candidates(spreads) where tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
+                var c = blank(i, left: true) ? u : u.union(pages[i].leftCrop)   // keep what was found
                 c.width = min(c.width, pages[i].splitX - c.x)           // stay left of the split
                 c.normalize()
                 pages[i].leftCrop = c
             }
         }
-        if let u = usual(spreads.map { pages[$0].rightCrop }) {
-            for i in candidates(spreads) where wholePage ? moved.contains(i) : tooSmall(pages[i].rightCrop, u) || blank(i, left: false) {
-                var c = wholePage || blank(i, left: false) ? u : u.union(pages[i].rightCrop)
+        if let u = usual(basisSpreads.map(\.rightCrop)) {
+            for i in candidates(spreads) where tooSmall(pages[i].rightCrop, u) || blank(i, left: false) {
+                var c = blank(i, left: false) ? u : u.union(pages[i].rightCrop)
                 if c.x < pages[i].splitX {                               // stay right of the split
                     c.width -= pages[i].splitX - c.x
                     c.x = pages[i].splitX
@@ -451,7 +501,7 @@ final class AppModel: ObservableObject {
                 pages[i].rightCrop = c
             }
         }
-        if !wholePage, let u = usual(singles.map { pages[$0].leftCrop }) {
+        if let u = usual(basis.filter { $0.classification == .single }.map(\.leftCrop)) {
             for i in candidates(singles) where tooSmall(pages[i].leftCrop, u) || blank(i, left: true) {
                 pages[i].leftCrop = blank(i, left: true) ? u : u.union(pages[i].leftCrop)
             }
@@ -462,18 +512,24 @@ final class AppModel: ObservableObject {
     private func reanalyze(_ idx: Int, as forced: PageClassification? = nil) {
         guard let doc = document, let pdfPage = doc.page(at: pages[idx].sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-        let analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced, target: cropTarget)
+        var analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced, target: cropTarget)
         apply(analysis, to: idx)
         // The same book-wide treatment the full pass gives a blank or nearly
-        // empty page, so re-detecting one page gives what opening the book gave.
-        let claim = AnalysisClaim(analysis.result)
-        evenOutNearlyEmptyPages([pages[idx].id: claim])
+        // empty page, so re-detecting one page gives what opening the book gave:
+        // a split that must move, then analysis again at the new one.
+        let id = pages[idx].id
+        var claim = AnalysisClaim(analysis.result)
+        let found = pages
+        if let move = splitMoves([id: claim]).first {
+            analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: .spread, target: cropTarget, split: move.split)
+            apply(analysis, to: idx)
+            claim = AnalysisClaim(analysis.result)
+        }
         // And the book's page size, as measured on the other pages. (The edit
         // that called this then counts the page as edited by hand.)
-        if cropTarget == .page {
-            setByAnalysis[pages[idx].id] = claim
-            placeSheets(only: [pages[idx].id])
-        }
+        if cropTarget == .page { setByAnalysis[id] = claim }
+        evenOutNearlyEmptyPages([id: claim], usualFrom: found)
+        if cropTarget == .page { placeSheets(only: [id]) }
     }
 
     func reanalyzeSelected() {
@@ -617,10 +673,33 @@ final class AppModel: ObservableObject {
     func setCropTarget(_ target: CropTarget) {
         guard target != cropTarget, !isBusy else { return }
         guard document != nil else { cropTarget = target; return }
+        switchCropTarget(to: target)
+    }
+
+    /// Undo puts back the pages, their analysis claims and the target as they
+    /// were (a complete state), stopping any pass the switch started. Redo
+    /// switches again, detecting every page afresh, so it never brings back a
+    /// pass left half done.
+    private func switchCropTarget(to target: CropTarget) {
         let before = pages, old = cropTarget, claims = setByAnalysis
         cropTarget = target
         for i in pages.indices { pages[i].analyzed = false }
-        registerUndo(restoring: before, actionName: "Crop to \(target.label)", cropTarget: old, claims: claims)
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                model.analysisRun += 1            // a pass for the switched target stands down
+                model.isAnalyzing = false
+                model.cropTarget = old
+                for p in before {
+                    if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
+                }
+                model.setByAnalysis = claims
+                model.undoManager?.registerUndo(withTarget: model) { model in
+                    MainActor.assumeIsolated { model.switchCropTarget(to: target) }   // redo
+                }
+                model.undoManager?.setActionName("Crop to \(target.label)")
+            }
+        }
+        undoManager?.setActionName("Crop to \(target.label)")
         analyzeAll()
     }
 
@@ -957,26 +1036,17 @@ final class AppModel: ObservableObject {
     }
 
     /// Undo puts back only the pages the edit changed, so it never reverts
-    /// analysis results that arrived after the edit. An edit that changed the
-    /// crop target passes the one it replaced, to be put back first.
-    /// A change of crop target also passes the claims it replaced (every page's,
-    /// as all are re-detected), to be put back with the pages they describe.
-    private func registerUndo(restoring saved: [BookPage], actionName: String, cropTarget savedTarget: CropTarget? = nil,
-                              claims savedClaims: [BookPage.ID: AnalysisClaim]? = nil) {
+    /// analysis results that arrived after the edit.
+    private func registerUndo(restoring saved: [BookPage], actionName: String) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 let current = saved.compactMap { p in model.pages.first { $0.id == p.id } }
-                let currentTarget = savedTarget.map { _ in model.cropTarget }
-                let currentClaims = savedClaims.map { _ in model.setByAnalysis }
-                if let savedTarget { model.cropTarget = savedTarget }
                 for p in saved {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                     model.setByAnalysis[p.id] = nil
                 }
-                if let savedClaims { model.setByAnalysis = savedClaims }
-                model.registerUndo(restoring: current, actionName: actionName, cropTarget: currentTarget,
-                                   claims: currentClaims)  // redo
+                model.registerUndo(restoring: current, actionName: actionName)  // redo
                 // Undoing or redoing "Auto-detect All Pages" can bring back pages that
                 // still need analysis; start a fresh pass for them.
                 if model.pages.contains(where: { !$0.analyzed }) { model.analyzeAll() }

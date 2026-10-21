@@ -280,3 +280,233 @@ struct SaveFailureTests {
         #expect(throws: (any Error).self) { try ProjectStore.save(saved, key: "unencodable-\(UUID().uuidString)") }
     }
 }
+
+/// Analysis can move a spread's split after measuring its text (a blank page by
+/// the gutter leaves no gap to find it by). Every printed pixel must still be
+/// inside a crop, as the page is finally straightened and exported.
+@Suite("A moved split never cuts print", .serialized)
+@MainActor
+struct MovedSplitTests {
+
+    /// Four spreads with a clear gap at the middle, text turned a few degrees.
+    /// Then two whose gutter is found far off: a blank left page beside a right
+    /// page whose text starts left of the middle, and the mirror of it. Their
+    /// text is turned 5°, opposite ways.
+    static func book() -> URL {
+        let media = CGRect(x: 0, y: 0, width: 1000, height: 700)
+        func bars(_ c: CGContext, _ x0: Double, _ x1: Double, degrees: Double) {
+            c.saveGState()
+            let cx = (x0 + x1) / 2, cy = 350.0
+            c.translateBy(x: cx, y: cy); c.rotate(by: degrees * .pi / 180); c.translateBy(x: -cx, y: -cy)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for k in 0..<28 { c.fill(CGRect(x: x0, y: 100 + Double(k) * 18, width: x1 - x0, height: 7)) }
+            c.restoreGState()
+        }
+        // Left-hand text starting at different places, so the book's usual crop
+        // depends on every spread's, the moved ones' too.
+        let normal: [(CGContext) -> Void] = [(3.0, 80.0), (-3, 100), (2, 120), (-2, 140)].map { d, x in
+            { c in bars(c, x, 440, degrees: d); bars(c, 560, 920, degrees: -d) }
+        }
+        // A chapter's last page: three lines, so it gets the book's usual crop.
+        let short: (CGContext) -> Void = { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for k in 0..<3 { c.fill(CGRect(x: 150, y: 560 + Double(k) * 18, width: 290, height: 7)) }
+            bars(c, 560, 920, degrees: 0)
+        }
+        let blankLeft: (CGContext) -> Void = { c in bars(c, 420, 900, degrees: 5) }
+        let blankRight: (CGContext) -> Void = { c in bars(c, 100, 580, degrees: -5) }
+        return Fixtures.writePDF("moved-\(UUID().uuidString).pdf", media: media,
+                                 pages: normal + [short, blankLeft, blankRight])
+    }
+
+    @Test("Every printed pixel of the final, straightened spread is inside its half's crop", arguments: [CropTarget.text, .page])
+    func printKept(_ target: CropTarget) async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(target)
+        let url = Self.book()
+        // The pages as the pass found them, before moved spreads are analysed again.
+        let found = Box<[BookPage]>([])
+        m.beforeReanalysis = { await MainActor.run { found.value = m.pages } }
+        m.load(url: url)
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        let doc = try #require(PDFDocument(url: url))
+        #expect(m.pages.suffix(2).allSatisfy { abs($0.splitX - 0.5) < 0.03 }, "\(m.pages.map(\.splitX))")   // both moved
+        #expect(found.value.count == m.pages.count)
+        // Pages whose split stayed put get exactly what they would have got had
+        // nothing moved: even-out (text blocks) from the crops as found.
+        func median(_ v: [Double]) -> Double { v.sorted()[v.count / 2] }
+        func usual(_ crops: [CropRect]) -> CropRect {
+            CropRect(x: median(crops.map(\.x)), y: median(crops.map(\.y)),
+                     width: median(crops.map(\.width)), height: median(crops.map(\.height)))
+        }
+        let uL = usual(found.value.map(\.leftCrop)), uR = usual(found.value.map(\.rightCrop))
+        func small(_ c: CropRect, _ u: CropRect) -> Bool { c.width < 0.6 * u.width || c.height < 0.6 * u.height }
+        var evened = 0
+        for (p, f) in zip(m.pages, found.value) where p.splitX == f.splitX {
+            var left = f.leftCrop, right = f.rightCrop
+            if target == .text && small(left, uL) {
+                left = uL.union(left); left.width = min(left.width, f.splitX - left.x); left.normalize(); evened += 1
+            }
+            if target == .text && small(right, uR) {
+                right = uR.union(right)
+                if right.x < f.splitX { right.width -= f.splitX - right.x; right.x = f.splitX }
+                right.normalize(); evened += 1
+            }
+            #expect(p.leftCrop == left && p.rightCrop == right && p.leftSkew == f.leftSkew && p.rightSkew == f.rightSkew,
+                    "page \(p.sourceIndex) changed: \(p.leftCrop) \(p.rightCrop), expected \(left) \(right)")
+        }
+        #expect(target == .page || evened == 1)              // the short page
+        try check(m, doc)
+        if target == .page {                    // a size re-places every page from its text
+            undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
+            try check(m, doc)
+        }
+        // Re-detecting one of them alone gives the same treatment.
+        m.selectedPageID = m.pages[4].id
+        undoable(undo) { m.reanalyzeSelected() }
+        try check(m, doc)
+    }
+
+    /// Straighten each page as export does, at its final split and angles, and
+    /// look for dark pixels outside the crop of the half they are in.
+    private func check(_ m: AppModel, _ doc: PDFDocument) throws {
+        for p in m.pages {
+            #expect(p.leftCrop.maxX <= p.splitX + 1e-9 && p.rightCrop.minX >= p.splitX - 1e-9)
+            let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: p.sourceIndex)!, dpi: 110))
+            let out = ImageTransform.deskewedComposite(cg, splitX: p.splitX, leftDegrees: p.leftSkew,
+                                                       rightDegrees: p.rightSkew, isSpread: p.isSpread)
+            let g = try #require(GrayBuffer(cgImage: out, maxDim: max(out.width, out.height)))
+            var outside = [0, 0]
+            for y in 0..<g.height {
+                for x in 0..<g.width where g.value(x, y) < 100 {
+                    let nx = (Double(x) + 0.5) / Double(g.width), ny = (Double(y) + 0.5) / Double(g.height)
+                    let left = nx < p.splitX, c = left ? p.leftCrop : p.rightCrop
+                    if nx < c.minX || nx > c.maxX || ny < c.minY || ny > c.maxY { outside[left ? 0 : 1] += 1 }
+                }
+            }
+            #expect(outside == [0, 0], "page \(p.sourceIndex) split \(p.splitX) skews \(p.leftSkew) \(p.rightSkew): \(outside) dark pixels outside (left, right); crops \(p.leftCrop) \(p.rightCrop)")
+        }
+    }
+}
+
+/// Undoing a change of crop target while a pass is analysing moved spreads again
+/// must stop that pass: its results are for the target undone.
+@Suite("Undo during analysis", .serialized)
+@MainActor
+struct UndoDuringAnalysisTests {
+
+    /// Holds a pass at the hook until released (once; later passes go straight on).
+    final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiting: CheckedContinuation<Void, Never>?
+        private var reached = false, released = false
+        func wait() async {
+            await withCheckedContinuation { c in
+                lock.lock()
+                if released { lock.unlock(); c.resume(); return }
+                reached = true; waiting = c
+                lock.unlock()
+            }
+        }
+        var isWaiting: Bool { lock.lock(); defer { lock.unlock() }; return reached }
+        func release() { lock.lock(); released = true; let c = waiting; waiting = nil; lock.unlock(); c?.resume() }
+    }
+
+    @Test("Undoing a switch of crop target mid-pass drops that pass's results", arguments: [CropTarget.text, .page])
+    func undoMidPass(_ start: CropTarget) async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(start)
+        m.load(url: MovedSplitTests.book())
+        await waitUntilIdle(m)
+        let before = m.pages
+        let gate = Gate()
+        m.beforeReanalysis = { await gate.wait() }
+        undoable(undo) { m.setCropTarget(start == .text ? .page : .text) }
+        while !gate.isWaiting { try await Task.sleep(nanoseconds: 10_000_000) }   // the pass waits to redo moved spreads
+        undo.undo()
+        gate.release()
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        #expect(m.cropTarget == start && !m.isBusy)
+        for (p, q) in zip(m.pages, before) {
+            #expect(p == q, "page \(p.sourceIndex): \(p.leftCrop) \(p.rightCrop), was \(q.leftCrop) \(q.rightCrop)")
+        }
+    }
+
+    /// A loaded book, an undo manager, and a pass (a switch of crop target)
+    /// held just before it analyses moved spreads again.
+    private func heldSwitch(from start: CropTarget) async throws -> (AppModel, UndoManager, Gate, URL) {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(start)
+        let url = MovedSplitTests.book()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        let gate = Gate()
+        m.beforeReanalysis = { await gate.wait() }
+        undoable(undo) { m.setCropTarget(start == .text ? .page : .text) }
+        while !gate.isWaiting { try await Task.sleep(nanoseconds: 10_000_000) }
+        return (m, undo, gate, url)
+    }
+
+    @Test("Edits made while a pass finishes are kept, through unrelated undos during and after it")
+    func editsWin() async throws {
+        let (m, undo, gate, _) = try await heldSwitch(from: .text)
+        let mark = CropRect(x: 0.1, y: 0.2, width: 0.3, height: 0.5)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[5].leftCrop = mark } }       // a moved spread
+        m.selectedPageID = m.pages[1].id                                                 // a drag
+        undoable(undo) { m.beginEdit(); m.pages[1].rightCrop = mark; m.endEdit("Adjust Crop") }
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[2].leftCrop = mark } }       // unrelated, then undone
+        undo.undo()
+        gate.release()
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        #expect(m.pages[5].leftCrop == mark && m.pages[1].rightCrop == mark && m.pages[2].leftCrop != mark)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[3].leftCrop = mark } }       // and after it
+        undo.undo()
+        await waitUntilIdle(m)
+        #expect(m.pages[5].leftCrop == mark && m.pages[1].rightCrop == mark && !m.isBusy)
+    }
+
+    @Test("Undo then redo of a crop-target switch mid-pass gives a complete pass", arguments: [CropTarget.text, .page])
+    func undoRedoMidPass(_ start: CropTarget) async throws {
+        let (m, undo, gate, url) = try await heldSwitch(from: start)
+        undo.undo()
+        gate.release()
+        await waitUntilIdle(m)
+        undo.redo()
+        await waitUntilIdle(m)
+        m.beforeReanalysis = nil
+        let other: CropTarget = start == .text ? .page : .text
+        // A fresh pass in the switched mode, for comparison.
+        let fresh = testModel()
+        fresh.setCropTarget(other)
+        var data = try Data(contentsOf: url)
+        data.append(Data("\n%copy\n".utf8))                 // its own saved-edits key
+        let copy = Fixtures.url("copy-\(UUID().uuidString).pdf")
+        try data.write(to: copy)
+        fresh.load(url: copy)
+        await waitUntilIdle(fresh)
+        #expect(m.cropTarget == other && !m.isBusy)
+        for (p, q) in zip(m.pages, fresh.pages) {
+            #expect(p.splitX == q.splitX && p.leftSkew == q.leftSkew && p.rightSkew == q.rightSkew
+                    && p.leftCrop == q.leftCrop && p.rightCrop == q.rightCrop && p.classification == q.classification,
+                    "page \(p.sourceIndex): split \(p.splitX) vs \(q.splitX), \(p.leftCrop) \(p.rightCrop) vs \(q.leftCrop) \(q.rightCrop)")
+        }
+    }
+}
+
+/// A value a test hook can fill in.
+final class Box<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
