@@ -858,8 +858,8 @@ final class AppModel: ObservableObject {
 
     /// Whole page: put a box of the book's page size on each page analysis set
     /// (or only those in `only`), where its sheet is, and crop to that box (within
-    /// the paper analysis found, so inside the page's half) and the text block, so
-    /// print is never cut. An axis with no
+    /// the paper analysis found, or at a spread's gutter its half) and the text
+    /// block, so print is never cut. An axis with no
     /// size (not measured, none typed in) keeps the crop analysis found.
     private func placeSheets(only: Set<BookPage.ID>? = nil) {
         guard cropTarget == .page else { return }
@@ -881,7 +881,8 @@ final class AppModel: ObservableObject {
                 guard let i = pages.firstIndex(where: { $0.id == side.member.id }), var crop = side.found else { continue }
                 // The box, on the paper analysis found and inside the sheet's
                 // trusted edges (a box overhanging them would take in scanner
-                // background or the neighbouring leaves), and the text block, so
+                // background or the neighbouring leaves; at a spread's gutter,
+                // its half instead), and the text block, so
                 // print is never cut.
                 // All of it inside the page's half: the text was found before
                 // analysis may have moved the split (see evenOutNearlyEmptyPages).
@@ -897,7 +898,12 @@ final class AppModel: ObservableObject {
                 let region = (side.member.regionMinX, side.member.regionMinX + side.member.regionWidth)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
-                    let paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
+                    var paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
+                    // A spread's page runs on into the fold: an edge found at its
+                    // gutter (the paper's or the sheet's) is where the binding's
+                    // shade, a crease or the fold's dark line begins. Its half ends it.
+                    if side.member.side == .left { paper.1 = region.1 }
+                    if side.member.side == .right { paper.0 = region.0 }
                     let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) }, within: region)
                     crop.x = s.0; crop.width = s.1 - s.0
                 }
