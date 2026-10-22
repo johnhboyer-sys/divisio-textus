@@ -3,7 +3,7 @@ import Foundation
 /// A group of book-page sides, measured relative to each side's own width.
 struct PageStack: Identifiable {
     enum Kind: String, CaseIterable, Identifiable {
-        case left, right, singleA, singleB
+        case left, right, singleA, singleB, spreads
         var id: Self { self }
         var label: String {
             switch self {
@@ -11,6 +11,7 @@ struct PageStack: Identifiable {
             case .right: return "Right pages"
             case .singleA: return "Odd single pages"
             case .singleB: return "Even single pages"
+            case .spreads: return "Whole spreads"
             }
         }
     }
@@ -18,14 +19,14 @@ struct PageStack: Identifiable {
     struct Member: Identifiable, Equatable {
         let page: BookPage
         let side: Side
-        enum Side: String { case left, right, single }
+        enum Side: String { case left, right, single, whole }
         var id: BookPage.ID { page.id }
         var regionMinX: Double { side == .right ? page.splitX : 0 }
         var regionWidth: Double {
             switch side {
             case .left: return page.splitX
             case .right: return 1 - page.splitX
-            case .single: return 1
+            case .single, .whole: return 1
             }
         }
         var crop: CropRect { localCrop(side == .right ? page.rightCrop : page.leftCrop) }
@@ -86,6 +87,18 @@ struct PageStack: Identifiable {
         }
     }
 
+    /// Every spread whole, to set the split and both crops on one blend, as Briss
+    /// does. Kept out of `groups`, which measures the page size and marks the rail.
+    static func wholeSpreads(pages: [BookPage]) -> PageStack? {
+        let members = pages.filter { $0.classification == .spread }.map { Member(page: $0, side: .whole) }
+        return members.isEmpty ? nil : PageStack(id: .spreads, members: members)
+    }
+
+    /// The stacks the Stack view offers: the sides, then the whole spreads.
+    static func all(pages: [BookPage]) -> [PageStack] {
+        groups(pages: pages) + [wholeSpreads(pages: pages)].compactMap { $0 }
+    }
+
     static func median(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted(), middle = sorted.count / 2
@@ -104,12 +117,39 @@ struct PageStack: Identifiable {
     /// Width is measured on the page, not the side: the gutter moves from spread to
     /// spread, so the same text block is a larger share of a narrower half.
     var outliers: [Member] {
+        if id == .spreads { return splitOutliers }
         let widths = members.map { pageWidth($0) }, heights = members.map(\.crop.height)
         let width = Self.median(widths), height = Self.median(heights)
         let tolerance = 0.04 * usualRegionWidth
         return zip(members, zip(widths, heights)).filter { _, size in
             abs(size.0 - width) > tolerance || abs(size.1 - height) > 0.04
         }.map(\.0).sorted { $0.page.sourceIndex < $1.page.sourceIndex }
+    }
+
+    /// How far, as a share of the scan's width, a spread's split may sit from the
+    /// median before it is flagged. A book page's gutter margin is often under a
+    /// tenth of the scan; a split a third of that off is cutting into it or leaving
+    /// the facing page's edge.
+    static let splitTolerance = 0.03
+
+    /// In the whole-spread stack: spreads whose split is far from the rest. A book
+    /// that shifted on the scanner moves its fold too, so a flag asks for a look
+    /// rather than saying the split is wrong.
+    private var splitOutliers: [Member] {
+        let split = Self.median(members.map(\.page.splitX))
+        return members.filter { abs($0.page.splitX - split) > Self.splitTolerance }
+    }
+
+    /// In the whole-spread stack: the usual split and crops, on the page.
+    var medianLayout: SpreadLayout {
+        func median(_ crops: [CropRect]) -> CropRect {
+            let x = Self.median(crops.map(\.minX)), y = Self.median(crops.map(\.minY))
+            return CropRect(x: x, y: y, width: Self.median(crops.map(\.maxX)) - x,
+                            height: Self.median(crops.map(\.maxY)) - y)
+        }
+        let pages = members.map(\.page)
+        return SpreadLayout(splitX: Self.median(pages.map(\.splitX)),
+                            leftCrop: median(pages.map(\.leftCrop)), rightCrop: median(pages.map(\.rightCrop)))
     }
 
     /// The width of a usual half in this stack, on the page.
@@ -129,5 +169,39 @@ struct PageStack: Identifiable {
     var geometry: [Geometry] {
         members.map { Geometry(id: $0.id, index: $0.page.sourceIndex, classification: $0.page.classification,
                                split: $0.page.splitX, leftSkew: $0.page.leftSkew, rightSkew: $0.page.rightSkew) }
+    }
+}
+
+/// A spread's split and its two crops, in page coordinates: the whole-spread
+/// stack's draft.
+struct SpreadLayout: Equatable {
+    var splitX: Double
+    var leftCrop: CropRect
+    var rightCrop: CropRect
+
+    /// Moves the split and the crops' inner edges with it, as Page view does.
+    mutating func moveSplit(to x: Double) {
+        splitX = max(0.05, min(x, 0.95))
+        if splitX > leftCrop.minX + 0.02 { leftCrop.width = splitX - leftCrop.minX }
+        leftCrop.normalize()
+        if splitX < rightCrop.maxX - 0.02 {
+            let right = rightCrop.maxX
+            rightCrop.x = splitX; rightCrop.width = right - splitX
+        }
+        rightCrop.normalize()
+    }
+
+    /// The crops cut back to their own side of the split.
+    var clamped: SpreadLayout {
+        func clamp(_ crop: CropRect, _ lo: Double, _ hi: Double) -> CropRect {
+            var c = crop.normalized()
+            if c.minX < lo { c.width -= lo - c.minX; c.x = lo }
+            if c.maxX > hi { c.width = hi - c.x }
+            let least = min(0.02, hi - lo)
+            if c.width < least { c.width = least; c.x = min(c.x, hi - least) }
+            return c
+        }
+        return SpreadLayout(splitX: splitX, leftCrop: clamp(leftCrop, 0, splitX),
+                            rightCrop: clamp(rightCrop, splitX, 1))
     }
 }

@@ -195,10 +195,11 @@ struct PageEditorView: View {
 
 /// Vertical draggable gutter indicator for spreads. Its grip sits above the page,
 /// clear of the crop labels and handles.
-private struct SplitLine: View {
+struct SplitLine: View {
     @EnvironmentObject var model: AppModel
     @Binding var splitX: Double
     let imageFrame: CGRect
+    var tracksPageEdits = true
 
     var body: some View {
         let x = imageFrame.minX + splitX * imageFrame.width
@@ -220,11 +221,11 @@ private struct SplitLine: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    model.beginEdit()
+                    if tracksPageEdits { model.beginEdit() }
                     let nx = (value.location.x - imageFrame.minX) / imageFrame.width
                     splitX = nx
                 }
-                .onEnded { _ in model.endEdit("Move Split") }
+                .onEnded { _ in if tracksPageEdits { model.endEdit("Move Split") } }
         )
     }
 }
