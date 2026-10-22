@@ -119,6 +119,34 @@ struct ReviewReproTests {
         #expect(ProjectStore.load(key: key) != nil)
     }
 
+    @Test("Finding 4 (round 3): an older skipped page with a widened crop still re-detects")
+    func olderSkippedPageWidenedCrop() async {
+        let (direct, directUndo, _) = await loaded()
+        let (via, viaUndo, _) = await loaded()
+        let i = 1
+        undoable(directUndo) { direct.setClassification(.single, for: direct.pages[i].id) }
+        via.pages[i].classification = .skip
+        via.pages[i].typeBeforeSkip = nil
+        via.pages[i].leftCrop = CropRect(x: 0.05, y: 0.1, width: 0.55, height: 0.8)   // dragged past the split
+        undoable(viaUndo) { via.setClassification(.single, for: via.pages[i].id) }
+        #expect(via.pages[i].leftCrop == direct.pages[i].leftCrop)
+    }
+
+    @Test("Finding 3 (round 3): an older save stays if it can't be saved under the new key")
+    func legacySaveKeptWhenNewSaveFails() async throws {
+        _ = Fixtures.directory
+        let (m, _, url) = await loaded()
+        let legacy = try #require(ProjectStore.legacyKey(for: url)), key = try #require(ProjectStore.key(for: url))
+        try ProjectStore.save(ProjectStore.Saved(pages: m.pages, direction: m.direction, cropTarget: m.cropTarget), key: legacy)
+        let newFile = ProjectStore.directory!.appendingPathComponent("\(key).json")
+        try? FileManager.default.removeItem(at: newFile)
+        try FileManager.default.createDirectory(at: newFile, withIntermediateDirectories: true)   // a save there fails
+        defer { try? FileManager.default.removeItem(at: newFile) }
+        let n = testModel()
+        n.load(url: url); await waitUntilIdle(n)
+        #expect(ProjectStore.load(key: legacy) != nil)
+    }
+
     @Test("Finding 4b: Single → Skip → Spread re-detects both crops")
     func singleSkipSpread() async {
         let (direct, directUndo, _) = await loaded()

@@ -198,9 +198,10 @@ final class AppModel: ObservableObject {
             statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
             // An older save moves to the new key at once, and goes, so no other
             // PDF sharing the old key can pick it up.
-            if let legacy {
-                saveEdits(pages, direction, wait: true)
-                ProjectStore.remove(key: legacy)
+            if let legacy, let key = projectKey,
+               (try? ProjectStore.save(ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
+                                                          pageSize: pageSizeOverride, claims: setByAnalysis), key: key)) != nil {
+                ProjectStore.remove(key: legacy)          // only once the edits are safe under the new key
             }
         } else {
             pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
@@ -693,13 +694,6 @@ final class AppModel: ObservableObject {
         statusText = "Applied this layout to \(count) spread\(count == 1 ? "" : "s")."
     }
 
-    /// The type a skipped page's crops were made for, when an older save didn't
-    /// keep it: a Single's crop reaches across the middle, a spread's left crop
-    /// stops at its split.
-    private func typeOfCrops(_ page: BookPage) -> PageClassification {
-        page.leftCrop.maxX > page.splitX + 0.02 ? .single : .spread
-    }
-
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification != c else { return }
         let old = pages[i].classification
@@ -707,11 +701,12 @@ final class AppModel: ObservableObject {
             // A Single's one crop covers the whole page while a spread's left crop
             // covers only its left half, so switching between them re-detects the
             // crops. Skipping keeps the existing crops, and un-skipping to the type
-            // they were made for keeps them too; to another type, it re-detects.
+            // they were made for keeps them too; to another type, or when an older
+            // save didn't record the type, it re-detects (⌘Z gives the crops back).
             if c == .skip {
                 pages[i].typeBeforeSkip = old
                 pages[i].classification = .skip
-            } else if old == .skip, (pages[i].typeBeforeSkip ?? typeOfCrops(pages[i])) == c {
+            } else if old == .skip, pages[i].typeBeforeSkip == c {
                 pages[i].classification = c
                 pages[i].typeBeforeSkip = nil
             } else {
