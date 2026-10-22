@@ -67,6 +67,11 @@ enum ProjectStore {
         try data.write(to: url, options: .atomic)
     }
 
+    static func remove(key: String) {
+        guard let url = fileURL(for: key) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     /// Where saves go. Tests point this at a temporary folder so they never
     /// touch real saved edits.
     static var directory: URL? = FileManager.default

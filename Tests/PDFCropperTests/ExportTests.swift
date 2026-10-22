@@ -57,15 +57,15 @@ struct ExportTests {
         #expect(m.outputPageCount == 0 && !m.canExport)
     }
 
-    @Test("Exporting over the source file gives a valid PDF")
+    @Test("Exporting over the scan is refused and leaves it as it was")
     @MainActor
     func exportOverSource() async throws {
         let m = testModel()
         let src = Fixtures.sampleBook()
         m.load(url: src); await waitUntilIdle(m)
         m.export(to: src); await waitUntilIdle(m)
-        #expect(PDFDocument(url: src)?.pageCount == 11)
-        #expect(!m.isExporting)
+        #expect(PDFDocument(url: src)?.pageCount == 6)
+        #expect(!m.isExporting && m.statusText.contains("another name"))
     }
 
     @Test("Exported pages carry the right book page, in reading order either way (review finding 16)")

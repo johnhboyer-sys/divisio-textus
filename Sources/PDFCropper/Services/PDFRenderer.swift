@@ -16,7 +16,7 @@ enum PDFRenderer {
         // A malformed page can claim an absurd or non-finite size: refuse it rather
         // than trap converting it, or ask for a bitmap no Mac can hold.
         let w = (size.width * scale).rounded(), h = (size.height * scale).rounded()
-        guard w.isFinite, h.isFinite, w > 0, h > 0, w * h <= 400_000_000 else { return nil }
+        guard w.isFinite, h.isFinite, w > 0, h > 0, w * h <= 2_000_000_000 else { return nil }
         let pxW = max(1, Int(w))
         let pxH = max(1, Int(h))
 

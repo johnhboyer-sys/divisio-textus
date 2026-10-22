@@ -183,7 +183,12 @@ final class AppModel: ObservableObject {
         projectKey = ProjectStore.key(for: url)
         // Saves made before keys hashed the whole file are found by the old key,
         // and from then on saved under the new one.
-        let restored = projectKey.flatMap(ProjectStore.load) ?? ProjectStore.legacyKey(for: url).flatMap(ProjectStore.load)
+        var legacy: String?
+        var restored = projectKey.flatMap(ProjectStore.load)
+        if restored == nil, let old = ProjectStore.legacyKey(for: url), let saved = ProjectStore.load(key: old) {
+            restored = saved
+            legacy = old
+        }
         if let saved = restored, saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
             pages = saved.pages
             direction = saved.direction
@@ -191,6 +196,12 @@ final class AppModel: ObservableObject {
             pageSizeOverride = saved.pageSize
             setByAnalysis = saved.claims ?? [:]
             statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
+            // An older save moves to the new key at once, and goes, so no other
+            // PDF sharing the old key can pick it up.
+            if let legacy {
+                saveEdits(pages, direction, wait: true)
+                ProjectStore.remove(key: legacy)
+            }
         } else {
             pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
             pageSizeOverride = nil
@@ -682,6 +693,13 @@ final class AppModel: ObservableObject {
         statusText = "Applied this layout to \(count) spread\(count == 1 ? "" : "s")."
     }
 
+    /// The type a skipped page's crops were made for, when an older save didn't
+    /// keep it: a Single's crop reaches across the middle, a spread's left crop
+    /// stops at its split.
+    private func typeOfCrops(_ page: BookPage) -> PageClassification {
+        page.leftCrop.maxX > page.splitX + 0.02 ? .single : .spread
+    }
+
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification != c else { return }
         let old = pages[i].classification
@@ -693,7 +711,7 @@ final class AppModel: ObservableObject {
             if c == .skip {
                 pages[i].typeBeforeSkip = old
                 pages[i].classification = .skip
-            } else if old == .skip, pages[i].typeBeforeSkip.map({ $0 == c }) ?? true {
+            } else if old == .skip, (pages[i].typeBeforeSkip ?? typeOfCrops(pages[i])) == c {
                 pages[i].classification = c
                 pages[i].typeBeforeSkip = nil
             } else {
@@ -1085,12 +1103,11 @@ final class AppModel: ObservableObject {
         after.analyzed = before.analyzed
         guard after != before else {
             // Nothing changed: release the claim beginEdit made, so a page that
-            // was waiting for analysis still gets analyzed.
+            // was waiting for analysis still gets analyzed, and one that wasn't
+            // keeps its claim, even if an undo mid-gesture had dropped it.
             setByAnalysis[before.id] = snapshot.claim
-            if !before.analyzed {
-                pages[i].analyzed = false
-                analyzeAll()
-            }
+            pages[i].analyzed = before.analyzed
+            if !before.analyzed { analyzeAll() }
             return
         }
         setByAnalysis[before.id] = nil      // an undo mid-gesture may have put it back
@@ -1148,18 +1165,12 @@ final class AppModel: ObservableObject {
     }
 
     func export(to url: URL) {
-        guard document != nil, var src = sourceURL else { return }
-        // Exporting over the scan replaces it with the output: keep reading the
-        // scan from a copy, so a second export still finds the pages edited here.
-        if url.standardizedFileURL.resolvingSymlinksInPath() == src.standardizedFileURL.resolvingSymlinksInPath() {
-            let copy = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Divisio Textus source \(UUID().uuidString).pdf")
-            do { try FileManager.default.copyItem(at: src, to: copy) } catch {
-                statusText = "Export failed: couldn't keep a copy of the scan (\(error.localizedDescription))."
-                return
-            }
-            src = copy
-            sourceURL = copy
+        guard document != nil, let src = sourceURL else { return }
+        // Exporting over the scan would replace the pages being edited, and the
+        // edits would no longer match the file: ask for another name instead.
+        guard url.standardizedFileURL.resolvingSymlinksInPath() != src.standardizedFileURL.resolvingSymlinksInPath() else {
+            statusText = "Choose another name: exporting over the scan would replace the pages you're editing."
+            return
         }
         let password = documentPassword
         isExporting = true

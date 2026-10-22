@@ -325,4 +325,25 @@ struct ModelTests {
         #expect(m.pages[i].leftCrop == dragged, "\(m.pages[i].leftCrop)")
     }
 
+
+    @Test("The same, when the drag ends where it began (review finding 10, re-review)")
+    func dragBackToStartAfterUndo() async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.load(url: Fixtures.sampleBook()); await waitUntilIdle(m)
+        let i = 1
+        m.pages[i].analyzed = false
+        let edited = CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.7)
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = edited } }
+        m.selectedPageID = m.pages[i].id
+        m.beginEdit()
+        undo.undo()
+        m.pages[i].leftCrop = edited                                // dragged back to where the drag began
+        undoable(undo) { m.endEdit("Adjust Crop") }
+        await waitUntilIdle(m)
+        #expect(m.pages[i].leftCrop == edited, "\(m.pages[i].leftCrop)")
+    }
+
 }

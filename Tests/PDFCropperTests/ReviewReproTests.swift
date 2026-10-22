@@ -24,11 +24,14 @@ struct ReviewReproTests {
         (0..<d.pageCount).map { d.page(at: $0)!.bounds(for: .mediaBox).size }
     }
 
-    @Test("Finding 1: a second export after exporting over the source matches an export before it")
+    @Test("Finding 1: exporting over the scan is refused, so the scan and later exports stay right")
     func exportOverSourceThenAgain() async throws {
         let (m, _, src) = await loaded()
+        let before = try Data(contentsOf: src)
         let baseline = try #require(await exportAndOpen(m, "f1-baseline.pdf"))
         m.export(to: src); await waitUntilIdle(m)
+        #expect(try Data(contentsOf: src) == before)               // the scan is untouched
+        #expect(m.sourceURL == src)
         let second = try #require(await exportAndOpen(m, "f1-second.pdf"))
         #expect(second.pageCount == baseline.pageCount)
         let a = sizes(baseline), b = sizes(second)
@@ -86,6 +89,34 @@ struct ReviewReproTests {
         undoable(viaUndo) { via.setClassification(.single, for: via.pages[i].id) }
         #expect(direct.pages[i].leftCrop.width > spreadCrop.width + 0.2)   // the direct path is correct
         #expect(via.pages[i].leftCrop == direct.pages[i].leftCrop)
+    }
+
+    @Test("Finding 4 (re-review): a page skipped before types were remembered still re-detects")
+    func olderSkippedPage() async {
+        let (direct, directUndo, _) = await loaded()
+        let (via, viaUndo, _) = await loaded()
+        let i = 1
+        undoable(directUndo) { direct.setClassification(.single, for: direct.pages[i].id) }
+        via.pages[i].classification = .skip                         // as an older save left it:
+        via.pages[i].typeBeforeSkip = nil                           // a spread's crops, no type kept
+        undoable(viaUndo) { via.setClassification(.single, for: via.pages[i].id) }
+        #expect(via.pages[i].leftCrop == direct.pages[i].leftCrop)
+    }
+
+    @Test("Finding 3 (re-review): an older save moves to the new key once and can't reach another PDF")
+    func legacySaveMovesOnce() async throws {
+        _ = Fixtures.directory
+        let (m, _, url) = await loaded()
+        let legacy = try #require(ProjectStore.legacyKey(for: url)), key = try #require(ProjectStore.key(for: url))
+        m.pages[1].leftCrop = CropRect(x: 0.11, y: 0.1, width: 0.3, height: 0.7)
+        try ProjectStore.save(ProjectStore.Saved(pages: m.pages, direction: m.direction, cropTarget: m.cropTarget),
+                              key: legacy)                          // a save made before whole-file keys
+        try? FileManager.default.removeItem(at: ProjectStore.directory!.appendingPathComponent("\(key).json"))
+        let n = testModel()
+        n.load(url: url); await waitUntilIdle(n)
+        #expect(n.pages[1].leftCrop == m.pages[1].leftCrop)         // restored
+        #expect(ProjectStore.load(key: legacy) == nil)              // and no longer there for another PDF
+        #expect(ProjectStore.load(key: key) != nil)
     }
 
     @Test("Finding 4b: Single → Skip → Spread re-detects both crops")
