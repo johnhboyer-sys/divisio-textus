@@ -51,6 +51,10 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// Set once auto-analysis has run so we don't clobber manual edits.
     var analyzed: Bool
 
+    /// A skipped page's type before it was skipped, whose crops it keeps: un-skipping
+    /// to another type must re-detect them. Absent in older saves.
+    var typeBeforeSkip: PageClassification?
+
     init(sourceIndex: Int,
          classification: PageClassification = .spread,
          splitX: Double = 0.5,

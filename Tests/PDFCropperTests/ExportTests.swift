@@ -68,6 +68,45 @@ struct ExportTests {
         #expect(!m.isExporting)
     }
 
+    @Test("Exported pages carry the right book page, in reading order either way (review finding 16)")
+    @MainActor
+    func readingOrderByContent() async throws {
+        // Two spreads; each book page has its own number of lines of "text" (3, 5,
+        // 7, 9), so counting an output page's lines says which book page it is.
+        let media = CGRect(x: 0, y: 0, width: 1000, height: 650)
+        let lines = [[3, 5], [7, 9]]
+        let url = Fixtures.writePDF("order-\(UUID().uuidString).pdf", media: media, pages: lines.map { pair in
+            { c in
+                c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+                for (k, n) in pair.enumerated() {
+                    for r in 0..<n { c.fill(CGRect(x: 80 + Double(k) * 480, y: 560 - Double(r) * 40, width: 360, height: 12)) }
+                }
+            }
+        })
+        let m = testModel()
+        m.load(url: url); await waitUntilIdle(m)
+        #expect(m.pages.allSatisfy { $0.classification == .spread })
+        func order(_ d: PDFDocument) -> [Int] {
+            (0..<d.pageCount).map { i in
+                let cg = PDFRenderer.renderCGImage(page: d.page(at: i)!, dpi: 72)!
+                let g = GrayBuffer(cgImage: cg, maxDim: max(cg.width, cg.height))!
+                // Runs of rows with ink across the middle of the page.
+                var runs = 0, inRun = false
+                for y in 0..<g.height {
+                    let ink = Double(g.value(g.width / 2, y)) < 128
+                    if ink && !inRun { runs += 1 }
+                    inRun = ink
+                }
+                return [3, 5, 7, 9].firstIndex(of: runs) ?? -runs
+            }
+        }
+        let ltr = try #require(await exportAndOpen(m, "order-ltr.pdf"))
+        #expect(order(ltr) == [0, 1, 2, 3], "\(order(ltr))")
+        m.direction = .rightToLeft
+        let rtl = try #require(await exportAndOpen(m, "order-rtl.pdf"))
+        #expect(order(rtl) == [1, 0, 3, 2], "\(order(rtl))")
+    }
+
     @Test("Right-to-left swaps each spread's pages; skipping drops them")
     @MainActor
     func readingOrderAndSkip() async throws {

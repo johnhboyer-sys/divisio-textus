@@ -303,4 +303,26 @@ struct ModelTests {
         #expect(m.document == nil)
         #expect(m.statusText.hasPrefix("Could not open"))
     }
+
+    @Test("A drag that ends after an undo of an earlier edit stays the page's own (review finding 10)")
+    func dragAfterUndoKeepsClaim() async throws {
+        let m = testModel()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.load(url: Fixtures.sampleBook()); await waitUntilIdle(m)
+        let i = 1
+        m.pages[i].analyzed = false                            // a page analysis hasn't reached yet
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[i].leftCrop = CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.7) } }
+        m.selectedPageID = m.pages[i].id
+        let dragged = CropRect(x: 0.15, y: 0.12, width: 0.25, height: 0.6)
+        m.beginEdit()
+        undo.undo()                                            // the earlier edit, mid-drag: the page waits for analysis again
+        #expect(!m.pages[i].analyzed)
+        m.pages[i].leftCrop = dragged
+        undoable(undo) { m.endEdit("Adjust Crop") }
+        await waitUntilIdle(m)
+        #expect(m.pages[i].leftCrop == dragged, "\(m.pages[i].leftCrop)")
+    }
+
 }

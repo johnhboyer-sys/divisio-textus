@@ -24,9 +24,23 @@ enum ProjectStore {
         var claims: [BookPage.ID: AnalysisClaim]?
     }
 
-    /// Identifies a PDF by its size plus a hash of its first 4 MB: unique enough
-    /// for scans, and fast even on very large files.
+    /// Identifies a PDF by a hash of all its bytes and its size.
     static func key(for url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256(), size: UInt64 = 0
+        while let chunk = try? handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            size += UInt64(chunk.count)
+        }
+        hasher.update(data: Data("whole".utf8))                 // never equal to a legacy key
+        withUnsafeBytes(of: size.littleEndian) { hasher.update(bufferPointer: $0) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The key saves were made under before: size plus a hash of the first 4 MB
+    /// only, which two PDFs can share. Read only to find those older saves.
+    static func legacyKey(for url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let head = try? handle.read(upToCount: 4 << 20),

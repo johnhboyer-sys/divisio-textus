@@ -13,8 +13,12 @@ enum PDFRenderer {
     static func renderCGImage(page: PDFPage, dpi: Double) -> CGImage? {
         let size = displaySize(of: page)
         let scale = dpi / 72.0
-        let pxW = max(1, Int((size.width * scale).rounded()))
-        let pxH = max(1, Int((size.height * scale).rounded()))
+        // A malformed page can claim an absurd or non-finite size: refuse it rather
+        // than trap converting it, or ask for a bitmap no Mac can hold.
+        let w = (size.width * scale).rounded(), h = (size.height * scale).rounded()
+        guard w.isFinite, h.isFinite, w > 0, h > 0, w * h <= 400_000_000 else { return nil }
+        let pxW = max(1, Int(w))
+        let pxH = max(1, Int(h))
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil,

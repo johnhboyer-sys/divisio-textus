@@ -120,11 +120,13 @@ enum PDFExporter {
                         leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
                         isSpread: page.isSpread)
                     let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+                    // A crop that fails would silently drop an output page: fail the export.
                     for crop in page.outputCrops(direction: settings.direction) {
-                        if let sub = PDFRenderer.crop(enhanced, to: crop) {
-                            images.append(sub)
-                            dpis.append(dpi)
+                        guard let sub = PDFRenderer.crop(enhanced, to: crop) else {
+                            throw ExportError.renderFailed(page.sourceIndex)
                         }
+                        images.append(sub)
+                        dpis.append(dpi)
                     }
                 }
             }

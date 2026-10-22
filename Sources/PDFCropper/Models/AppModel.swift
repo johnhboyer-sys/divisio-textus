@@ -69,6 +69,8 @@ final class AppModel: ObservableObject {
 
     // Thumbnails are small (unstraightened) renders, cheap enough to keep for every page.
     private var thumbnailCache: [Int: NSImage] = [:]
+    private var thumbnailOrder: [Int] = []        // least recently used first
+    private let thumbnailCacheLimit = 200         // about 130 MB of the largest spreads
     private let thumbnailDPI: Double = 30
 
     /// The page, and analysis's claim on it, as they were when a drag or slider
@@ -162,9 +164,11 @@ final class AppModel: ObservableObject {
             }
             password = entered
         }
-        // Save the outgoing PDF's edits now: a pending autosave would otherwise be
-        // replaced by the new PDF's pages before it fired.
-        saveEdits(pages, direction, wait: false)
+        // Save the outgoing PDF's edits now, and wait for it and any save still
+        // queued: a pending autosave would otherwise be replaced by the new PDF's
+        // pages before it fired, and reopening the same PDF would read the older
+        // record.
+        saveEdits(pages, direction, wait: true)
         clearImageCaches()
         undoManager?.removeAllActions()
         editSnapshot = nil
@@ -177,8 +181,10 @@ final class AppModel: ObservableObject {
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
         isStraightening = false
         projectKey = ProjectStore.key(for: url)
-        if let key = projectKey, let saved = ProjectStore.load(key: key),
-           saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
+        // Saves made before keys hashed the whole file are found by the old key,
+        // and from then on saved under the new one.
+        let restored = projectKey.flatMap(ProjectStore.load) ?? ProjectStore.legacyKey(for: url).flatMap(ProjectStore.load)
+        if let saved = restored, saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
             pages = saved.pages
             direction = saved.direction
             cropTarget = saved.cropTarget ?? .text   // what these edits were made with; a new PDF keeps the current choice
@@ -278,12 +284,18 @@ final class AppModel: ObservableObject {
     }
 
     func thumbnail(for page: BookPage) -> NSImage? {
-        if let t = thumbnailCache[page.sourceIndex] { return t }
+        if let t = thumbnailCache[page.sourceIndex] {
+            thumbnailOrder.removeAll { $0 == page.sourceIndex }
+            thumbnailOrder.append(page.sourceIndex)
+            return t
+        }
         guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: thumbnailDPI) else { return nil }
         let enhanced = ImageEnhancer.apply(cg, mode: enhanceMode)
         let img = NSImage(cgImage: enhanced, size: NSSize(width: enhanced.width, height: enhanced.height))
         thumbnailCache[page.sourceIndex] = img
+        thumbnailOrder.append(page.sourceIndex)
+        while thumbnailOrder.count > thumbnailCacheLimit { thumbnailCache[thumbnailOrder.removeFirst()] = nil }
         return img
     }
 
@@ -299,6 +311,7 @@ final class AppModel: ObservableObject {
         previewCache.removeAll()
         previewOrder.removeAll()
         thumbnailCache.removeAll()
+        thumbnailOrder.removeAll()
         stackCache.removeAll()
     }
 
@@ -573,12 +586,13 @@ final class AppModel: ObservableObject {
                           let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
                     found[page.id] = Self.detectSkews(cg, splitX: page.splitX, isSpread: page.isSpread)
                 }
-                if n % 10 == 9 {
-                    await MainActor.run {
-                        guard self.document === current else { return }
-                        self.statusText = "Straightening page \(n + 1) of \(todo.count)…"
-                    }
+                // Another PDF opened meanwhile: stop rather than go on rendering the old one.
+                let stillCurrent = await MainActor.run { () -> Bool in
+                    guard self.document === current else { return false }
+                    if n % 10 == 9 { self.statusText = "Straightening page \(n + 1) of \(todo.count)…" }
+                    return true
                 }
+                if !stillCurrent { return [:] }
             }
             return found
         }.value
@@ -674,11 +688,17 @@ final class AppModel: ObservableObject {
         perform("Change Page Type") {
             // A Single's one crop covers the whole page while a spread's left crop
             // covers only its left half, so switching between them re-detects the
-            // crops. Skipping (or un-skipping) keeps the existing crops.
-            if old == .skip || c == .skip {
+            // crops. Skipping keeps the existing crops, and un-skipping to the type
+            // they were made for keeps them too; to another type, it re-detects.
+            if c == .skip {
+                pages[i].typeBeforeSkip = old
+                pages[i].classification = .skip
+            } else if old == .skip, pages[i].typeBeforeSkip.map({ $0 == c }) ?? true {
                 pages[i].classification = c
+                pages[i].typeBeforeSkip = nil
             } else {
                 reanalyze(i, as: c)
+                pages[i].typeBeforeSkip = nil
             }
         }
     }
@@ -1074,6 +1094,7 @@ final class AppModel: ObservableObject {
             return
         }
         setByAnalysis[before.id] = nil      // an undo mid-gesture may have put it back
+        pages[i].analyzed = true            // and analysis must not overwrite the gesture
         registerUndo(restoring: [before], claims: [before.id: snapshot.claim].compactMapValues { $0 },
                      actionName: actionName)
     }
@@ -1127,7 +1148,19 @@ final class AppModel: ObservableObject {
     }
 
     func export(to url: URL) {
-        guard document != nil, let src = sourceURL else { return }
+        guard document != nil, var src = sourceURL else { return }
+        // Exporting over the scan replaces it with the output: keep reading the
+        // scan from a copy, so a second export still finds the pages edited here.
+        if url.standardizedFileURL.resolvingSymlinksInPath() == src.standardizedFileURL.resolvingSymlinksInPath() {
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Divisio Textus source \(UUID().uuidString).pdf")
+            do { try FileManager.default.copyItem(at: src, to: copy) } catch {
+                statusText = "Export failed: couldn't keep a copy of the scan (\(error.localizedDescription))."
+                return
+            }
+            src = copy
+            sourceURL = copy
+        }
         let password = documentPassword
         isExporting = true
         exportProgress = 0
