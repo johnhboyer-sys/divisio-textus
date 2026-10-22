@@ -179,16 +179,14 @@ struct SpreadLayout: Equatable {
     var leftCrop: CropRect
     var rightCrop: CropRect
 
-    /// Moves the split and the crops' inner edges with it, as Page view does.
+    /// Moves the split and the crops' inner edges with it, as Page view does. A
+    /// box whose outer edge the split passes shrinks on its own side of the line.
     mutating func moveSplit(to x: Double) {
         splitX = max(0.05, min(x, 0.95))
-        if splitX > leftCrop.minX + 0.02 { leftCrop.width = splitX - leftCrop.minX }
-        leftCrop.normalize()
-        if splitX < rightCrop.maxX - 0.02 {
-            let right = rightCrop.maxX
-            rightCrop.x = splitX; rightCrop.width = right - splitX
-        }
-        rightCrop.normalize()
+        let left = min(leftCrop.minX, splitX - 0.02)
+        leftCrop.x = left; leftCrop.width = splitX - left
+        let right = max(rightCrop.maxX, splitX + 0.02)
+        rightCrop.x = splitX; rightCrop.width = right - splitX
     }
 
     /// The crops cut back to their own side of the split.

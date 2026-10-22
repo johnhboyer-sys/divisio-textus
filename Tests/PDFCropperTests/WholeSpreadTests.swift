@@ -93,8 +93,18 @@ struct WholeSpreadTests {
         #expect(layout.splitX == 0.53)
         #expect(layout.leftCrop.minX == 0.05 && abs(layout.leftCrop.maxX - 0.53) < 1e-12)
         #expect(abs(layout.rightCrop.minX - 0.53) < 1e-12 && abs(layout.rightCrop.maxX - 0.95) < 1e-12)
+        // Past a box's outer edge, the box shrinks on its own side of the line
+        // rather than being left on the far side of it.
         layout.moveSplit(to: 0.99)
         #expect(layout.splitX == 0.95)
+        #expect(abs(layout.leftCrop.maxX - 0.95) < 1e-12)
+        #expect(abs(layout.rightCrop.minX - 0.95) < 1e-12 && layout.rightCrop.width >= 0.02 - 1e-12)
+        layout.moveSplit(to: 0.0)
+        #expect(layout.splitX == 0.05)
+        #expect(abs(layout.leftCrop.maxX - 0.05) < 1e-12 && layout.leftCrop.width >= 0.02 - 1e-12)
+        #expect(abs(layout.rightCrop.minX - 0.05) < 1e-12)
+        // What is drawn is what Apply stores.
+        #expect(layout.clamped == layout)
     }
 
     @Test("The draft layout lasts until another PDF is opened, and the stack builds its blend")
