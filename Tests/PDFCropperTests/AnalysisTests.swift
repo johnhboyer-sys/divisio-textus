@@ -225,6 +225,63 @@ struct AnalysisTests {
         #expect(r.splitX > 960.0 / 2000 && r.splitX < 1040.0 / 2000, "split \(r.splitX)")
     }
 
+    @Test("A fold line at the edge of a soft binding shadow is the split, not the white margin beside it")
+    func foldBesideSoftShadow() {
+        // As on Smith 1950 p153: the left page's margin greys toward the fold,
+        // a thin dark line marks it, and the right page's side lies in a broad
+        // shadow that the right page's text runs into.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 950)
+            for x in 950..<1020 {                                                   // the left margin greying
+                c.setFillColor(CGColor(gray: 1 - 0.15 * Double(x - 950) / 70, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 1, height: Self.height))
+            }
+            for x in 1020..<1200 {                                                  // the shadow, fading out,
+                let base = x < 1140 ? 0.67 + 0.06 * Double(x - 1020) / 120 : 0.73 + 0.27 * Double(x - 1140) / 60
+                for y in stride(from: 0, to: Self.height, by: 12) {                 // grainy: half its
+                    c.setFillColor(CGColor(gray: base - 0.045, alpha: 1))            // rows dip below ink level
+                    c.fill(CGRect(x: x, y: y, width: 1, height: 6))
+                    c.setFillColor(CGColor(gray: min(1, base + 0.045), alpha: 1))
+                    c.fill(CGRect(x: x, y: y + 6, width: 1, height: 6))
+                }
+            }
+            c.setFillColor(CGColor(gray: 0.45, alpha: 1))
+            for y in stride(from: 0, to: Self.height, by: 50) {
+                c.fill(CGRect(x: 1019, y: y, width: 4, height: 30))                 // the fold's line
+            }
+            Self.text(c, 1110, 1850)
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 1020.0 / 2000) < 0.006, "split \(r.splitX)")
+        #expect(r.leftCrop.maxX <= r.splitX && r.rightCrop.minX >= r.splitX)
+        #expect(r.rightCrop.minX <= 1110.0 / 2000, "right crop starts at \(r.rightCrop.minX * 2000)")   // text in the shadow kept
+    }
+
+    @Test("A grey panel beside a white gutter is not the fold, and the text before it is kept (Codex review)")
+    func greyPanelBesideGutter() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 950)
+            c.setFillColor(CGColor(gray: 0.78, alpha: 1))
+            c.fill(CGRect(x: 1100, y: 0, width: 80, height: Self.height))           // a tinted panel, full height,
+            Self.text(c, 1050, 1850)                                                 // behind the right page's text
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 950.0 / 2000 && r.splitX < 1050.0 / 2000, "split \(r.splitX)")
+        #expect(r.rightCrop.minX <= 1050.0 / 2000, "right crop starts at \(r.rightCrop.minX * 2000)")
+    }
+
+    @Test("A grey panel with only a short caption before it is not the fold either (Codex review 2)")
+    func greyPanelBesideCaption() {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 950)
+            c.setFillColor(CGColor(gray: 0.78, alpha: 1))
+            c.fill(CGRect(x: 1100, y: 0, width: 80, height: Self.height))           // a tinted panel, full height,
+            Self.text(c, 1050, 1850, rows: 30..<33)                                  // a three-line caption across it
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 950.0 / 2000 && r.splitX < 1050.0 / 2000, "split \(r.splitX)")
+    }
+
     @Test("A binding shadow is still taken as the gutter")
     func shadowGutter() {
         let image = Fixtures.image(Self.width, Self.height) { c in

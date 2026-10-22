@@ -113,6 +113,43 @@ enum PageAnalyzer {
         }
         if let shadowX { return Double(shadowX) / Double(g.width) }
 
+        // 1b. A softer binding shadow, too pale to count as ink: paper greyed
+        //     nearly top to bottom (text leaves a column's usual level alone; a
+        //     picture leaves paper above and below it), darkest at the fold and
+        //     clearly lighter again on both sides (unlike light falling off
+        //     across the whole scan). Between it and white paper on one side
+        //     there must be no print, only the fold's own line and shadow
+        //     grain: a tinted panel with print beside it is no fold.
+        func median(_ x: Int) -> Double {
+            let values = (rows0..<rows1).map { g.value(x, $0) }.sorted()
+            return Double(values[values.count / 2])
+        }
+        var foldX: Int?, foldLevel = Double.greatestFiniteMagnitude
+        for x in shadowLo..<shadowHi {
+            let shaded = (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.93 }.count
+            guard Double(shaded) >= 0.85 * Double(rows1 - rows0) else { continue }
+            let level = median(x)
+            if level < foldLevel { foldLevel = level; foldX = x }
+        }
+        if let foldX {
+            let reach = max(2, g.width * 8 / 100), lighter = foldLevel + 0.1 * paper
+            let left = (max(0, foldX - reach)..<foldX).contains { median($0) >= lighter }
+            let right = ((foldX + 1)..<min(g.width, foldX + reach + 1)).contains { median($0) >= lighter }
+            func share(_ x: Int, below level: Double) -> Double {
+                Double((rows0..<rows1).filter { Double(g.value(x, $0)) < paper * level }.count) / Double(rows1 - rows0)
+            }
+            func clear(_ step: Int) -> Bool {
+                var x = foldX + step * max(2, g.width / 200)       // past the fold's own line
+                while x >= 0, x < g.width {
+                    if share(x, below: 0.75) <= 0.005 { return true }   // white paper
+                    if share(x, below: 0.5) > 0.005 { return false }    // print, even a line or two: far darker than shadow grain
+                    x += step
+                }
+                return false
+            }
+            if left && right && (clear(-1) || clear(1)) { return Double(foldX) / Double(g.width) }
+        }
+
         // 2. A white gap: columns with (almost) no ink, ignoring the top and
         //    bottom 5% where scan edges and running heads can stray across.
         let inkLevel = paper * 0.75
