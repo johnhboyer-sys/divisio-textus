@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     /// flagged page comes back to the same stack and box.
     @Published var stackKind: PageStack.Kind = .left
     @Published var stackCrops: [PageStack.Kind: CropRect] = [:]
+    /// The whole-spread stack's draft split and crops; nil: the stack's usual layout.
+    @Published var spreadLayout: SpreadLayout?
 
     @Published var direction: ReadingDirection = .leftToRight
     /// What auto-detection crops each book page to (see setCropTarget).
@@ -168,6 +170,7 @@ final class AppModel: ObservableObject {
         editSnapshot = nil
         stackKind = .left
         stackCrops = [:]
+        spreadLayout = nil
         document = doc
         sourceURL = url
         documentPassword = password
@@ -268,7 +271,7 @@ final class AppModel: ObservableObject {
             cancel.set()
         }
         guard !Task.isCancelled, document === current,
-              PageStack.groups(pages: pages).first(where: { $0.id == stack.id })?.geometry == stack.geometry,
+              PageStack.all(pages: pages).first(where: { $0.id == stack.id })?.geometry == stack.geometry,
               let image else { return nil }
         stackCache[stack.id] = CachedStack(geometry: stack.geometry, image: image)
         return image
@@ -646,6 +649,25 @@ final class AppModel: ObservableObject {
         statusText = "Applied this crop to \(count) pages in the stack."
     }
 
+    /// The whole-spread stack's Apply: the layout's split and crops, each crop kept
+    /// on its own side of the split, on each spread given. The angles stay, as when
+    /// the split is dragged in Page view.
+    func applySpreadLayout(_ layout: SpreadLayout, to members: [PageStack.Member]) {
+        let l = layout.clamped
+        var count = 0
+        perform("Apply Layout to Spreads") {
+            for member in members {
+                guard let i = pages.firstIndex(where: { $0.id == member.id }),
+                      pages[i].classification == .spread else { continue }
+                pages[i].splitX = l.splitX
+                pages[i].leftCrop = l.leftCrop
+                pages[i].rightCrop = l.rightCrop
+                count += 1
+            }
+        }
+        statusText = "Applied this layout to \(count) spread\(count == 1 ? "" : "s")."
+    }
+
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification != c else { return }
         let old = pages[i].classification
@@ -845,7 +867,7 @@ final class AppModel: ObservableObject {
                     if let a = claim.leftSheet?.minX, let b = claim.rightSheet?.maxX { plan.widths.append((b - a) / 2 * w); gave = true }
                     if member.side == .left, let a = s.minX { plan.marginLeft.append((t.minX - a) * w) }
                     if member.side == .right, let b = s.maxX { plan.marginRight.append((b - t.maxX) * w) }
-                case .single:
+                case .single, .whole:
                     if let a = s.minX { plan.marginLeft.append((t.minX - a) * w) }
                     if let b = s.maxX { plan.marginRight.append((b - t.maxX) * w) }
                     if let a = s.minX, let b = s.maxX { plan.widths.append((b - a) * w); gave = true }

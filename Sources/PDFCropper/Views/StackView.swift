@@ -19,13 +19,24 @@ struct StackView: View {
         nonmutating set { imageDocumentState.wrappedValue = newValue }
     }
 
-    private var stacks: [PageStack] { PageStack.groups(pages: model.pages) }
+    private var stacks: [PageStack] { PageStack.all(pages: model.pages) }
     private var stack: PageStack? { stacks.first { $0.id == model.stackKind } ?? stacks.first }
 
     /// The orange box: the user's draft for this stack, or else the stack's usual crop.
     private func draft(_ stack: PageStack) -> Binding<CropRect> {
         Binding(get: { model.stackCrops[stack.id] ?? stack.medianCrop.normalized() },
                 set: { model.stackCrops[stack.id] = $0 })
+    }
+
+    /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
+    private func layout(_ stack: PageStack) -> Binding<SpreadLayout> {
+        Binding(get: { model.spreadLayout ?? stack.medianLayout },
+                set: { model.spreadLayout = $0 })
+    }
+
+    private func split(_ stack: PageStack) -> Binding<Double> {
+        Binding(get: { layout(stack).wrappedValue.splitX },
+                set: { var l = layout(stack).wrappedValue; l.moveSplit(to: $0); model.spreadLayout = l })
     }
 
     private struct Request: Equatable {
@@ -56,7 +67,20 @@ struct StackView: View {
                 .help("Rebuild the stack image")
                 .disabled(stack == nil || loadingState.wrappedValue)
                 Spacer()
-                if let stack {
+                if let stack, stack.id == .spreads {
+                    Menu("Apply Layout") {
+                        Button("To All \(stack.members.count) Spreads") {
+                            model.applySpreadLayout(layout(stack).wrappedValue, to: stack.members)
+                        }
+                        Button("To the \(stack.outliers.count) Flagged Spreads") {
+                            model.applySpreadLayout(layout(stack).wrappedValue, to: stack.outliers)
+                        }
+                        .disabled(stack.outliers.isEmpty)
+                    }
+                    .fixedSize()
+                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil)
+                    .help("Set every spread, or only the flagged ones, to the orange split and the blue and green crops")
+                } else if let stack {
                     Menu("Apply Crop") {
                         Button("To All \(stack.members.count) Pages") {
                             model.applyStackCrop(draft(stack).wrappedValue, to: stack.members, in: stack)
@@ -120,14 +144,27 @@ struct StackView: View {
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
                     let flagged = Set(stack.outliers.map(\.id))
-                    ForEach(stack.members) { member in
-                        outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
-                                width: flagged.contains(member.id) ? 2 : 1,
-                                opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                    if stack.id == .spreads {
+                        ForEach(stack.members) { member in
+                            splitMark(member.page.splitX, in: frame, color: flagged.contains(member.id) ? .red : .blue,
+                                      width: flagged.contains(member.id) ? 2 : 1,
+                                      opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                        }
+                        CropBoxView(crop: layout(stack).leftCrop, imageFrame: frame,
+                                    color: .blue, label: "Left", tracksPageEdits: false)
+                        CropBoxView(crop: layout(stack).rightCrop, imageFrame: frame,
+                                    color: .green, label: "Right", labelEdge: .trailing, tracksPageEdits: false)
+                        SplitLine(splitX: split(stack), imageFrame: frame, tracksPageEdits: false)
+                    } else {
+                        ForEach(stack.members) { member in
+                            outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
+                                    width: flagged.contains(member.id) ? 2 : 1,
+                                    opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                        }
+                        CropBoxView(crop: draft(stack), imageFrame: frame,
+                                    color: .orange, label: "Stack crop", tracksPageEdits: false)
+                        outline(stack.medianCrop, in: frame, color: .primary, width: 1, opacity: 0.8, dashed: true)
                     }
-                    CropBoxView(crop: draft(stack), imageFrame: frame,
-                                color: .orange, label: "Stack crop", tracksPageEdits: false)
-                    outline(stack.medianCrop, in: frame, color: .primary, width: 1, opacity: 0.8, dashed: true)
                 } else if model.isAnalyzing {
                     Text("Waiting for page analysis to finish…")
                         .foregroundStyle(.secondary)
@@ -150,6 +187,15 @@ struct StackView: View {
             .frame(width: max(0, crop.width * frame.width), height: max(0, crop.height * frame.height))
             .position(x: frame.minX + (crop.x + crop.width / 2) * frame.width,
                       y: frame.minY + (crop.y + crop.height / 2) * frame.height)
+            .allowsHitTesting(false)
+    }
+
+    /// One spread's own split, drawn across the blend.
+    private func splitMark(_ x: Double, in frame: CGRect, color: Color, width: CGFloat, opacity: Double) -> some View {
+        Rectangle()
+            .fill(color.opacity(opacity))
+            .frame(width: width, height: frame.height)
+            .position(x: frame.minX + x * frame.width, y: frame.midY)
             .allowsHitTesting(false)
     }
 

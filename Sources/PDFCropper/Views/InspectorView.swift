@@ -138,12 +138,13 @@ private struct PageSections: View {
     }
 }
 
-/// Stack view: the pages in the stack on show whose crop differs in size.
+/// Stack view: the pages in the stack on show whose crop differs in size, or in
+/// the whole-spread stack, whose split is far from the rest.
 private struct StackSections: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let stacks = PageStack.groups(pages: model.pages)
+        let stacks = PageStack.all(pages: model.pages)
         if let stack = stacks.first(where: { $0.id == model.stackKind }) ?? stacks.first {
             Section {
                 // Until analysis is done the crops are placeholders, so judging them misleads.
@@ -151,7 +152,7 @@ private struct StackSections: View {
                     Text("Waiting for page analysis to finish…")
                         .foregroundStyle(.secondary)
                 } else if stack.outliers.isEmpty {
-                    Text("No page differs in size.")
+                    Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(stack.outliers) { member in
@@ -162,7 +163,7 @@ private struct StackSections: View {
                             HStack {
                                 Image(systemName: "exclamationmark.circle.fill")
                                     .foregroundStyle(.red)
-                                Text("p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                                Text("p. \(member.page.sourceIndex + 1) · \(member.side == .whole ? "split at \(Int((member.page.splitX * 100).rounded()))%" : member.side.rawValue)")
                                 Spacer()
                                 Text("Show").foregroundStyle(.secondary)
                             }
@@ -175,7 +176,10 @@ private struct StackSections: View {
             } header: {
                 Text("\(stack.id.label) (\(stack.members.count))")
             } footer: {
-                if !model.isAnalyzing, !stack.outliers.isEmpty {
+                if !model.isAnalyzing, !stack.outliers.isEmpty, stack.id == .spreads {
+                    Text("\(stack.outliers.count) \(stack.outliers.count == 1 ? "spread's split is" : "spreads' splits are") over \(Int(PageStack.splitTolerance * 100))% of the scan's width from the usual split. Apply Layout above the stack sets them to the orange split and the blue and green boxes.")
+                        .foregroundStyle(.secondary)
+                } else if !model.isAnalyzing, !stack.outliers.isEmpty {
                     Text("\(stack.outliers.count) \(stack.outliers.count == 1 ? "page differs" : "pages differ") in size from the rest of this stack. Apply Crop above the stack sets them to the orange box.")
                         .foregroundStyle(.secondary)
                 }
