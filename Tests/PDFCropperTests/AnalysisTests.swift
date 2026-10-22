@@ -184,6 +184,38 @@ struct AnalysisTests {
         #expect(r.splitX > 935.0 / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
     }
 
+    @Test("Frames nearly the scan's full height: the split is between them, on neither frame", arguments: [true, false])
+    func tallFrames(both: Bool) {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 200, 880)
+            Self.text(c, 1120, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            for (x0, x1) in both ? [(150, 933), (1070, 1853)] : [(1070, 1853)] {    // each frame: sides,
+                c.fill(CGRect(x: x0, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x1 - 3, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x0, y: 100, width: x1 - x0, height: 3))          // bottom
+                c.fill(CGRect(x: x0, y: Self.height - 103, width: x1 - x0, height: 3))  // and top
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > (both ? 935.0 : 882.0) / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
+    }
+
+    @Test("A black fold band meeting a dark line along the scan's bottom edge is still the fold")
+    func foldMeetsBottomEdgeLine() {
+        // As on Cherniss 1935: the fold is a black band, and the scan ends in a
+        // dark line along the bottom that the band runs into.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 900)
+            Self.text(c, 1100, 1850)
+            c.setFillColor(CGColor(gray: 0.02, alpha: 1))
+            c.fill(CGRect(x: 990, y: 30, width: 22, height: Self.height - 30))         // the fold, down to
+            c.fill(CGRect(x: 0, y: 30, width: Self.width, height: 6))                 // the edge line, white below
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 1001.0 / 2000) < 0.006, "split \(r.splitX)")
+    }
+
     @Test("One page's frame beside the gutter is not the fold (Codex review)")
     func oneFrameBesideGutter() {
         let image = Fixtures.image(Self.width, Self.height) { c in
@@ -255,6 +287,41 @@ struct AnalysisTests {
         #expect(abs(r.splitX - 1020.0 / 2000) < 0.006, "split \(r.splitX)")
         #expect(r.leftCrop.maxX <= r.splitX && r.rightCrop.minX >= r.splitX)
         #expect(r.rightCrop.minX <= 1110.0 / 2000, "right crop starts at \(r.rightCrop.minX * 2000)")   // text in the shadow kept
+    }
+
+    @Test("A right page curving away into shade, darkest at its text: the split is the fold, midway between the texts")
+    func curvedPageShadedToItsText() {
+        // As on Smith 1950 p13: the left page's white margin meets the fold,
+        // then the right page, curved away from the light, darkens toward its
+        // own text and only lightens again beyond it.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 910)
+            for x in 1000..<1250 {
+                let g = x < 1100 ? 0.87 - 0.07 * Double(x - 1000) / 100 : 0.80 + 0.2 * Double(x - 1100) / 150
+                c.setFillColor(CGColor(gray: g, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 1, height: Self.height))
+            }
+            Self.text(c, 1100, 1850)
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 1000.0 / 2000) < 0.008, "split \(r.splitX)")
+        #expect(r.rightCrop.minX <= 1100.0 / 2000)
+    }
+
+    @Test("A dark scanner bed along the bottom, clear only beside one page's text: the split is the gap's middle")
+    func bedAlongBottom() {
+        // As on Smith 1950 p16: the photographed book's bottom edge shows dark
+        // scanner bed below the gutter, except for a sliver beside the left
+        // page's text, so only that sliver is clear the whole height.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 150, 960)
+            Self.text(c, 1090, 1850)
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+            c.fill(CGRect(x: 0, y: 0, width: 955, height: 25))                       // the bed, below the left page,
+            c.fill(CGRect(x: 975, y: 0, width: 1025, height: 25))                   // and the gutter and right page
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - 1025.0 / 2000) < 0.01, "split \(r.splitX)")
     }
 
     @Test("A grey panel beside a white gutter is not the fold, and the text before it is kept (Codex review)")

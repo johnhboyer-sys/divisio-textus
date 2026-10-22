@@ -191,8 +191,16 @@ private struct StackSections: View {
 private struct BookSections: View {
     @EnvironmentObject var model: AppModel
 
+    /// Why the buttons below are greyed out, while they are.
+    private var busyNote: String? {
+        if model.isAnalyzing { return "Analyzing pages. These and Crop to come back when it's done." }
+        if model.isStraightening { return "Straightening pages. These and Crop to come back when it's done." }
+        if model.isExporting { return "Exporting. These and Crop to come back when it's done." }
+        return nil
+    }
+
     var body: some View {
-        Section("Whole book") {
+        Section {
             Button {
                 model.autoDetectAllPages()
             } label: {
@@ -205,6 +213,12 @@ private struct BookSections: View {
                 Label("Auto-straighten all pages", systemImage: "level")
             }
             .help("Finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
+        } header: {
+            Text("Whole book")
+        } footer: {
+            if let busyNote {
+                Text(busyNote).font(.caption).foregroundStyle(.secondary)
+            }
         }
         .disabled(model.isBusy)
 

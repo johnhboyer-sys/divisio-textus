@@ -98,18 +98,73 @@ enum PageAnalyzer {
 
         // 1. A binding shadow, deep or soft grey, or just the fold's thin line:
         //    the darkest central column that is inked nearly top to bottom. A
-        //    dark picture reaching the middle has paper above and below it, and
-        //    text never fills a column more than about 40%.
+        //    dark picture reaching the middle has paper above and below it,
+        //    text never fills a column more than about 40%, and a frame's side
+        //    has the frame's top and bottom running off its ends.
         let shadowLo = Int(Double(g.width) * 0.40), shadowHi = Int(Double(g.width) * 0.60)
         let rows0 = g.height / 20, rows1 = g.height - g.height / 20
+        func inkedRows(_ x: Int) -> Int { (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.75 }.count }
+        // A box's side has rules running off from its ends; a fold has none,
+        // and runs on to the scan's edge, where a dark edge line can meet it
+        // (so ends in the top and bottom 5% don't count).
+        func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
+            let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
+            guard let top = inked.first, let bottom = inked.last else { return false }
+            let reach = max(3, g.width * 3 / 100)
+            func rule(_ y: Int, _ step: Int) -> Bool {
+                var n = 0, cx = x + 2 * step
+                while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
+                return n >= reach
+            }
+            return [top, bottom].filter { $0 > rows0 && $0 < rows1 }.contains { end in
+                (max(0, end - 2)...min(g.height - 1, end + 2)).contains { rule($0, -1) || rule($0, 1) }
+            }
+        }
+        // Facing pages have much the same inner margins, so the fold lies about
+        // midway between the two pages' text, a little off where a page curves.
+        // Dense dark areas (a black shadow, a picture, the scanner bed) are not
+        // text and are passed over; with no text near on one side, any place goes.
+        func darkShare(_ x: Int) -> Double {
+            Double((rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.5 }.count) / Double(rows1 - rows0)
+        }
+        // Midway between the nearest text on either side of x, if there is text
+        // on both sides within reach and nothing dark (a picture, say) there.
+        func textMiddle(_ x: Int) -> Double? {
+            let reach = g.width * 15 / 100, band = darkShare(x) > 0.45
+            func textEdge(_ step: Int) -> Int? {
+                // Past the fold's own mark: a dark band with its ragged edges,
+                // or a few columns for a thin line.
+                var cx = x + step * max(2, g.width / 200)
+                if band { cx = x; while cx >= 0, cx < g.width, abs(cx - x) <= reach, darkShare(cx) > 0.005 { cx += step } }
+                while cx >= 0, cx < g.width, abs(cx - x) <= reach {
+                    let dark = darkShare(cx)
+                    if dark > 0.005 && dark <= 0.45 { return cx }
+                    cx += step
+                }
+                return nil
+            }
+            guard let l = textEdge(-1), let r = textEdge(1) else { return nil }
+            let m = (l + r) / 2
+            guard (m - 1...m + 1).allSatisfy({ darkShare($0) <= 0.005 }) else { return nil }
+            return Double(l + r) / 2
+        }
+        func centred(_ x: Int) -> Bool {
+            guard let m = textMiddle(x) else { return true }
+            return abs(Double(x) - m) <= max(2, Double(g.width) * 0.02)
+        }
         var darkestX = g.width / 2, darkestMean = Double.greatestFiniteMagnitude
         var shadowX: Int?, shadowMean = Double.greatestFiniteMagnitude
         for x in shadowLo..<shadowHi {
             let m = g.columnMean(x)
             if m < darkestMean { darkestMean = m; darkestX = x }
             guard m < shadowMean else { continue }
-            let inked = (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.75 }.count
-            if Double(inked) >= 0.85 * Double(rows1 - rows0) { shadowMean = m; shadowX = x }
+            let full = { (x: Int) in Double(inkedRows(x)) >= 0.85 * Double(rows1 - rows0) }
+            guard full(x) else { continue }
+            // A thin line with box corners is a frame's side, not the fold.
+            let near = max(2, g.width / 130)
+            let thin = !(x - near >= 0 && full(x - near)) && !(x + near < g.width && full(x + near))
+            if thin && cornered(x, 0..<g.height) { continue }
+            shadowMean = m; shadowX = x
         }
         if let shadowX { return Double(shadowX) / Double(g.width) }
 
@@ -119,15 +174,20 @@ enum PageAnalyzer {
         //     clearly lighter again on both sides (unlike light falling off
         //     across the whole scan). Between it and white paper on one side
         //     there must be no print, only the fold's own line and shadow
-        //     grain: a tinted panel with print beside it is no fold.
+        //     grain: a tinted panel with print beside it is no fold. And it too
+        //     lies about midway between the pages' text.
         func median(_ x: Int) -> Double {
             let values = (rows0..<rows1).map { g.value(x, $0) }.sorted()
             return Double(values[values.count / 2])
         }
         var foldX: Int?, foldLevel = Double.greatestFiniteMagnitude
-        for x in shadowLo..<shadowHi {
-            let shaded = (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.93 }.count
-            guard Double(shaded) >= 0.85 * Double(rows1 - rows0) else { continue }
+        func shaded(_ x: Int) -> Bool {
+            Double((rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.93 }.count) >= 0.85 * Double(rows1 - rows0)
+        }
+        for x in shadowLo..<shadowHi where shaded(x) {
+            let near = max(2, g.width / 130)                       // a frame's side, as in step 1
+            let thin = !(x - near >= 0 && shaded(x - near)) && !(x + near < g.width && shaded(x + near))
+            if thin && cornered(x, 0..<g.height) { continue }
             let level = median(x)
             if level < foldLevel { foldLevel = level; foldX = x }
         }
@@ -147,7 +207,10 @@ enum PageAnalyzer {
                 }
                 return false
             }
-            if left && right && (clear(-1) || clear(1)) { return Double(foldX) / Double(g.width) }
+            if left && right && (clear(-1) || clear(1)) {
+                if centred(foldX) { return Double(foldX) / Double(g.width) }
+                if let m = textMiddle(foldX) { return m / Double(g.width) }
+            }
         }
 
         // 2. A white gap: columns with (almost) no ink, ignoring the top and
@@ -181,20 +244,6 @@ enum PageAnalyzer {
             guard let x = xs.max(by: { share($0) < share($1) }), share(x) >= 0.5 else { return nil }
             return x
         }
-        // A box's side has rules running off from its ends; a fold has none.
-        func cornered(_ x: Int) -> Bool {
-            let inked = (y0..<y1).filter { y in (x - 1...x + 1).contains { Double(g.value($0, y)) < inkLevel } }
-            guard let top = inked.first, let bottom = inked.last else { return false }
-            let reach = max(3, g.width * 3 / 100)
-            func rule(_ y: Int, _ step: Int) -> Bool {
-                var n = 0, cx = x + 2 * step
-                while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < inkLevel { n += 1; cx += step }
-                return n >= reach
-            }
-            return [top, bottom].contains { end in
-                (max(0, end - 2)...min(g.height - 1, end + 2)).contains { rule($0, -1) || rule($0, 1) }
-            }
-        }
         // Two runs with one such line between them, and no other beside them
         // (each page's frame, say), are one gap whose middle is the fold, if
         // the two pages' inner margins either side of it are much alike (one
@@ -204,7 +253,7 @@ enum PageAnalyzer {
         var k = 0
         while k < runs.count {
             if k < links.count, let x = links[k], k == 0 || links[k - 1] == nil, k + 1 >= links.count || links[k + 1] == nil,
-               3 * min(runs[k].length, runs[k + 1].length) >= max(runs[k].length, runs[k + 1].length), !cornered(x) {
+               3 * min(runs[k].length, runs[k + 1].length) >= max(runs[k].length, runs[k + 1].length), !cornered(x, y0..<y1) {
                 gaps.append((runs[k].start, runs[k + 1].start + runs[k + 1].length - runs[k].start, x))
                 k += 2
             } else {
@@ -243,7 +292,9 @@ enum PageAnalyzer {
                     start = nil
                 }
             }
-            let chosen = bestClear ?? run
+            // Only a real share of the gap, though: a dark scanner bed along
+            // the bottom can leave just a sliver beside one page's text clear.
+            let chosen = bestClear.flatMap { 3 * $0.length >= run.length ? $0 : nil } ?? run
             return (Double(chosen.start) + Double(chosen.length) / 2) / Double(g.width)
         }
         if let best, best.length >= max(2, g.width * 3 / 100) { return middle(of: best) }
