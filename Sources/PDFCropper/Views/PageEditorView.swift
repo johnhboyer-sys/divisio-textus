@@ -232,12 +232,13 @@ struct SplitLine: View {
 
 /// Horizontal draggable guide that moves a shared top/bottom margin for a spread:
 /// a tab in the margin left of the page, and a faint line across it.
-private struct HGuide: View {
+struct HGuide: View {
     enum Edge { case top, bottom }
     @EnvironmentObject var model: AppModel
     @Binding var y: Double
     let imageFrame: CGRect
     let edge: Edge
+    var tracksPageEdits = true
 
     var body: some View {
         let yy = imageFrame.minY + y * imageFrame.height
@@ -259,10 +260,10 @@ private struct HGuide: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
-                    model.beginEdit()
+                    if tracksPageEdits { model.beginEdit() }
                     y = (value.location.y - imageFrame.minY) / imageFrame.height
                 }
-                .onEnded { _ in model.endEdit("Move Margin") }
+                .onEnded { _ in if tracksPageEdits { model.endEdit("Move Margin") } }
         )
         .help(edge == .top ? "Shared top margin (both pages)" : "Shared bottom margin (both pages)")
     }

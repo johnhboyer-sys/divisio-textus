@@ -39,6 +39,33 @@ struct StackView: View {
                 set: { var l = layout(stack).wrappedValue; l.moveSplit(to: $0); model.spreadLayout = l })
     }
 
+    /// The shared top (or bottom) of the draft's two crops: the average of the
+    /// two, and setting it moves both together, as in the page editor.
+    private func margin(_ stack: PageStack, top: Bool) -> Binding<Double> {
+        Binding(
+            get: {
+                let l = layout(stack).wrappedValue
+                return top ? (l.leftCrop.minY + l.rightCrop.minY) / 2 : (l.leftCrop.maxY + l.rightCrop.maxY) / 2
+            },
+            set: { value in
+                let v = max(0, min(value, 1))
+                var l = layout(stack).wrappedValue
+                for keyPath in [\SpreadLayout.leftCrop, \SpreadLayout.rightCrop] {
+                    var c = l[keyPath: keyPath]
+                    if top {
+                        let bottom = c.maxY, t = min(v, bottom - 0.02)
+                        c.y = t; c.height = bottom - t
+                    } else {
+                        c.height = max(v, c.minY + 0.02) - c.minY
+                    }
+                    c.normalize()
+                    l[keyPath: keyPath] = c
+                }
+                model.spreadLayout = l
+            }
+        )
+    }
+
     private struct Request: Equatable {
         let document: ObjectIdentifier?
         let kind: PageStack.Kind?
@@ -155,6 +182,8 @@ struct StackView: View {
                         CropBoxView(crop: layout(stack).rightCrop, imageFrame: frame,
                                     color: .green, label: "Right", labelEdge: .trailing, tracksPageEdits: false)
                         SplitLine(splitX: split(stack), imageFrame: frame, tracksPageEdits: false)
+                        HGuide(y: margin(stack, top: true), imageFrame: frame, edge: .top, tracksPageEdits: false)
+                        HGuide(y: margin(stack, top: false), imageFrame: frame, edge: .bottom, tracksPageEdits: false)
                     } else {
                         ForEach(stack.members) { member in
                             outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
