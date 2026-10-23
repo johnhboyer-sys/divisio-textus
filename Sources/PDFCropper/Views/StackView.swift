@@ -214,7 +214,17 @@ struct StackView: View {
                 .clipped()
             }
             .overlay(alignment: .bottom) {
-                if imageState.wrappedValue != nil, let readout = sizeReadout(stack) { CropSizeLabel(readout: readout) }
+                if imageState.wrappedValue != nil, let readout = sizeReadout(stack) {
+                    CropSizeLabel(readout: readout, match: stack.id == .spreads ? { rightMatchesLeft in
+                        var l = layout(stack).wrappedValue
+                        if rightMatchesLeft {
+                            l.rightCrop = l.rightCrop.matched(to: l.leftCrop, foldOnRight: false)
+                        } else {
+                            l.leftCrop = l.leftCrop.matched(to: l.rightCrop, foldOnRight: true)
+                        }
+                        model.spreadLayout = l
+                    } : nil)
+                }
             }
         }
     }

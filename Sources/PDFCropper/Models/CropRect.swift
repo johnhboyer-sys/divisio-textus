@@ -33,6 +33,20 @@ struct CropRect: Equatable, Codable {
         return c
     }
 
+    /// This box at `reference`'s size (Match Sizes): the edge at the fold stays (a left
+    /// page's right edge, a right page's left edge), the outer edge moves, and the top
+    /// and bottom become the reference's. Kept within the page.
+    func matched(to reference: CropRect, foldOnRight: Bool) -> CropRect {
+        var c = CropRect(x: x, y: reference.y, width: reference.width, height: reference.height)
+        if foldOnRight {
+            c.x = max(0, maxX - reference.width)
+            c.width = maxX - c.x
+        } else {
+            c.width = min(reference.width, 1 - x)
+        }
+        return c
+    }
+
     /// The smallest rect containing both.
     func union(_ other: CropRect) -> CropRect {
         let x0 = min(minX, other.minX), y0 = min(minY, other.minY)

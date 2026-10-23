@@ -14,26 +14,57 @@ struct RulerMenuButton: View {
 /// they are the same size. Shown with or without the rulers.
 struct CropSizeLabel: View {
     let readout: CropSizeReadout
+    /// Match Sizes, with two boxes: true makes the right box match the left.
+    var match: ((Bool) -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 10) {
-            ForEach(readout.sizes, id: \.self) { Text($0) }
-            if let verdict = readout.verdict, let same = readout.same {
-                Label {
-                    Text(verdict)
-                } icon: {
-                    Image(systemName: same ? "checkmark.circle.fill" : "notequal.circle.fill")
-                        .foregroundStyle(same ? .green : .orange)
-                }
-            }
+        // One line where it fits; in a narrow window the verdict goes on a second.
+        ViewThatFits(in: .horizontal) {
+            framed(HStack(spacing: 10) { sizes; verdict; menu })
+            framed(VStack(spacing: 1) {
+                HStack(spacing: 10) { sizes }
+                HStack(spacing: 10) { verdict; menu }
+            })
         }
-        // Small enough to sit under the page's bottom handles, not on them.
-        .font(.caption2.monospacedDigit())
-        .padding(.horizontal, 8).padding(.vertical, 1)
-        .background(.regularMaterial, in: Capsule())
-        .fixedSize()
         .padding(.bottom, 2)
-        .allowsHitTesting(false)
+    }
+
+    // Only the menu takes clicks: the rest lets drags reach the handles under it.
+    private var sizes: some View {
+        ForEach(readout.sizes, id: \.self) { Text($0) }.allowsHitTesting(false)
+    }
+
+    @ViewBuilder private var verdict: some View {
+        if let verdict = readout.verdict, let same = readout.same {
+            Label {
+                Text(verdict)
+            } icon: {
+                Image(systemName: same ? "checkmark.circle.fill" : "notequal.circle.fill")
+                    .foregroundStyle(same ? .green : .orange)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        if readout.same == false, let match {
+            Menu("Match Sizes") {
+                Button("Make Right Match Left") { match(true) }
+                Button("Make Left Match Right") { match(false) }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up")
+        }
+    }
+
+    private func framed(_ content: some View) -> some View {
+        content
+            // Small enough to sit under the page's bottom handles, not on them.
+            .font(.caption2.monospacedDigit())
+            .padding(.horizontal, 8).padding(.vertical, 1)
+            .background { RoundedRectangle(cornerRadius: 8).fill(.regularMaterial).allowsHitTesting(false) }
+            .fixedSize()
     }
 }
 

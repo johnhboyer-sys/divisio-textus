@@ -33,6 +33,25 @@ struct ModelTests {
         #expect(m.outputPageCount == 11)
     }
 
+    @Test("Match Sizes makes one box the other's size, as one undo step")
+    func matchSizes() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread
+        undoable(undo) { m.perform("Adjust Crop") {
+            m.pages[i].leftCrop = CropRect(x: 0.05, y: 0.1, width: 0.4, height: 0.8)
+            m.pages[i].rightCrop = CropRect(x: 0.52, y: 0.12, width: 0.42, height: 0.75)
+        } }
+        let before = m.pages[i]
+        undoable(undo) { m.matchCropSizes(of: before.id, rightMatchesLeft: true) }
+        #expect(m.pages[i].leftCrop == before.leftCrop)
+        #expect(m.pages[i].rightCrop == CropRect(x: 0.52, y: 0.1, width: 0.4, height: 0.8))
+        undo.undo()
+        #expect(m.pages[i] == before)
+        undoable(undo) { m.matchCropSizes(of: before.id, rightMatchesLeft: false) }
+        #expect(m.pages[i].rightCrop == before.rightCrop)
+        #expect(abs(m.pages[i].leftCrop.width - 0.42) < 1e-12 && abs(m.pages[i].leftCrop.maxX - 0.45) < 1e-12)
+    }
+
     @Test("Spread to Single re-detects a whole-page crop; undo and redo")
     func typeChange() async {
         let (m, undo, _) = await loadedSample()
