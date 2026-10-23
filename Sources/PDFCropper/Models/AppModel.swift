@@ -771,7 +771,12 @@ final class AppModel: ObservableObject {
     func setOmittedSide(_ side: BookPage.Side?, for id: BookPage.ID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].isSpread,
               pages[i].omittedSide != side else { return }
-        perform("Change Pages Exported") { pages[i].omittedSide = side }
+        // Which pages a spread exports is no crop edit: the page stays analysis's,
+        // so the book's page size still places its crops.
+        let before = pages[i]
+        pages[i].omittedSide = side
+        registerUndo(restoring: [before], claims: setByAnalysis.filter { $0.key == id },
+                     actionName: "Change Pages Exported")
     }
 
     /// Throw away every edit and auto-detect all pages again (undoable).
