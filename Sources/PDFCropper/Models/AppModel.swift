@@ -1116,6 +1116,19 @@ final class AppModel: ObservableObject {
         selectedPageID = pages[i].id
     }
 
+    /// Match Sizes: one of a spread's two crops takes the other's size (see CropRect.matched).
+    func matchCropSizes(of id: UUID, rightMatchesLeft: Bool) {
+        guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].isSpread else { return }
+        perform(rightMatchesLeft ? "Make Right Match Left" : "Make Left Match Right") {
+            let page = pages[i]
+            if rightMatchesLeft {
+                pages[i].rightCrop = page.rightCrop.matched(to: page.leftCrop, foldOnRight: false)
+            } else {
+                pages[i].leftCrop = page.leftCrop.matched(to: page.rightCrop, foldOnRight: true)
+            }
+        }
+    }
+
     // MARK: - Undo
 
     /// Make a one-step change undoable. Pages it changes count as hand-edited

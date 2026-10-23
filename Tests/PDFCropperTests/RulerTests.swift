@@ -168,6 +168,22 @@ struct RulerTests {
         #expect(taller.sizes == ["Left 7.817 × 9.000 in", "Right 7.824 × 9.167 in"])
     }
 
+    @Test("Match sizes: the edge at the fold stays, the outer edge moves, top and bottom follow")
+    func matchSizes() {
+        let left = CropRect(x: 0.05, y: 0.1, width: 0.4, height: 0.8)
+        let right = CropRect(x: 0.52, y: 0.12, width: 0.42, height: 0.75)
+        #expect(right.matched(to: left, foldOnRight: false) == CropRect(x: 0.52, y: 0.1, width: 0.4, height: 0.8))
+        let l = left.matched(to: right, foldOnRight: true)
+        #expect(abs(l.maxX - 0.45) < 1e-12 && abs(l.width - 0.42) < 1e-12)
+        #expect(l.y == 0.12 && l.height == 0.75)
+        // No room for the full width: the box stops at the page's edge.
+        let narrow = CropRect(x: 0.05, y: 0.1, width: 0.25, height: 0.8)
+        let wide = CropRect(x: 0.5, y: 0.1, width: 0.45, height: 0.8)
+        #expect(narrow.matched(to: wide, foldOnRight: true) == CropRect(x: 0, y: 0.1, width: 0.3, height: 0.8))
+        let r = CropRect(x: 0.7, y: 0.1, width: 0.25, height: 0.8).matched(to: wide, foldOnRight: false)
+        #expect(r.x == 0.7 && abs(r.maxX - 1) < 1e-12)
+    }
+
     @Test("Rulers start hidden, under a fixed defaults key")
     func toggleDefault() {
         #expect(Rulers.storageKey == "showsRulers")

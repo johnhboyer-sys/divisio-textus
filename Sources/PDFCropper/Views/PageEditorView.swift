@@ -64,7 +64,10 @@ struct PageEditorView: View {
                 )
             }
             .overlay(alignment: .bottom) {
-                if let readout = sizeReadout(page) { CropSizeLabel(readout: readout) }
+                if let readout = sizeReadout(page) {
+                    CropSizeLabel(readout: readout, match: page.isSpread
+                                  ? { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) } : nil)
+                }
             }
         }
     }
