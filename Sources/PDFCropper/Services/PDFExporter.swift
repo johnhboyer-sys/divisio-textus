@@ -63,14 +63,203 @@ enum PDFExporter {
         let total = todo.reduce(0) { $0 + $1.outputCrops(direction: settings.direction).count }
         guard total > 0 else { throw ExportError.noPages }
 
-        // Each page's media box is its own crop (no padding, no resampling), sized at
-        // its render DPI so the page keeps its physical size: a 300 DPI crop 2550 px
-        // wide is 8.5 in (612 pt), not 2550 pt.
-        var defaultBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        var report = Report()
+        try writePDF(to: url, isCancelled: isCancelled) { ctx in
+            let textFont = makeTextLayerFont()
+            var batchStart = 0
+            while batchStart < todo.count {
+                if isCancelled?() == true { throw ExportError.cancelled }
+                let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
+                batchStart += batch.count
 
-        // Write to a temporary file and move it into place at the end, so exporting
-        // over the source PDF never reads and writes one file at once, and a failed
-        // export leaves no half-written file behind.
+                // 1. Render, straighten and crop serially: PDFKit can't draw one document
+                //    from several threads at once.
+                //    The autorelease pool matters: PDFKit autoreleases while drawing, and a
+                //    background thread doesn't drain until the whole export ends, which
+                //    kept every rendered page alive.
+                var images: [CGImage] = []
+                var dpis: [Double] = []
+                for page in batch {
+                    try autoreleasepool {
+                        guard let pdfPage = document.page(at: page.sourceIndex) else {
+                            throw ExportError.renderFailed(page.sourceIndex)
+                        }
+                        let dpi = renderDPI(of: pdfPage, settings: settings)
+                        guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
+                            throw ExportError.renderFailed(page.sourceIndex)
+                        }
+                        // Deskew each half independently at full export resolution,
+                        // matching the preview composite, so the crop boxes line up.
+                        let composite = ImageTransform.deskewedComposite(
+                            rendered, splitX: page.splitX,
+                            leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
+                            isSpread: page.isSpread)
+                        let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+                        // A crop that fails would silently drop an output page: fail the export.
+                        for crop in page.outputCrops(direction: settings.direction) {
+                            guard let sub = PDFRenderer.crop(enhanced, to: crop) else {
+                                throw ExportError.renderFailed(page.sourceIndex)
+                            }
+                            images.append(sub)
+                            dpis.append(dpi)
+                        }
+                    }
+                }
+
+                // 2. OCR the batch in parallel.
+                let text = recognizeAll(images.map { settings.ocr ? $0 : nil }) {
+                    OCRService.recognizeLines($0, languages: settings.ocrLanguages)
+                }
+
+                if isCancelled?() == true { throw ExportError.cancelled }
+
+                // 3. Write the batch in reading order. OCR above read the full-quality
+                //    image; what goes into the file is the compact encoding of it.
+                for (i, image) in images.enumerated() {
+                    // Each page's media box is its own crop (no padding, no resampling), sized at
+                    // its render DPI so the page keeps its physical size: a 300 DPI crop 2550 px
+                    // wide is 8.5 in (612 pt), not 2550 pt.
+                    let pointsPerPixel = 72.0 / dpis[i]
+                    var box = CGRect(x: 0, y: 0,
+                                     width: Double(image.width) * pointsPerPixel,
+                                     height: Double(image.height) * pointsPerPixel)
+                    ctx.beginPage(mediaBox: &box)
+                    ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
+                    report.pageCount += 1
+                    if let recognition = text[i] {
+                        drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
+                    }
+                    if text[i]?.complete != true {
+                        report.ocrFailedPages.append(report.pageCount)
+                    }
+                    ctx.endPage()
+                    progress?(report.pageCount, total)
+                }
+            }
+        }
+        return report
+    }
+
+    /// Export the PDF's own pages exactly as they are — not split, straightened,
+    /// cropped, recolored or re-encoded — adding only the invisible text layer.
+    /// Each page's drawing is copied, so its images and vectors go in as they are
+    /// (JPEG and JPEG 2000 byte for byte; Quartz stores other images losslessly
+    /// as Flate, so black-and-white scans can grow), onto a page of its displayed
+    /// size, turned as it shows. Notes and form fields are kept as they look,
+    /// drawn into the page; links and bookmarks aren't carried over. Pages that
+    /// already have text keep it and aren't read again, so no text is doubled.
+    /// `recognize` stands in for Vision in tests.
+    static func addTextLayer(from document: PDFDocument, to url: URL, settings: Settings,
+                             isCancelled: (() -> Bool)? = nil,
+                             progress: ((Int, Int) -> Void)? = nil,
+                             recognize: ((CGImage) -> OCRService.Recognition?)? = nil) throws -> Report {
+        let total = document.pageCount
+        guard total > 0 else { throw ExportError.noPages }
+        let read = recognize ?? { OCRService.recognizeLines($0, languages: settings.ocrLanguages) }
+        var report = Report()
+        try writePDF(to: url, isCancelled: isCancelled) { ctx in
+            let textFont = makeTextLayerFont()
+            var batchStart = 0
+            while batchStart < total {
+                if isCancelled?() == true { throw ExportError.cancelled }
+                let batch = batchStart..<min(batchStart + batchSize, total)
+                batchStart = batch.upperBound
+
+                // 1. Render the pages without text, serially (see export).
+                var images = [CGImage?](repeating: nil, count: batch.count)
+                if settings.ocr {
+                    for (k, index) in batch.enumerated() {
+                        try autoreleasepool {
+                            guard let page = document.page(at: index) else { throw ExportError.renderFailed(index) }
+                            guard !hasText(page) else { return }
+                            guard let image = PDFRenderer.renderCGImage(page: page, dpi: renderDPI(of: page, settings: settings)) else {
+                                throw ExportError.renderFailed(index)
+                            }
+                            images[k] = image
+                        }
+                    }
+                }
+
+                // 2. OCR them in parallel.
+                let text = recognizeAll(images, read)
+                if isCancelled?() == true { throw ExportError.cancelled }
+
+                // 3. Copy each page as it is and lay its text over it.
+                for (k, index) in batch.enumerated() {
+                    try autoreleasepool {
+                        guard let page = document.page(at: index) else { throw ExportError.renderFailed(index) }
+                        // Drawn the way the OCR render above was (see PDFRenderer), so
+                        // the text lands on what was read: PDFKit places the crop box
+                        // and the page's turn, and draws what its notes and marks show.
+                        var box = CGRect(origin: .zero, size: PDFRenderer.displaySize(of: page))
+                        ctx.beginPage(mediaBox: &box)
+                        ctx.saveGState()
+                        ctx.clip(to: box)
+                        page.draw(with: .cropBox, to: ctx)
+                        ctx.restoreGState()
+                        report.pageCount += 1
+                        if let recognition = text[k] {
+                            drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
+                        }
+                        if text[k]?.complete != true {
+                            report.ocrFailedPages.append(report.pageCount)
+                        }
+                        ctx.endPage()
+                    }
+                    progress?(report.pageCount, total)
+                }
+            }
+        }
+        return report
+    }
+
+    /// Whether the page already has text a reader can search: from an earlier
+    /// OCR, or because it was made on a computer rather than scanned.
+    static func hasText(_ page: PDFPage) -> Bool {
+        page.string?.contains { !$0.isWhitespace } == true
+    }
+
+    /// Whether the PDF already has text, judged from up to `sample` pages spread
+    /// through it, so opening a long book stays quick.
+    static func hasText(_ document: PDFDocument, sample: Int = 10) -> Bool {
+        let n = document.pageCount, count = min(n, sample)
+        return (0..<count).contains { k in document.page(at: k * n / count).map(hasText) ?? false }
+    }
+
+    /// Render at the scan's own resolution when there is one: higher would invent
+    /// pixels, lower would throw detail away. Kept within 150–600 DPI so OCR has
+    /// enough to read and memory stays sane.
+    private static func renderDPI(of page: PDFPage, settings: Settings) -> Double {
+        settings.matchScanResolution
+            ? PDFRenderer.scanDPI(of: page).map { min(600, max(150, $0)) } ?? settings.dpi
+            : settings.dpi
+    }
+
+    /// Read the images' text in parallel; a nil image has nothing to read. A nil
+    /// result means Vision failed on the whole page; incomplete, on part of it.
+    private static func recognizeAll(_ images: [CGImage?],
+                                     _ read: (CGImage) -> OCRService.Recognition?) -> [OCRService.Recognition?] {
+        let noText = OCRService.Recognition(lines: [], complete: true)
+        var text = [OCRService.Recognition?](repeating: noText, count: images.count)
+        text.withUnsafeMutableBufferPointer { out in
+            DispatchQueue.concurrentPerform(iterations: images.count) { i in
+                if let image = images[i] { out[i] = read(image) }
+            }
+        }
+        // Vision tends to fail while it warms up and then recover, so give
+        // failed or partly failed pages one more try now that the rest of
+        // the batch is done, keeping whichever result read more.
+        for i in text.indices where text[i]?.complete != true {
+            guard let image = images[i], let retry = read(image) else { continue }
+            if retry.complete || retry.lines.count > (text[i]?.lines.count ?? -1) { text[i] = retry }
+        }
+        return text
+    }
+
+    /// Write a PDF through `body` to a temporary file and move it into place at
+    /// the end, so exporting over the source PDF never reads and writes one file
+    /// at once, and a failed or cancelled export leaves no half-written file behind.
+    private static func writePDF(to url: URL, isCancelled: (() -> Bool)?, _ body: (CGContext) throws -> Void) throws {
         let fm = FileManager.default
         guard let tmpDir = try? fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                        appropriateFor: url, create: true) else {
@@ -79,99 +268,12 @@ enum PDFExporter {
         defer { try? fm.removeItem(at: tmpDir) }
         let tmpURL = tmpDir.appendingPathComponent(url.lastPathComponent)
 
+        var defaultBox = CGRect(x: 0, y: 0, width: 612, height: 792)
         guard let consumer = CGDataConsumer(url: tmpURL as CFURL),
               let ctx = CGContext(consumer: consumer, mediaBox: &defaultBox, nil) else {
             throw ExportError.writeFailed
         }
-
-        var report = Report()
-        let textFont = makeTextLayerFont()
-        var batchStart = 0
-        while batchStart < todo.count {
-            if isCancelled?() == true { throw ExportError.cancelled }
-            let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
-            batchStart += batch.count
-
-            // 1. Render, straighten and crop serially: PDFKit can't draw one document
-            //    from several threads at once.
-            //    The autorelease pool matters: PDFKit autoreleases while drawing, and a
-            //    background thread doesn't drain until the whole export ends, which
-            //    kept every rendered page alive.
-            var images: [CGImage] = []
-            var dpis: [Double] = []
-            for page in batch {
-                try autoreleasepool {
-                    guard let pdfPage = document.page(at: page.sourceIndex) else {
-                        throw ExportError.renderFailed(page.sourceIndex)
-                    }
-                    // Render at the scan's own resolution when there is one: higher
-                    // would invent pixels, lower would throw detail away. Kept within
-                    // 150–600 DPI so OCR has enough to read and memory stays sane.
-                    let dpi = settings.matchScanResolution
-                        ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-                        : settings.dpi
-                    guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
-                        throw ExportError.renderFailed(page.sourceIndex)
-                    }
-                    // Deskew each half independently at full export resolution,
-                    // matching the preview composite, so the crop boxes line up.
-                    let composite = ImageTransform.deskewedComposite(
-                        rendered, splitX: page.splitX,
-                        leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
-                        isSpread: page.isSpread)
-                    let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
-                    // A crop that fails would silently drop an output page: fail the export.
-                    for crop in page.outputCrops(direction: settings.direction) {
-                        guard let sub = PDFRenderer.crop(enhanced, to: crop) else {
-                            throw ExportError.renderFailed(page.sourceIndex)
-                        }
-                        images.append(sub)
-                        dpis.append(dpi)
-                    }
-                }
-            }
-
-            // 2. OCR the batch in parallel. nil = Vision failed on the whole page;
-            //    incomplete = it failed on part of it.
-            let noText = OCRService.Recognition(lines: [], complete: true)
-            var text = [OCRService.Recognition?](repeating: noText, count: images.count)
-            if settings.ocr {
-                text.withUnsafeMutableBufferPointer { out in
-                    DispatchQueue.concurrentPerform(iterations: images.count) { i in
-                        out[i] = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages)
-                    }
-                }
-                // Vision tends to fail while it warms up and then recover, so give
-                // failed or partly failed pages one more try now that the rest of
-                // the batch is done, keeping whichever result read more.
-                for i in text.indices where text[i]?.complete != true {
-                    guard let retry = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages) else { continue }
-                    if retry.complete || retry.lines.count > (text[i]?.lines.count ?? -1) { text[i] = retry }
-                }
-            }
-
-            if isCancelled?() == true { throw ExportError.cancelled }
-
-            // 3. Write the batch in reading order. OCR above read the full-quality
-            //    image; what goes into the file is the compact encoding of it.
-            for (i, image) in images.enumerated() {
-                let pointsPerPixel = 72.0 / dpis[i]
-                var box = CGRect(x: 0, y: 0,
-                                 width: Double(image.width) * pointsPerPixel,
-                                 height: Double(image.height) * pointsPerPixel)
-                ctx.beginPage(mediaBox: &box)
-                ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
-                report.pageCount += 1
-                if let recognition = text[i] {
-                    drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
-                }
-                if text[i]?.complete != true {
-                    report.ocrFailedPages.append(report.pageCount)
-                }
-                ctx.endPage()
-                progress?(report.pageCount, total)
-            }
-        }
+        try body(ctx)
         ctx.closePDF()
         // Cancel pressed during the last batch: don't replace the destination.
         if isCancelled?() == true { throw ExportError.cancelled }
@@ -184,7 +286,6 @@ enum PDFExporter {
         } catch {
             throw ExportError.writeFailed
         }
-        return report
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages

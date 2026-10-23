@@ -46,7 +46,7 @@ blank page, 300 random pages), whole-page crops (the sheet on a dark scanner bed
 a black fold, the corners straightening leaves empty), straightening (known turns, two columns, sparse
 lines, tinted paper, pictures beside text), rendering, gray detection,
 scan-resolution detection, export (page size, cancel, reading order, skipped
-pages) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
+pages, add text only) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
 a temporary folder, never your real ones. OCR isn't covered: Vision is too slow
 and erratic for an automated suite.
 
@@ -112,6 +112,14 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    writes pages in reading order. Each page is stored as JPEG or losslessly,
    whichever is smaller (gray when the scan has no color). Pages are processed a
    few at a time, so memory stays flat however long the book is; ⌘. cancels.
+7. **Add text only** (Export tab, Pages) is for a PDF that needs no splitting
+   or cropping, only searching: every page goes out exactly as it is (not
+   split, straightened, cropped, recolored or redrawn as an image) with the
+   invisible text layer added. Pages that already have text keep it and are
+   not read again. When a PDF you open already has text, the app says so: the
+   normal export makes each page a new image and reads it again, so the old
+   text is replaced. Links and bookmarks aren't kept, and black-and-white scan
+   images are stored losslessly in a form that can be up to twice as large.
 
 ## Project layout
 

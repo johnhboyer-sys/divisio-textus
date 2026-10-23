@@ -248,16 +248,34 @@ private struct ExportSections: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        Section("Output") {
-            Picker("Color", selection: $model.enhanceMode) {
-                ForEach(EnhanceMode.allCases) { m in
+        if model.sourceHasText {
+            Section {
+                Label(model.exportMode == .textOnly
+                      ? "This PDF already has text. Pages that have it keep it; only the others are read."
+                      : "This PDF already has text. Split and crop makes each page a new image and reads its text again, so the old text is lost. To keep the pages and their text as they are, choose Add text only.",
+                      systemImage: "text.magnifyingglass")
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        Section {
+            Picker("Pages", selection: $model.exportMode) {
+                ForEach(ExportMode.allCases) { m in
                     Text(m.label).tag(m)
                 }
             }
-            Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
-            Picker("Reading order", selection: $model.direction) {
-                ForEach(ReadingDirection.allCases) { d in
-                    Text(d.label).tag(d)
+            .help("Split and crop makes one page per book page. Add text only keeps the PDF's pages exactly as they are and makes them searchable.")
+            if model.exportMode == .crop {
+                Picker("Color", selection: $model.enhanceMode) {
+                    ForEach(EnhanceMode.allCases) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
+                Picker("Reading order", selection: $model.direction) {
+                    ForEach(ReadingDirection.allCases) { d in
+                        Text(d.label).tag(d)
+                    }
                 }
             }
             Toggle("Match scan resolution", isOn: $model.matchScanResolution)
@@ -268,6 +286,13 @@ private struct ExportSections: View {
                      : "Export resolution: \(Int(model.exportDPI)) DPI")
                 Slider(value: $model.exportDPI, in: 150...600, step: 50)
                     .labelsHidden()
+            }
+        } header: {
+            Text("Output")
+        } footer: {
+            if model.exportMode == .textOnly {
+                Text("Every page goes out exactly as it is, with searchable text added. Splits, crops, straightening and skipped pages don't apply. The resolution is only for reading the text.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
 

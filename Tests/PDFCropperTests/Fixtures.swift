@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import PDFKit
 import CoreGraphics
+import CoreText
 @testable import PDFCropper
 
 /// Test PDFs are generated on the fly (or copied from the repo's sample book)
@@ -75,6 +76,47 @@ enum Fixtures {
         for i in 0..<20 { NSRect(x: 60, y: 100 + CGFloat(i) * 30, width: size.width - 120, height: 10).fill() }
         img.unlockFocus()
         return PDFPage(image: img)!
+    }
+
+    /// Draw `text` as real, visible PDF text (as a born-digital or OCR'd PDF has it).
+    static func drawText(_ text: String, in c: CGContext, at point: CGPoint, size: CGFloat = 18) {
+        let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+        c.textMatrix = .identity
+        c.textPosition = point
+        CTLineDraw(line, c)
+    }
+
+    /// The data of every image the page draws, also inside form objects, as
+    /// stored in the file (a JPEG stays JPEG bytes), with its storage format.
+    static func imageStreams(_ page: CGPDFPage) -> [(data: Data, format: CGPDFDataFormat)] {
+        var found: [(Data, CGPDFDataFormat)] = []
+        func walk(_ resources: CGPDFDictionaryRef, depth: Int) {
+            var xobjects: CGPDFDictionaryRef?
+            guard depth < 4, CGPDFDictionaryGetDictionary(resources, "XObject", &xobjects), let xo = xobjects else { return }
+            CGPDFDictionaryApplyBlock(xo, { _, object, _ in
+                var stream: CGPDFStreamRef?
+                guard CGPDFObjectGetValue(object, .stream, &stream), let s = stream,
+                      let dict = CGPDFStreamGetDictionary(s) else { return true }
+                var subtype: UnsafePointer<CChar>?
+                CGPDFDictionaryGetName(dict, "Subtype", &subtype)
+                switch subtype.map({ String(cString: $0) }) {
+                case "Image":
+                    var format = CGPDFDataFormat.raw
+                    if let data = CGPDFStreamCopyData(s, &format) { found.append((data as Data, format)) }
+                case "Form":
+                    var r: CGPDFDictionaryRef?
+                    if CGPDFDictionaryGetDictionary(dict, "Resources", &r), let r { walk(r, depth: depth + 1) }
+                default: break
+                }
+                return true
+            }, nil)
+        }
+        if let dict = page.dictionary {
+            var r: CGPDFDictionaryRef?
+            if CGPDFDictionaryGetDictionary(dict, "Resources", &r), let r { walk(r, depth: 0) }
+        }
+        return found
     }
 
     static func save(_ page: PDFPage, _ name: String, options: [PDFDocumentWriteOption: Any] = [:]) -> URL {

@@ -43,6 +43,9 @@ final class AppModel: ObservableObject {
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
     @Published var ocrEnabled = true
+    @Published var exportMode: ExportMode = .crop
+    /// The open PDF already has a text layer (see PDFExporter.hasText).
+    @Published private(set) var sourceHasText = false
     @Published var enhanceMode: EnhanceMode = .color {
         didSet { if enhanceMode != oldValue { clearImageCaches() } }
     }
@@ -141,8 +144,12 @@ final class AppModel: ObservableObject {
     }
 
     var outputPageCount: Int {
-        pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
+        if exportMode == .textOnly { return pages.count }
+        return pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
     }
+
+    /// Added to the status on opening a PDF that already has text.
+    private var textNote: String { sourceHasText ? " This PDF already has text: see Export." : "" }
 
     /// Export is possible: a PDF is open, nothing else is running, and at least
     /// one page isn't skipped.
@@ -193,6 +200,7 @@ final class AppModel: ObservableObject {
         spreadLayout = nil
         document = doc
         sourceURL = url
+        sourceHasText = PDFExporter.hasText(doc)
         documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
         isStraightening = false
@@ -211,7 +219,7 @@ final class AppModel: ObservableObject {
             cropTarget = saved.cropTarget ?? .text   // what these edits were made with; a new PDF keeps the current choice
             pageSizeOverride = saved.pageSize
             setByAnalysis = saved.claims ?? [:]
-            statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages."
+            statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages.\(textNote)"
             // An older save moves to the new key at once, and goes, so no other
             // PDF sharing the old key can pick it up.
             if let legacy, let key = projectKey,
@@ -223,7 +231,7 @@ final class AppModel: ObservableObject {
             pages = (0..<doc.pageCount).map { BookPage(sourceIndex: $0) }
             pageSizeOverride = nil
             setByAnalysis = [:]
-            statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…"
+            statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…\(textNote)"
         }
         selectedPageID = pages.first?.id
         analyzeAll()
@@ -458,7 +466,7 @@ final class AppModel: ObservableObject {
                 // the other one, and the pages are back as they were. Drop them.
                 guard self.cropTarget == target else {
                     self.isAnalyzing = false
-                    self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
+                    self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages.\(self.textNote)"
                     return
                 }
                 // Pages edited or undone meanwhile keep what they are now.
@@ -478,7 +486,7 @@ final class AppModel: ObservableObject {
                     self.setByAnalysis[page.id] = claims[page.id]
                 }
                 self.isAnalyzing = false
-                self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages."
+                self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages.\(self.textNote)"
             }
         }
     }
@@ -1168,7 +1176,7 @@ final class AppModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "book"
-        panel.nameFieldStringValue = "\(base)-cropped.pdf"
+        panel.nameFieldStringValue = "\(base)-\(exportMode == .textOnly ? "searchable" : "cropped").pdf"
         panel.directoryURL = sourceURL?.deletingLastPathComponent()   // next to the original
         if panel.runModal() == .OK, let url = panel.url {
             export(to: url)
@@ -1184,13 +1192,15 @@ final class AppModel: ObservableObject {
             return
         }
         let password = documentPassword
+        let textOnly = exportMode == .textOnly
         isExporting = true
         exportProgress = 0
         // Vision can take a minute or more to start after a while unused; say so
         // rather than look stuck.
-        statusText = ocrEnabled ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
+        statusText = ocrEnabled || textOnly ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
-        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
+        // Add text only always reads the text: that is all it does.
+        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled || textOnly, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel
@@ -1202,11 +1212,7 @@ final class AppModel: ObservableObject {
             do {
                 // Own PDFDocument, for the same reason as analyzeAll.
                 guard let doc = Self.reopen(src, password: password) else { throw PDFExporter.ExportError.sourceUnreadable }
-                let report = try PDFExporter.export(pages: pagesSnapshot,
-                                                    from: doc,
-                                                    to: url,
-                                                    settings: settings,
-                                                    isCancelled: { cancel.isSet }) { done, total in
+                let progress = { (done: Int, total: Int) in
                     let elapsed = Date().timeIntervalSince(started)
                     Task { @MainActor in
                         guard self.isExporting, !cancel.isSet else { return }   // keep the final message
@@ -1222,6 +1228,11 @@ final class AppModel: ObservableObject {
                         self.statusText = text
                     }
                 }
+                let report = textOnly
+                    ? try PDFExporter.addTextLayer(from: doc, to: url, settings: settings,
+                                                   isCancelled: { cancel.isSet }, progress: progress)
+                    : try PDFExporter.export(pages: pagesSnapshot, from: doc, to: url, settings: settings,
+                                             isCancelled: { cancel.isSet }, progress: progress)
                 Task { @MainActor in
                     self.isExporting = false
                     self.exportProgress = 1
