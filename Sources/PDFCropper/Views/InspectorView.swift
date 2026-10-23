@@ -262,7 +262,7 @@ private struct ExportSections: View {
                     Text(m.label).tag(m)
                 }
             }
-            .help("Split and crop makes one page per book page. Keep as they are leaves the PDF's pages uncut and makes them searchable.")
+            .help("Split and crop makes one page per book page. OCR only leaves the PDF's pages uncut and makes them searchable.")
             if model.exportMode == .crop {
                 Picker("Color", selection: $model.enhanceMode) {
                     ForEach(EnhanceMode.allCases) { m in

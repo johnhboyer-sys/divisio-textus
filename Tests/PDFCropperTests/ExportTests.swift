@@ -160,7 +160,7 @@ struct ExportTests {
         return try #require(PDFDocument(url: url))
     }
 
-    @Test("Keep as they are: a page without text is copied as it is: count, size, turn, images and vectors")
+    @Test("OCR only: a page without text is copied as it is: count, size, turn, images and vectors")
     func asTheyAreKeepsPages() throws {
         let src = try mixedSource()
         let out = Fixtures.url("text-only-\(UUID().uuidString).pdf")
@@ -184,7 +184,7 @@ struct ExportTests {
         #expect(Fixtures.imageStreams(try #require(result.page(at: 1)?.pageRef)).isEmpty)
     }
 
-    @Test("Keep as they are from the app: one page per source page, never over the scan")
+    @Test("OCR only from the app: one page per source page, never over the scan")
     @MainActor
     func asTheyAreFromModel() async throws {
         let m = testModel()
@@ -201,7 +201,7 @@ struct ExportTests {
         #expect(m.statusText.contains("another name"))
     }
 
-    @Test("Keep as they are keeps what notes and marks show on a page (Codex review)")
+    @Test("OCR only keeps what notes and marks show on a page (Codex review)")
     func asTheyAreKeepsAnnotations() throws {
         let media = CGRect(x: 0, y: 0, width: 400, height: 600)
         let drawn = Fixtures.writePDF("note-drawn-\(UUID().uuidString).pdf", media: media, pages: [{ $0.draw(Fixtures.scan(400, 600), in: media) }])
@@ -221,7 +221,7 @@ struct ExportTests {
         #expect(Fixtures.difference(a, b) < 2)
     }
 
-    @Test("Keep as they are puts the text where it was read, however the page is turned or cropped (Codex review)",
+    @Test("OCR only puts the text where it was read, however the page is turned or cropped (Codex review)",
           arguments: [(90, CGRect(x: 20, y: 30, width: 360, height: 540)), (180, nil), (270, CGRect(x: 20, y: 30, width: 360, height: 540)),
                       (-90, nil), (0, CGRect(x: -100, y: -50, width: 600, height: 700))] as [(Int, CGRect?)])
     func asTheyAreTextLandsOnPrint(rotation: Int, crop: CGRect?) throws {
@@ -266,7 +266,7 @@ struct ExportTests {
         #expect(square.contains(CGPoint(x: text.midX, y: text.midY)), "text at \(text), square at \(square)")
     }
 
-    // MARK: Keep as they are: pages that had text
+    // MARK: OCR only: pages that had text
 
     /// A scan as OCR tools leave it: one image filling the page, invisible text over it.
     private func ocrdScan(_ image: CGImage, visible extra: ((CGContext) -> Void)? = nil) -> URL {

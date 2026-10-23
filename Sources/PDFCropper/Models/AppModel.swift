@@ -1199,7 +1199,7 @@ final class AppModel: ObservableObject {
         // rather than look stuck.
         statusText = ocrEnabled || asTheyAre ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
-        // Keep as they are always reads every page: that is all it does.
+        // OCR only always reads every page: that is all it does.
         var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled || asTheyAre, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()

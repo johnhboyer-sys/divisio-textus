@@ -26,7 +26,7 @@ enum ExportMode: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .crop: return "Split and crop"
-        case .asTheyAre: return "Keep as they are"
+        case .asTheyAre: return "OCR only"
         }
     }
 }

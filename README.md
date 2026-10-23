@@ -46,7 +46,7 @@ blank page, 300 random pages), whole-page crops (the sheet on a dark scanner bed
 a black fold, the corners straightening leaves empty), straightening (known turns, two columns, sparse
 lines, tinted paper, pictures beside text), rendering, gray detection,
 scan-resolution detection, export (page size, cancel, reading order, skipped
-pages, keep as they are) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
+pages, OCR only) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
 a temporary folder, never your real ones. OCR isn't covered: Vision is too slow
 and erratic for an automated suite.
 
@@ -112,7 +112,7 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    writes pages in reading order. Each page is stored as JPEG or losslessly,
    whichever is smaller (gray when the scan has no color). Pages are processed a
    few at a time, so memory stays flat however long the book is; ⌘. cancels.
-7. **Keep as they are** (Export tab, Pages) is for a PDF that needs no
+7. **OCR only** (Export tab, Pages) is for a PDF that needs no
    splitting or cropping, only searching. Pages go out uncut (not split,
    straightened, cropped or recolored), and every page is read again: old text
    is never kept, as it could be doubled or garbled. A page without text is

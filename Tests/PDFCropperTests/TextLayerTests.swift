@@ -82,7 +82,7 @@ struct ExistingTextTests {
         }
     }
 
-    @Test("Keep as they are: every page is read again, and old text is replaced, not kept")
+    @Test("OCR only: every page is read again, and old text is replaced, not kept")
     func replacesExistingText() throws {
         let doc = try mixedPDF("redo-text-\(UUID().uuidString).pdf")
         let out = Fixtures.url("redo-text-out-\(UUID().uuidString).pdf")
@@ -103,7 +103,7 @@ struct ExistingTextTests {
         #expect(Fixtures.difference(ra, rb) < 3)
     }
 
-    @Test("Keep as they are: text OCRmyPDF wrote comes out as the new reading only, no junk")
+    @Test("OCR only: text OCRmyPDF wrote comes out as the new reading only, no junk")
     func replacesOCRmyPDFText() throws {
         let src = try #require(PDFDocument(url: Fixtures.ocrmypdfWords()))
         #expect(src.page(at: 0)?.string?.contains("Philosophical Physics") == true)   // the source reads fine
@@ -114,7 +114,7 @@ struct ExistingTextTests {
         #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "Philosophical Physics", "\(text)")
     }
 
-    @Test("Keep as they are: pages Vision fails on are reported")
+    @Test("OCR only: pages Vision fails on are reported")
     func reportsFailedPages() throws {
         let doc = try mixedPDF("fail-text-\(UUID().uuidString).pdf")
         let out = Fixtures.url("fail-text-out-\(UUID().uuidString).pdf")
