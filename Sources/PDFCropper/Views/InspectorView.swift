@@ -341,11 +341,15 @@ private struct PageSizeRow: View {
             if let disagreement = size.disagreement {
                 Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
             }
-            TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
-                .labelsHidden()
-                .onSubmit(commit)
-                .disabled(model.isBusy)
-                .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            HStack {
+                Text("Size (in)")
+                TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(commit)
+                    .disabled(model.isBusy)
+                    .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            }
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
