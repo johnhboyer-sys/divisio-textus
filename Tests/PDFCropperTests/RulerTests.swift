@@ -152,6 +152,20 @@ struct RulerTests {
         let cm = CropSizeReadout(left: CGSize(width: 300, height: 600), right: CGSize(width: 300.5, height: 600),
                                  unit: .centimeters, locale: Locale(identifier: "fr_FR"))
         #expect(cm.verdict == "Right is 0,02 cm wider")
+        #expect(cm.sizes == ["Left 10,58 × 21,17 cm", "Right 10,60 × 21,17 cm"])
+    }
+
+    @Test("Sizes that differ never print the same (Codex review)")
+    func readoutNoContradiction() {
+        // 7.8167 and 7.8236 in both print 7.82; half a point apart, they aren't the same size.
+        let r = CropSizeReadout(left: CGSize(width: 562.8, height: 648), right: CGSize(width: 563.3, height: 648),
+                                unit: .inches, locale: Locale(identifier: "en_US"))
+        #expect(r.same == false)
+        #expect(r.sizes == ["Left 7.817 × 9.000 in", "Right 7.824 × 9.000 in"])
+        #expect(r.verdict == "Right is 0.01 in wider")
+        let taller = CropSizeReadout(left: CGSize(width: 562.8, height: 648), right: CGSize(width: 563.3, height: 660),
+                                     unit: .inches, locale: Locale(identifier: "en_US"))
+        #expect(taller.sizes == ["Left 7.817 × 9.000 in", "Right 7.824 × 9.167 in"])
     }
 
     @Test("Rulers start hidden, under a fixed defaults key")

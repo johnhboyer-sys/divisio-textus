@@ -52,14 +52,16 @@ struct CropSizeReadout: Equatable {
 
     /// `left` is the only box on a single page or a one-box stack; sizes in PDF points.
     init(left: CGSize, right: CGSize?, unit: RulerUnit, locale: Locale = .current) {
-        func size(_ s: CGSize) -> String {
-            "\(unit.number(points: s.width, locale: locale)) × \(unit.number(points: s.height, locale: locale)) \(unit.symbol)"
+        // Hundredths: a hundredth of a centimetre is finer than the tolerance, so two sizes
+        // that differ never print alike; an inch needs thousandths for that (below).
+        func size(_ s: CGSize, digits: Int = 2) -> String {
+            "\(unit.number(points: s.width, locale: locale, digits: digits)) × "
+                + "\(unit.number(points: s.height, locale: locale, digits: digits)) \(unit.symbol)"
         }
         guard let right else {
             sizes = [size(left)]
             return
         }
-        sizes = ["Left " + size(left), "Right " + size(right)]
         // Differences to hundredths, so one just over the tolerance never reads as zero.
         func difference(_ d: Double, _ more: String, _ less: String) -> String? {
             abs(d) < Self.tolerance ? nil
@@ -69,6 +71,13 @@ struct CropSizeReadout: Equatable {
                      difference(right.height - left.height, "taller", "shorter")].compactMap { $0 }
         same = parts.isEmpty
         verdict = parts.isEmpty ? "Same size" : "Right is " + parts.joined(separator: " and ")
+        func alike(_ a: Double, _ b: Double) -> Bool {
+            unit.number(points: a, locale: locale, digits: 2) == unit.number(points: b, locale: locale, digits: 2)
+        }
+        let hidden = (abs(right.width - left.width) >= Self.tolerance && alike(left.width, right.width))
+            || (abs(right.height - left.height) >= Self.tolerance && alike(left.height, right.height))
+        let digits = hidden ? 3 : 2
+        sizes = ["Left " + size(left, digits: digits), "Right " + size(right, digits: digits)]
     }
 }
 
