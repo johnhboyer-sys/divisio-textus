@@ -18,15 +18,15 @@ enum EnhanceMode: String, Codable, CaseIterable, Identifiable {
 }
 
 /// What Export makes: the book split and cropped page by page, or the PDF's own
-/// pages left exactly as they are with searchable text added.
+/// pages left uncut, every one read again for searchable text.
 enum ExportMode: String, CaseIterable, Identifiable {
     case crop
-    case textOnly
+    case asTheyAre
     var id: String { rawValue }
     var label: String {
         switch self {
         case .crop: return "Split and crop"
-        case .textOnly: return "Add text only"
+        case .asTheyAre: return "Keep as they are"
         }
     }
 }

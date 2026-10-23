@@ -139,6 +139,8 @@ enum PDFRenderer {
         let pixelHeight: Int
         let size: CGSize     // drawn size in points along the image's own axes
         let bounds: CGRect   // where it lands on the page (bounding box)
+        let transform: CGAffineTransform   // maps the image's unit square onto the page
+        let stream: CGPDFStreamRef         // the image itself, valid while its document is open
     }
 
     /// Fraction of `area` covered by the union of `rects`, measured on a 100×100
@@ -164,7 +166,7 @@ enum PDFRenderer {
     /// the names of the objects the page itself draws. An XObject fills the unit
     /// square of the current transform, so its x axis spans |(a, b)| and its y
     /// axis |(c, d)|. nil if the content couldn't be read.
-    private static func drawnContent(_ page: CGPDFPage) -> (images: [DrawnImage], names: Set<String>)? {
+    static func drawnContent(_ page: CGPDFPage) -> (images: [DrawnImage], names: Set<String>)? {
         final class State {
             var ctm = CGAffineTransform.identity
             var saved: [CGAffineTransform] = []
@@ -213,7 +215,8 @@ enum PDFRenderer {
                 s.images.append(DrawnImage(
                     pixelWidth: w, pixelHeight: h,
                     size: CGSize(width: hypot(s.ctm.a, s.ctm.b), height: hypot(s.ctm.c, s.ctm.d)),
-                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1).applying(s.ctm)))
+                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1).applying(s.ctm),
+                    transform: s.ctm, stream: stream))
             case "Form":
                 guard s.depth < 4, let table = s.table else { return }
                 // Draw the form's own content under its /Matrix.

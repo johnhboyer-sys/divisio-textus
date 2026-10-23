@@ -144,7 +144,7 @@ final class AppModel: ObservableObject {
     }
 
     var outputPageCount: Int {
-        if exportMode == .textOnly { return pages.count }
+        if exportMode == .asTheyAre { return pages.count }
         return pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
     }
 
@@ -1176,7 +1176,7 @@ final class AppModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "book"
-        panel.nameFieldStringValue = "\(base)-\(exportMode == .textOnly ? "searchable" : "cropped").pdf"
+        panel.nameFieldStringValue = "\(base)-\(exportMode == .asTheyAre ? "searchable" : "cropped").pdf"
         panel.directoryURL = sourceURL?.deletingLastPathComponent()   // next to the original
         if panel.runModal() == .OK, let url = panel.url {
             export(to: url)
@@ -1192,15 +1192,15 @@ final class AppModel: ObservableObject {
             return
         }
         let password = documentPassword
-        let textOnly = exportMode == .textOnly
+        let asTheyAre = exportMode == .asTheyAre
         isExporting = true
         exportProgress = 0
         // Vision can take a minute or more to start after a while unused; say so
         // rather than look stuck.
-        statusText = ocrEnabled || textOnly ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
+        statusText = ocrEnabled || asTheyAre ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
-        // Add text only always reads the text: that is all it does.
-        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled || textOnly, enhanceMode: enhanceMode)
+        // Keep as they are always reads every page: that is all it does.
+        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled || asTheyAre, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel
@@ -1228,8 +1228,8 @@ final class AppModel: ObservableObject {
                         self.statusText = text
                     }
                 }
-                let report = textOnly
-                    ? try PDFExporter.addTextLayer(from: doc, to: url, settings: settings,
+                let report = asTheyAre
+                    ? try PDFExporter.exportAsTheyAre(from: doc, to: url, settings: settings,
                                                    isCancelled: { cancel.isSet }, progress: progress)
                     : try PDFExporter.export(pages: pagesSnapshot, from: doc, to: url, settings: settings,
                                              isCancelled: { cancel.isSet }, progress: progress)

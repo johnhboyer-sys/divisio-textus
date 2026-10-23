@@ -42,7 +42,7 @@ struct ExistingTextTests {
     private func mixedPDF(_ name: String) throws -> PDFDocument {
         let media = CGRect(x: 0, y: 0, width: 400, height: 600)
         let url = Fixtures.writePDF(name, media: media, pages: [
-            { Fixtures.drawText("Existing words stay as they are", in: $0, at: CGPoint(x: 40, y: 500)) },
+            { Fixtures.drawText("Existing words", in: $0, at: CGPoint(x: 40, y: 500)) },
             { $0.draw(Fixtures.scan(1000, 1500), in: media) },
         ])
         return try #require(PDFDocument(url: url))
@@ -73,29 +73,53 @@ struct ExistingTextTests {
         #expect(!m.statusText.contains("already has text"))
     }
 
-    @Test("Add text only: a page with text keeps exactly its text and isn't read again")
-    func keepsExistingText() throws {
-        let doc = try mixedPDF("keep-text-\(UUID().uuidString).pdf")
-        let out = Fixtures.url("keep-text-out-\(UUID().uuidString).pdf")
-        let calls = Counter()
-        let report = try PDFExporter.addTextLayer(from: doc, to: out, settings: PDFExporter.Settings(), recognize: { _ in
-            calls.add()
-            return OCRService.Recognition(lines: [OCRService.Line(text: "Added by OCR", box: CGRect(x: 0.1, y: 0.5, width: 0.6, height: 0.03))],
+    /// "OCR" that reads every page as one line.
+    private func fakeOCR(_ calls: Counter? = nil, _ text: String = "Added by OCR") -> (CGImage) -> OCRService.Recognition? {
+        { _ in
+            calls?.add()
+            return OCRService.Recognition(lines: [OCRService.Line(text: text, box: CGRect(x: 0.1, y: 0.5, width: 0.6, height: 0.03))],
                                           complete: true)
-        })
-        #expect(calls.value == 1)
-        #expect(report.pageCount == 2 && report.ocrFailedPages.isEmpty)
-        let result = try #require(PDFDocument(url: out))
-        #expect(result.page(at: 0)?.string == doc.page(at: 0)?.string)
-        #expect(result.page(at: 1)?.string?.contains("Added by OCR") == true)
+        }
     }
 
-    @Test("Add text only: a page Vision fails on is reported")
+    @Test("Keep as they are: every page is read again, and old text is replaced, not kept")
+    func replacesExistingText() throws {
+        let doc = try mixedPDF("redo-text-\(UUID().uuidString).pdf")
+        let out = Fixtures.url("redo-text-out-\(UUID().uuidString).pdf")
+        let calls = Counter()
+        let report = try PDFExporter.exportAsTheyAre(from: doc, to: out, settings: PDFExporter.Settings(), recognize: fakeOCR(calls))
+        #expect(calls.value == 2)
+        #expect(report.pageCount == 2 && report.ocrFailedPages.isEmpty)
+        let result = try #require(PDFDocument(url: out))
+        for i in 0..<2 {
+            let text = result.page(at: i)?.string ?? ""
+            #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "Added by OCR", "page \(i + 1): \(text)")
+        }
+        // The page that had text still looks the same and keeps its size.
+        let a = try #require(doc.page(at: 0)), b = try #require(result.page(at: 0))
+        #expect(PDFRenderer.displaySize(of: a) == PDFRenderer.displaySize(of: b))
+        let ra = try #require(PDFRenderer.renderCGImage(page: a, dpi: 72))
+        let rb = try #require(PDFRenderer.renderCGImage(page: b, dpi: 72))
+        #expect(Fixtures.difference(ra, rb) < 3)
+    }
+
+    @Test("Keep as they are: text OCRmyPDF wrote comes out as the new reading only, no junk")
+    func replacesOCRmyPDFText() throws {
+        let src = try #require(PDFDocument(url: Fixtures.ocrmypdfWords()))
+        #expect(src.page(at: 0)?.string?.contains("Philosophical Physics") == true)   // the source reads fine
+        let out = Fixtures.url("ocrmypdf-out-\(UUID().uuidString).pdf")
+        _ = try PDFExporter.exportAsTheyAre(from: src, to: out, settings: PDFExporter.Settings(),
+                                            recognize: fakeOCR(nil, "Philosophical Physics"))
+        let text = try #require(PDFDocument(url: out)?.page(at: 0)?.string)
+        #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "Philosophical Physics", "\(text)")
+    }
+
+    @Test("Keep as they are: pages Vision fails on are reported")
     func reportsFailedPages() throws {
         let doc = try mixedPDF("fail-text-\(UUID().uuidString).pdf")
         let out = Fixtures.url("fail-text-out-\(UUID().uuidString).pdf")
-        let report = try PDFExporter.addTextLayer(from: doc, to: out, settings: PDFExporter.Settings(), recognize: { _ in nil })
-        #expect(report.ocrFailedPages == [2])
+        let report = try PDFExporter.exportAsTheyAre(from: doc, to: out, settings: PDFExporter.Settings(), recognize: { _ in nil })
+        #expect(report.ocrFailedPages == [1, 2])
     }
 }
 

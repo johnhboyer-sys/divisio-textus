@@ -3,6 +3,7 @@ import AppKit
 import PDFKit
 import CoreGraphics
 import CoreText
+import ImageIO
 @testable import PDFCropper
 
 /// Test PDFs are generated on the fly (or copied from the repo's sample book)
@@ -30,6 +31,19 @@ enum Fixtures {
         data.append(Data("\n%test-\(UUID().uuidString)\n".utf8))
         let copy = url("sample-\(UUID().uuidString).pdf")
         try! data.write(to: copy)
+        return copy
+    }
+
+    /// Two printed lines ("Philosophical Physics", "Nature and motion") as OCRmyPDF
+    /// 17.8 writes them: a scan with invisible text in a subset NotoSans whose
+    /// text mapping Quartz loses when it copies the page. Made with
+    /// `ocrmypdf --output-type pdf --image-dpi 300 words.png out.pdf` and
+    /// `qpdf --object-streams=disable --recompress-flate --compression-level=9`.
+    static func ocrmypdfWords() -> URL {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let copy = url("ocrmypdf-\(UUID().uuidString).pdf")
+        try! FileManager.default.copyItem(at: repo.appendingPathComponent("Fixtures/ocrmypdf-words.pdf"), to: copy)
         return copy
     }
 
@@ -79,12 +93,27 @@ enum Fixtures {
     }
 
     /// Draw `text` as real, visible PDF text (as a born-digital or OCR'd PDF has it).
-    static func drawText(_ text: String, in c: CGContext, at point: CGPoint, size: CGFloat = 18) {
+    /// `invisible`: as OCR tools write it, searchable but not shown.
+    static func drawText(_ text: String, in c: CGContext, at point: CGPoint, size: CGFloat = 18, invisible: Bool = false) {
         let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+        c.saveGState()
+        if invisible { c.setTextDrawingMode(.invisible) }
         c.textMatrix = .identity
         c.textPosition = point
         CTLineDraw(line, c)
+        c.restoreGState()
+    }
+
+    /// `image` encoded as a JPEG, and the JPEG's bytes.
+    static func jpeg(_ image: CGImage) -> (image: CGImage, data: Data) {
+        let data = NSMutableData()
+        let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.6] as CFDictionary)
+        CGImageDestinationFinalize(dest)
+        let decoded = CGImage(jpegDataProviderSource: CGDataProvider(data: data)!, decode: nil,
+                              shouldInterpolate: true, intent: .defaultIntent)!
+        return (decoded, data as Data)
     }
 
     /// The data of every image the page draws, also inside form objects, as

@@ -160,11 +160,11 @@ struct ExportTests {
         return try #require(PDFDocument(url: url))
     }
 
-    @Test("Add text only keeps every page as it is: count, size, turn, images and vectors")
-    func textOnlyKeepsPages() throws {
+    @Test("Keep as they are: a page without text is copied as it is: count, size, turn, images and vectors")
+    func asTheyAreKeepsPages() throws {
         let src = try mixedSource()
         let out = Fixtures.url("text-only-\(UUID().uuidString).pdf")
-        let report = try PDFExporter.addTextLayer(from: src, to: out, settings: noOCR)
+        let report = try PDFExporter.exportAsTheyAre(from: src, to: out, settings: noOCR)
         let result = try #require(PDFDocument(url: out))
         #expect(report.pageCount == 3 && result.pageCount == 3)
         for i in 0..<3 {
@@ -184,13 +184,13 @@ struct ExportTests {
         #expect(Fixtures.imageStreams(try #require(result.page(at: 1)?.pageRef)).isEmpty)
     }
 
-    @Test("Add text only from the app: one page per source page, never over the scan")
+    @Test("Keep as they are from the app: one page per source page, never over the scan")
     @MainActor
-    func textOnlyFromModel() async throws {
+    func asTheyAreFromModel() async throws {
         let m = testModel()
         let src = Fixtures.sampleBook()
         m.load(url: src); await waitUntilIdle(m)
-        m.exportMode = .textOnly
+        m.exportMode = .asTheyAre
         m.setClassification(.skip, for: m.pages[1].id)       // doesn't apply to this export
         #expect(m.outputPageCount == 6 && m.canExport)
         let doc = try #require(await exportAndOpen(m, "text-only-model.pdf"))
@@ -201,8 +201,8 @@ struct ExportTests {
         #expect(m.statusText.contains("another name"))
     }
 
-    @Test("Add text only keeps what notes and marks show on a page (Codex review)")
-    func textOnlyKeepsAnnotations() throws {
+    @Test("Keep as they are keeps what notes and marks show on a page (Codex review)")
+    func asTheyAreKeepsAnnotations() throws {
         let media = CGRect(x: 0, y: 0, width: 400, height: 600)
         let drawn = Fixtures.writePDF("note-drawn-\(UUID().uuidString).pdf", media: media, pages: [{ $0.draw(Fixtures.scan(400, 600), in: media) }])
         let doc = try #require(PDFDocument(url: drawn))
@@ -214,17 +214,17 @@ struct ExportTests {
         #expect(doc.write(to: srcURL))
         let src = try #require(PDFDocument(url: srcURL))
         let out = Fixtures.url("note-out-\(UUID().uuidString).pdf")
-        _ = try PDFExporter.addTextLayer(from: src, to: out, settings: noOCR)
+        _ = try PDFExporter.exportAsTheyAre(from: src, to: out, settings: noOCR)
         let srcPage = try #require(src.page(at: 0)), outPage = try #require(PDFDocument(url: out)?.page(at: 0))
         let a = try #require(PDFRenderer.renderCGImage(page: srcPage, dpi: 72))
         let b = try #require(PDFRenderer.renderCGImage(page: outPage, dpi: 72))
         #expect(Fixtures.difference(a, b) < 2)
     }
 
-    @Test("Add text only puts the text where it was read, however the page is turned or cropped (Codex review)",
+    @Test("Keep as they are puts the text where it was read, however the page is turned or cropped (Codex review)",
           arguments: [(90, CGRect(x: 20, y: 30, width: 360, height: 540)), (180, nil), (270, CGRect(x: 20, y: 30, width: 360, height: 540)),
                       (-90, nil), (0, CGRect(x: -100, y: -50, width: 600, height: 700))] as [(Int, CGRect?)])
-    func textOnlyTextLandsOnPrint(rotation: Int, crop: CGRect?) throws {
+    func asTheyAreTextLandsOnPrint(rotation: Int, crop: CGRect?) throws {
         let media = CGRect(x: 0, y: 0, width: 400, height: 600)
         let drawn = Fixtures.writePDF("turn-drawn-\(UUID().uuidString).pdf", media: media, pages: [{ c in
             c.setFillColor(CGColor(gray: 0, alpha: 1))
@@ -250,7 +250,7 @@ struct ExportTests {
         }
         // "OCR" that reads the square as a word where it sees it.
         let out = Fixtures.url("turn-out-\(UUID().uuidString).pdf")
-        _ = try PDFExporter.addTextLayer(from: src, to: out, settings: PDFExporter.Settings(), recognize: { image in
+        _ = try PDFExporter.exportAsTheyAre(from: src, to: out, settings: PDFExporter.Settings(), recognize: { image in
             OCRService.Recognition(lines: dark(image).map { [OCRService.Line(text: "MARKER", box: $0)] } ?? [], complete: true)
         })
         let page = try #require(PDFDocument(url: out)?.page(at: 0))
@@ -264,5 +264,85 @@ struct ExportTests {
         let range = try #require(page.string?.range(of: "MARKER"))
         let text = try #require(page.selection(for: NSRange(range, in: page.string!))).bounds(for: page)
         #expect(square.contains(CGPoint(x: text.midX, y: text.midY)), "text at \(text), square at \(square)")
+    }
+
+    // MARK: Keep as they are: pages that had text
+
+    /// A scan as OCR tools leave it: one image filling the page, invisible text over it.
+    private func ocrdScan(_ image: CGImage, visible extra: ((CGContext) -> Void)? = nil) -> URL {
+        let media = CGRect(x: 0, y: 0, width: 400, height: 600)
+        return Fixtures.writePDF("ocrd-\(UUID().uuidString).pdf", media: media, pages: [{ c in
+            c.draw(image, in: media)
+            Fixtures.drawText("Old reading", in: c, at: CGPoint(x: 40, y: 500), invisible: true)
+            extra?(c)
+        }])
+    }
+
+    private func redo(_ src: PDFDocument) throws -> PDFDocument {
+        let out = Fixtures.url("redo-\(UUID().uuidString).pdf")
+        _ = try PDFExporter.exportAsTheyAre(from: src, to: out, settings: PDFExporter.Settings(), recognize: { _ in
+            OCRService.Recognition(lines: [OCRService.Line(text: "New reading", box: CGRect(x: 0.1, y: 0.5, width: 0.6, height: 0.03))],
+                                   complete: true)
+        })
+        let result = try #require(PDFDocument(url: out))
+        for i in 0..<result.pageCount {
+            #expect(result.page(at: i)?.string?.trimmingCharacters(in: .whitespacesAndNewlines) == "New reading")
+        }
+        return result
+    }
+
+    @Test("A scan page with old text gets its JPEG back byte for byte, without the old text")
+    func liftsJPEG() throws {
+        let (photo, bytes) = Fixtures.jpeg(Fixtures.scan(800, 1200))
+        let src = try #require(PDFDocument(url: ocrdScan(photo)))
+        #expect(Fixtures.imageStreams(try #require(src.page(at: 0)?.pageRef)).first?.data == bytes)
+        let out = Fixtures.imageStreams(try #require(try redo(src).page(at: 0)?.pageRef))
+        #expect(out.count == 1 && out.first?.format == .jpegEncoded && out.first?.data == bytes)
+    }
+
+    @Test("A scan page with old text stored losslessly gets the same pixels back")
+    func liftsLossless() throws {
+        let src = try #require(PDFDocument(url: ocrdScan(Fixtures.scan(800, 1200))))
+        let before = Fixtures.imageStreams(try #require(src.page(at: 0)?.pageRef))
+        let after = Fixtures.imageStreams(try #require(try redo(src).page(at: 0)?.pageRef))
+        #expect(before.count == 1 && before.first?.format == .raw)
+        #expect(after.count == 1 && after.first?.format == .raw && after.first?.data == before.first?.data,
+                "\(after.map { ($0.format.rawValue, $0.data.count) }) vs \(before.map { ($0.format.rawValue, $0.data.count) })")
+    }
+
+    @Test("A turned, cropped scan page with old text gets its JPEG back and looks the same")
+    func liftsTurned() throws {
+        let (photo, bytes) = Fixtures.jpeg(Fixtures.scan(800, 1200))
+        let doc = try #require(PDFDocument(url: ocrdScan(photo)))
+        doc.page(at: 0)?.rotation = 270
+        doc.page(at: 0)?.setBounds(CGRect(x: 20, y: 30, width: 360, height: 540), for: .cropBox)
+        let url = Fixtures.url("turned-\(UUID().uuidString).pdf")
+        #expect(doc.write(to: url))
+        let src = try #require(PDFDocument(url: url))
+        let result = try redo(src)
+        let a = try #require(src.page(at: 0)), b = try #require(result.page(at: 0))
+        #expect(Fixtures.imageStreams(try #require(b.pageRef)).first?.data == bytes)
+        let sa = PDFRenderer.displaySize(of: a), sb = PDFRenderer.displaySize(of: b)
+        #expect(abs(sa.width - sb.width) < 0.5 && abs(sa.height - sb.height) < 0.5, "\(sa) vs \(sb)")
+        let ra = try #require(PDFRenderer.renderCGImage(page: a, dpi: 72))
+        let rb = try #require(PDFRenderer.renderCGImage(page: b, dpi: 72))
+        #expect(Fixtures.difference(ra, rb) < 2)
+    }
+
+    @Test("A page with old text and anything else visible is drawn whole, losslessly, at the scan's resolution")
+    func redrawsWholePage() throws {
+        let (photo, _) = Fixtures.jpeg(Fixtures.scan(800, 1200))
+        let src = try #require(PDFDocument(url: ocrdScan(photo) { c in
+            Fixtures.drawText("Page 12", in: c, at: CGPoint(x: 180, y: 20), size: 10)   // a visible folio
+        }))
+        let result = try redo(src)
+        let out = Fixtures.imageStreams(try #require(result.page(at: 0)?.pageRef))
+        // 800 px over 400 pt is 144 DPI, raised to the 150 DPI floor: 833 × 1250 px, 8-bit or more.
+        #expect(out.count == 1 && out.first?.format == .raw && (out.first?.data.count ?? 0) >= 833 * 1250)
+        let a = try #require(src.page(at: 0)), b = try #require(result.page(at: 0))
+        // At the resolution it was drawn at, the page looks as it did.
+        let ra = try #require(PDFRenderer.renderCGImage(page: a, dpi: 150))
+        let rb = try #require(PDFRenderer.renderCGImage(page: b, dpi: 150))
+        #expect(Fixtures.difference(ra, rb) < 1, "\(Fixtures.difference(ra, rb))")
     }
 }

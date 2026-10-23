@@ -250,9 +250,7 @@ private struct ExportSections: View {
     var body: some View {
         if model.sourceHasText {
             Section {
-                Label(model.exportMode == .textOnly
-                      ? "This PDF already has text. Pages that have it keep it; only the others are read."
-                      : "This PDF already has text. Split and crop makes each page a new image and reads its text again, so the old text is lost. To keep the pages and their text as they are, choose Add text only.",
+                Label("This PDF already has text. Export reads every page again and replaces it.",
                       systemImage: "text.magnifyingglass")
                     .foregroundStyle(.secondary)
             }
@@ -264,7 +262,7 @@ private struct ExportSections: View {
                     Text(m.label).tag(m)
                 }
             }
-            .help("Split and crop makes one page per book page. Add text only keeps the PDF's pages exactly as they are and makes them searchable.")
+            .help("Split and crop makes one page per book page. Keep as they are leaves the PDF's pages uncut and makes them searchable.")
             if model.exportMode == .crop {
                 Picker("Color", selection: $model.enhanceMode) {
                     ForEach(EnhanceMode.allCases) { m in
@@ -290,8 +288,8 @@ private struct ExportSections: View {
         } header: {
             Text("Output")
         } footer: {
-            if model.exportMode == .textOnly {
-                Text("Every page goes out exactly as it is, with searchable text added. Splits, crops, straightening and skipped pages don't apply. The resolution is only for reading the text.")
+            if model.exportMode == .asTheyAre {
+                Text("Pages go out uncut, and every page is read again. A page without text is copied unchanged. A page that had text loses it: a scan keeps its scan image; any other page becomes an image at its scan's resolution, with nothing lost. Splits, crops, straightening and skipped pages don't apply.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
