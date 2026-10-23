@@ -73,6 +73,7 @@ private struct PageSections: View {
             }
 
             Section("Crops") {
+                CropTargetPicker()
                 Button {
                     model.reanalyzeSelected()
                 } label: {
@@ -227,14 +228,7 @@ private struct BookSections: View {
         .disabled(model.isBusy)
 
         Section("Detection") {
-            Picker("Crop to", selection: Binding(get: { model.cropTarget },
-                                                 set: { model.setCropTarget($0) })) {
-                ForEach(CropTarget.allCases) { t in
-                    Text(t.label).tag(t)
-                }
-            }
-            .disabled(model.isBusy)
-            .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+            CropTargetPicker()
             if let size = model.pageSize {
                 PageSizeRow(size: size)
             }
@@ -244,6 +238,23 @@ private struct BookSections: View {
 }
 
 /// How the exported PDF is made, and the Export button.
+/// What auto-detect crops to, for the whole book. In the Page tab beside
+/// Auto-detect as well as in the Book tab.
+private struct CropTargetPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Picker("Crop to", selection: Binding(get: { model.cropTarget },
+                                             set: { model.setCropTarget($0) })) {
+            ForEach(CropTarget.allCases) { t in
+                Text(t.label).tag(t)
+            }
+        }
+        .disabled(model.isBusy)
+        .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+    }
+}
+
 private struct ExportSections: View {
     @EnvironmentObject var model: AppModel
 
@@ -330,11 +341,15 @@ private struct PageSizeRow: View {
             if let disagreement = size.disagreement {
                 Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
             }
-            TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
-                .labelsHidden()
-                .onSubmit(commit)
-                .disabled(model.isBusy)
-                .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            HStack {
+                Text("Size (in)")
+                TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(commit)
+                    .disabled(model.isBusy)
+                    .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            }
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
