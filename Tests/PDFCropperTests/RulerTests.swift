@@ -120,6 +120,40 @@ struct RulerTests {
         #expect(RulerUnit.centimeters.label(points: 72 / 2.54 * 9.96, locale: us) == "10.0 cm")
     }
 
+    @Test("One box: its size alone")
+    func readoutSingle() {
+        let r = CropSizeReadout(left: CGSize(width: 442, height: 648), right: nil, unit: .inches, locale: Locale(identifier: "en_US"))
+        #expect(r.sizes == ["6.14 × 9.00 in"])
+        #expect(r.verdict == nil)
+        #expect(r.same == nil)
+    }
+
+    @Test("Two boxes within one export pixel are the same size")
+    func readoutSame() {
+        #expect(CropSizeReadout.tolerance == 72.0 / 150)
+        let r = CropSizeReadout(left: CGSize(width: 442, height: 648), right: CGSize(width: 442.4, height: 647.7),
+                                unit: .inches, locale: Locale(identifier: "en_US"))
+        #expect(r.sizes == ["Left 6.14 × 9.00 in", "Right 6.14 × 9.00 in"])
+        #expect(r.verdict == "Same size")
+        #expect(r.same == true)
+    }
+
+    @Test("Two boxes that differ say by how much, relative to the left")
+    func readoutDiffer() {
+        let us = Locale(identifier: "en_US")
+        let wider = CropSizeReadout(left: CGSize(width: 442, height: 648), right: CGSize(width: 443.44, height: 648),
+                                    unit: .inches, locale: us)
+        #expect(wider.verdict == "Right is 0.02 in wider")
+        #expect(wider.same == false)
+        let both = CropSizeReadout(left: CGSize(width: 442, height: 648), right: CGSize(width: 435, height: 655.2),
+                                   unit: .inches, locale: us)
+        #expect(both.verdict == "Right is 0.10 in narrower and 0.10 in taller")
+        // Just over the tolerance still shows a non-zero difference in centimetres.
+        let cm = CropSizeReadout(left: CGSize(width: 300, height: 600), right: CGSize(width: 300.5, height: 600),
+                                 unit: .centimeters, locale: Locale(identifier: "fr_FR"))
+        #expect(cm.verdict == "Right is 0,02 cm wider")
+    }
+
     @Test("Rulers start hidden, under a fixed defaults key")
     func toggleDefault() {
         #expect(Rulers.storageKey == "showsRulers")

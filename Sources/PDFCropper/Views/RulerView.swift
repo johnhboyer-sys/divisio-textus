@@ -10,6 +10,33 @@ struct RulerMenuButton: View {
     }
 }
 
+/// The crop boxes' sizes, in the gap under the page; with two boxes, whether
+/// they are the same size. Shown with or without the rulers.
+struct CropSizeLabel: View {
+    let readout: CropSizeReadout
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(readout.sizes, id: \.self) { Text($0) }
+            if let verdict = readout.verdict, let same = readout.same {
+                Label {
+                    Text(verdict)
+                } icon: {
+                    Image(systemName: same ? "checkmark.circle.fill" : "notequal.circle.fill")
+                        .foregroundStyle(same ? .green : .orange)
+                }
+            }
+        }
+        // Small enough to sit under the page's bottom handles, not on them.
+        .font(.caption2.monospacedDigit())
+        .padding(.horizontal, 8).padding(.vertical, 1)
+        .background(.regularMaterial, in: Capsule())
+        .fixedSize()
+        .padding(.bottom, 2)
+        .allowsHitTesting(false)
+    }
+}
+
 /// A crop's extent along each ruler, as fractions of the page.
 struct RulerMark: Equatable {
     var crop: CropRect

@@ -213,7 +213,20 @@ struct StackView: View {
                 }
                 .clipped()
             }
+            .overlay(alignment: .bottom) {
+                if imageState.wrappedValue != nil, let readout = sizeReadout(stack) { CropSizeLabel(readout: readout) }
+            }
         }
+    }
+
+    private func sizeReadout(_ stack: PageStack) -> CropSizeReadout? {
+        guard let document = model.document, let size = StackRenderer.pointSize(of: stack, in: document) else { return nil }
+        func points(_ c: CropRect) -> CGSize { CGSize(width: c.width * size.width, height: c.height * size.height) }
+        if stack.id == .spreads {
+            let l = layout(stack).wrappedValue
+            return CropSizeReadout(left: points(l.leftCrop), right: points(l.rightCrop), unit: RulerUnit())
+        }
+        return CropSizeReadout(left: points(draft(stack).wrappedValue), right: nil, unit: RulerUnit())
     }
 
     private func outline(_ crop: CropRect, in frame: CGRect, color: Color,

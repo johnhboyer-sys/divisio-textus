@@ -63,7 +63,17 @@ struct PageEditorView: View {
                         }
                 )
             }
+            .overlay(alignment: .bottom) {
+                if let readout = sizeReadout(page) { CropSizeLabel(readout: readout) }
+            }
         }
+    }
+
+    private func sizeReadout(_ page: BookPage) -> CropSizeReadout? {
+        guard page.classification != .skip, let size = model.displaySize(of: page) else { return nil }
+        func points(_ c: CropRect) -> CGSize { CGSize(width: c.width * size.width, height: c.height * size.height) }
+        return CropSizeReadout(left: points(page.leftCrop),
+                               right: page.classification == .spread ? points(page.rightCrop) : nil, unit: RulerUnit())
     }
 
     /// Where the crops start and end, for the rulers.

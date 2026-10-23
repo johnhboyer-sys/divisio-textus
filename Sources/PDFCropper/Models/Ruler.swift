@@ -25,13 +25,50 @@ enum RulerUnit: Equatable {
 
     /// A length as the crop size pills show it: hundredths of an inch, tenths of a centimetre.
     func label(points: Double, locale: Locale = .current) -> String {
-        (points / self.points).formatted(.number.precision(.fractionLength(self == .inches ? 2 : 1)).locale(locale))
-            + " " + symbol
+        number(points: points, locale: locale) + " " + symbol
+    }
+
+    /// The number alone; `digits` defaults to the pills' precision.
+    func number(points: Double, locale: Locale = .current, digits: Int? = nil) -> String {
+        (points / self.points).formatted(.number.precision(.fractionLength(digits ?? (self == .inches ? 2 : 1)))
+            .locale(locale))
     }
 
     /// Steps finer than one unit, finest first: every one divides one unit.
     fileprivate var fractions: [Double] {
         self == .inches ? [1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 2] : [0.1, 0.5]
+    }
+}
+
+/// The crop boxes' sizes under the canvas, and whether a spread's two are the same.
+struct CropSizeReadout: Equatable {
+    /// Export cuts each crop to whole pixels at 150 to 600 DPI, so boxes closer than one
+    /// pixel at 150 DPI can't be told apart in the exported pages.
+    static let tolerance = 72.0 / 150
+
+    var sizes: [String]
+    var verdict: String?
+    var same: Bool?
+
+    /// `left` is the only box on a single page or a one-box stack; sizes in PDF points.
+    init(left: CGSize, right: CGSize?, unit: RulerUnit, locale: Locale = .current) {
+        func size(_ s: CGSize) -> String {
+            "\(unit.number(points: s.width, locale: locale)) × \(unit.number(points: s.height, locale: locale)) \(unit.symbol)"
+        }
+        guard let right else {
+            sizes = [size(left)]
+            return
+        }
+        sizes = ["Left " + size(left), "Right " + size(right)]
+        // Differences to hundredths, so one just over the tolerance never reads as zero.
+        func difference(_ d: Double, _ more: String, _ less: String) -> String? {
+            abs(d) < Self.tolerance ? nil
+                : "\(unit.number(points: abs(d), locale: locale, digits: 2)) \(unit.symbol) \(d > 0 ? more : less)"
+        }
+        let parts = [difference(right.width - left.width, "wider", "narrower"),
+                     difference(right.height - left.height, "taller", "shorter")].compactMap { $0 }
+        same = parts.isEmpty
+        verdict = parts.isEmpty ? "Same size" : "Right is " + parts.joined(separator: " and ")
     }
 }
 
