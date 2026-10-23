@@ -160,21 +160,7 @@ struct ReviewReproTests {
         #expect(via.pages[i].rightCrop == direct.pages[i].rightCrop)
     }
 
-    @Test("Finding 5: Apply puts a drawn box where the blend shows it, whatever each page's split",
-          .disabled("Waits on John's decision on how stack boxes are sized (2026-10-22)"))
-    func stackApplyMatchesBlend() throws {
-        for kind in [PageStack.Kind.left, .right] {
-            let pages = [0.45, 0.55].enumerated().map { BookPage(sourceIndex: $0.offset, splitX: $0.element) }
-            let stack = try #require(PageStack.groups(pages: pages).first { $0.id == kind })
-            let draft = CropRect(x: 0.2, y: 0.1, width: 0.6, height: 0.8)
-            for member in stack.members {
-                // The blend scales each side to the same width, so a local x is the same
-                // share of every side: it covers pageCrop(draft) on this page.
-                let shown = member.pageCrop(draft)
-                let applied = member.clampedCrop(draft, usualWidth: stack.usualRegionWidth)
-                #expect(abs(applied.minX - shown.minX) < 0.005 && abs(applied.maxX - shown.maxX) < 0.005,
-                        "\(kind) split \(member.page.splitX): shown \(shown.minX)…\(shown.maxX), applied \(applied.minX)…\(applied.maxX)")
-            }
-        }
-    }
+    // Finding 5 (stack Apply versus the blend) is covered by StackTests.applyMatchesStack
+    // and StackTests.trueSizeBlend: John chose a true-size stack (2026-10-22).
+
 }

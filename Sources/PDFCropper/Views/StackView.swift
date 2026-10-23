@@ -24,8 +24,8 @@ struct StackView: View {
 
     /// The orange box: the user's draft for this stack, or else the stack's usual crop.
     private func draft(_ stack: PageStack) -> Binding<CropRect> {
-        Binding(get: { model.stackCrops[stack.id] ?? stack.medianCrop.normalized() },
-                set: { model.stackCrops[stack.id] = $0 })
+        Binding(get: { model.stackDraft(for: stack) },
+                set: { model.setStackDraft($0, for: stack) })
     }
 
     /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
@@ -105,7 +105,7 @@ struct StackView: View {
                         .disabled(stack.outliers.isEmpty)
                     }
                     .fixedSize()
-                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil)
+                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil || loadingState.wrappedValue)
                     .help("Set every spread, or only the flagged ones, to the orange split and the blue and green crops")
                 } else if let stack {
                     Menu("Apply Crop") {
@@ -118,7 +118,7 @@ struct StackView: View {
                         .disabled(stack.outliers.isEmpty)
                     }
                     .fixedSize()
-                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil)
+                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil || loadingState.wrappedValue)
                     .help("Set every page in this stack, or only the flagged ones, to the orange crop")
                 }
             }

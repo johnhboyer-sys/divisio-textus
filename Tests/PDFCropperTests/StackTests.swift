@@ -38,7 +38,7 @@ struct StackTests {
         for (side, x) in [(PageStack.Member.Side.left, 0.98), (.right, 0.0)] {
             for split in [0.5, 0.3] {
                 let member = PageStack.Member(page: BookPage(sourceIndex: 0, splitX: split), side: side)
-                let c = member.clampedCrop(CropRect(x: x, y: 0.2, width: 0.02, height: 0.5), usualWidth: member.regionWidth)
+                let c = member.clampedCrop(CropRect(x: x, y: 0.2, width: 0.02, height: 0.5))
                 #expect(c.minX >= member.regionMinX - 1e-12)
                 #expect(c.maxX <= member.regionMinX + member.regionWidth + 1e-12)
                 #expect(c.normalized() == c)   // export normalizes; nothing may move
@@ -111,7 +111,8 @@ struct StackTests {
     @MainActor
     func appliedSize() throws {
         // The gutter sits at 0.45 on one spread and 0.55 on the other, so their halves
-        // differ; the text block, and so the applied crop, should not.
+        // differ; the text block, and so the applied crop, should not. The stack is as
+        // wide as the widest half, 0.55, so a box 0.6 of the stack wide is 0.33 of a scan.
         let model = testModel()
         model.pages = [BookPage(sourceIndex: 0, splitX: 0.45, analyzed: true),
                        BookPage(sourceIndex: 1, splitX: 0.55, analyzed: true)]
@@ -122,7 +123,7 @@ struct StackTests {
         model.applyStackCrop(box, to: left.members, in: left)
         model.applyStackCrop(box, to: right.members, in: right)
         let (a, b) = (model.pages[0], model.pages[1])
-        #expect(abs(a.leftCrop.width - 0.3) < 1e-10 && abs(b.leftCrop.width - 0.3) < 1e-10)
+        #expect(abs(a.leftCrop.width - 0.33) < 1e-10 && abs(b.leftCrop.width - 0.33) < 1e-10)
         #expect(abs((a.splitX - a.leftCrop.maxX) - (b.splitX - b.leftCrop.maxX)) < 1e-10)
         #expect(abs(a.rightCrop.width - b.rightCrop.width) < 1e-10)
         #expect(abs((a.rightCrop.minX - a.splitX) - (b.rightCrop.minX - b.splitX)) < 1e-10)
@@ -130,21 +131,39 @@ struct StackTests {
         for stack in PageStack.groups(pages: model.pages) { #expect(stack.outliers.isEmpty) }
     }
 
+    @Test("Apply puts each page's crop exactly where the stack shows it (review finding 5)")
+    func applyMatchesStack() throws {
+        for kind in [PageStack.Kind.left, .right] {
+            let pages = [0.45, 0.55].enumerated().map { BookPage(sourceIndex: $0.offset, splitX: $0.element) }
+            let stack = try #require(PageStack.groups(pages: pages).first { $0.id == kind })
+            let draft = CropRect(x: 0.2, y: 0.1, width: 0.6, height: 0.8)
+            for member in stack.members {
+                let shown = member.pageCrop(draft), applied = member.clampedCrop(draft)
+                #expect(abs(applied.minX - shown.minX) < 1e-9 && abs(applied.maxX - shown.maxX) < 1e-9,
+                        "\(kind) split \(member.page.splitX): shown \(shown.minX)…\(shown.maxX), applied \(applied.minX)…\(applied.maxX)")
+                // And what the stack outlines for that crop is the box itself.
+                let back = member.localCrop(applied)
+                #expect(abs(back.minX - draft.minX) < 1e-9 && abs(back.maxX - draft.maxX) < 1e-9)
+            }
+        }
+    }
+
     @Test("A box at the stack's outer edge reaches each page's edge, and stays in its half")
     func outerEdgeAndNarrowHalf() {
-        let usual = 0.5
-        for split in [0.45, 0.55] {
-            let page = BookPage(sourceIndex: 0, splitX: split)
-            let left = PageStack.Member(page: page, side: .left)
-            let right = PageStack.Member(page: page, side: .right)
-            // Out to the stack's outer edge: the page's own outer edge, whatever its half.
-            let l = left.clampedCrop(CropRect(x: 0, y: 0.1, width: 0.8, height: 0.8), usualWidth: usual)
-            #expect(l.minX == 0 && abs(split - l.maxX - 0.2 * usual) < 1e-10)
-            let r = right.clampedCrop(CropRect(x: 0.2, y: 0.1, width: 0.8, height: 0.8), usualWidth: usual)
-            #expect(abs(r.maxX - 1) < 1e-10 && abs(r.minX - split - 0.2 * usual) < 1e-10)
-            // A box wider than a narrow half stays inside it.
-            let wide = left.clampedCrop(CropRect(x: 0.05, y: 0.1, width: 0.95, height: 0.8), usualWidth: 0.6)
-            #expect(wide.minX >= 0 && wide.maxX <= split + 1e-12)
+        let pages = [0.45, 0.55].enumerated().map { BookPage(sourceIndex: $0.offset, splitX: $0.element) }
+        let groups = PageStack.groups(pages: pages)
+        for stack in groups where stack.id == .left || stack.id == .right {
+            for member in stack.members {
+                let split = member.page.splitX
+                if stack.id == .left {
+                    // Out to the stack's outer edge: the page's own outer edge, whatever its half.
+                    let l = member.clampedCrop(CropRect(x: 0, y: 0.1, width: 0.8, height: 0.8))
+                    #expect(l.minX == 0 && abs(split - l.maxX - 0.2 * stack.span) < 1e-10)
+                } else {
+                    let r = member.clampedCrop(CropRect(x: 0.2, y: 0.1, width: 0.8, height: 0.8))
+                    #expect(abs(r.maxX - 1) < 1e-10 && abs(r.minX - split - 0.2 * stack.span) < 1e-10)
+                }
+            }
         }
     }
 
@@ -162,6 +181,77 @@ struct StackTests {
         model.load(url: Fixtures.sampleBook())
         await waitUntilIdle(model)
         #expect(model.stackKind == .left && model.stackCrops.isEmpty)
+    }
+
+    @Test("The blend shows each half at true size, lined up at the fold (review finding 5)")
+    func trueSizeBlend() throws {
+        // Two spreads whose fold sits at 0.45 and at 0.55 of the scan. On each, a line
+        // 0.12 of the scan's width left of the fold and one 0.12 right of it: the same
+        // place on the page, so a truthful blend draws each as one solid line.
+        let media = CGRect(x: 0, y: 0, width: 1000, height: 650)
+        let splits = [0.45, 0.55]
+        let url = Fixtures.writePDF("truesize-\(UUID().uuidString).pdf", media: media, pages: splits.map { split in
+            { c in
+                c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+                c.setFillColor(CGColor(gray: 0, alpha: 1))
+                c.fill(CGRect(x: (split - 0.12) * 1000 - 8, y: 100, width: 16, height: 450))
+                c.fill(CGRect(x: (split + 0.12) * 1000 - 8, y: 100, width: 16, height: 450))
+            }
+        })
+        let doc = try #require(PDFDocument(url: url))
+        let pages = splits.enumerated().map { BookPage(sourceIndex: $0.offset, splitX: $0.element, analyzed: true) }
+        for (kind, offset) in [(PageStack.Kind.left, -0.12), (.right, 0.12)] {
+            let stack = try #require(PageStack.groups(pages: pages).first { $0.id == kind })
+            let image = try #require(StackRenderer.render(stack, from: doc))
+            let g = try #require(GrayBuffer(cgImage: image, maxDim: max(image.width, image.height)))
+            // The darkest column across the middle row: both lines on it means full ink.
+            let y = g.height / 2
+            let darkest = (0..<g.width).map { Int(g.value($0, y)) }.min() ?? 255
+            #expect(darkest < 40, "\(kind): darkest \(darkest); one solid line expected, not two faint ones")
+            // And it sits 0.12 of the scan from the fold, measured at true size.
+            let x = (0..<g.width).min { g.value($0, y) < g.value($1, y) }!
+            let fromFold = kind == .left ? Double(g.width - x) : Double(x)
+            let scale = Double(g.width) / 0.55               // pixels per scan width: the widest half is 0.55
+            #expect(abs(fromFold / scale - abs(offset)) < 0.02, "\(kind): \(fromFold / scale) of the scan from the fold")
+        }
+    }
+
+    @Test("A line near the fold is drawn exactly where the stack's coordinates put it (review, rounding)")
+    func blendMatchesCoordinates() throws {
+        // A 240-point scan is 100 pixels at the blend's 30 DPI, so a split at 0.455
+        // falls between pixels; the line at 0.445 must still land where Apply sees it.
+        let media = CGRect(x: 0, y: 0, width: 240, height: 240)
+        let url = Fixtures.writePDF("round-\(UUID().uuidString).pdf", media: media, pages: [{ c in
+            c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 0.445 * 240 - 0.6, y: 40, width: 1.2, height: 160))
+        }])
+        let doc = try #require(PDFDocument(url: url))
+        let page = BookPage(sourceIndex: 0, splitX: 0.455, analyzed: true)
+        let stack = try #require(PageStack.groups(pages: [page]).first { $0.id == .left })
+        let image = try #require(StackRenderer.render(stack, from: doc))
+        let g = try #require(GrayBuffer(cgImage: image, maxDim: max(image.width, image.height)))
+        let y = g.height / 2
+        let darkest = (0..<g.width).min { g.value($0, y) < g.value($1, y) }!
+        let shown = (Double(darkest) + 0.5) / Double(g.width)
+        let expected = stack.members[0].localCrop(CropRect(x: 0.445, y: 0, width: 0, height: 1)).x
+        #expect(abs(shown - expected) < 1.0 / Double(g.width), "shown at \(shown), coordinates say \(expected)")
+    }
+
+    @Test("A drawn box keeps its place on the page when a split elsewhere changes the stack's width (review)")
+    @MainActor
+    func draftFollowsSpan() throws {
+        let model = testModel()
+        model.pages = [BookPage(sourceIndex: 0, splitX: 0.5, analyzed: true),
+                       BookPage(sourceIndex: 1, splitX: 0.6, analyzed: true)]
+        let before = try #require(PageStack.groups(pages: model.pages).first { $0.id == .left })
+        model.setStackDraft(CropRect(x: 0.2, y: 0.1, width: 0.7, height: 0.8), for: before)
+        let onFirstPage = before.members[0].pageCrop(model.stackDraft(for: before))
+        model.pages[1].splitX = 0.5                                  // the stack is now narrower
+        let after = try #require(PageStack.groups(pages: model.pages).first { $0.id == .left })
+        let now = after.members[0].pageCrop(model.stackDraft(for: after))
+        #expect(abs(now.minX - onFirstPage.minX) < 1e-9 && abs(now.maxX - onFirstPage.maxX) < 1e-9,
+                "was \(onFirstPage.minX)…\(onFirstPage.maxX), now \(now.minX)…\(now.maxX)")
     }
 
     @Test("A blend puts common and rare ink at the correct side-local positions")

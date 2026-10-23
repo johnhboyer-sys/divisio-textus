@@ -20,6 +20,9 @@ struct PageStack: Identifiable {
         let page: BookPage
         let side: Side
         enum Side: String { case left, right, single, whole }
+        /// The stack's width as a share of a scan: its widest half. Every side is
+        /// drawn at true size against it, lined up at the fold (see PageStack.init).
+        var span: Double = 1
         var id: BookPage.ID { page.id }
         var regionMinX: Double { side == .right ? page.splitX : 0 }
         var regionWidth: Double {
@@ -31,32 +34,43 @@ struct PageStack: Identifiable {
         }
         var crop: CropRect { localCrop(side == .right ? page.rightCrop : page.leftCrop) }
 
+        /// Stack x (0…1 across the stack) for a page x, and back. A left half ends
+        /// at the stack's right edge and a right half starts at its left edge, so
+        /// the fold lines up and a distance from it is the same on every page.
+        private func stackX(_ x: Double) -> Double {
+            switch side {
+            case .left: return 1 - (page.splitX - x) / max(span, 0.000001)
+            case .right: return (x - page.splitX) / max(span, 0.000001)
+            case .single, .whole: return x
+            }
+        }
+        private func pageX(_ u: Double) -> Double {
+            switch side {
+            case .left: return page.splitX - (1 - u) * span
+            case .right: return page.splitX + u * span
+            case .single, .whole: return u
+            }
+        }
+
         func localCrop(_ crop: CropRect) -> CropRect {
-            CropRect(x: (crop.x - regionMinX) / max(regionWidth, 0.000001), y: crop.y,
-                     width: crop.width / max(regionWidth, 0.000001), height: crop.height)
+            let x0 = stackX(crop.x), x1 = stackX(crop.x + crop.width)
+            return CropRect(x: x0, y: crop.y, width: x1 - x0, height: crop.height)
         }
 
         func pageCrop(_ crop: CropRect) -> CropRect {
-            CropRect(x: regionMinX + crop.x * regionWidth, y: crop.y,
-                     width: crop.width * regionWidth, height: crop.height)
+            let x0 = pageX(crop.x), x1 = pageX(crop.x + crop.width)
+            return CropRect(x: x0, y: crop.y, width: x1 - x0, height: crop.height)
         }
 
-        /// The box placed on this page at the stack's usual size and measured from the
-        /// gutter: a text block is one size on every page and sits a set distance from
-        /// the fold, while a half's width moves with the gutter. Kept inside its side
-        /// at a size export leaves alone (export normalizes on the page, whose smallest
-        /// crop can be wider than a small box on a side). A box edge on the stack's
-        /// outer edge means this page's outer edge, however wide its half.
-        func clampedCrop(_ crop: CropRect, usualWidth: Double) -> CropRect {
-            let local = crop.normalized(), width = local.width * usualWidth
-            var x = side == .left
-                ? regionMinX + regionWidth - (1 - local.maxX) * usualWidth - width
-                : regionMinX + local.x * usualWidth
-            var right = x + width
-            if side == .left, local.minX <= 0.001 { x = regionMinX }
-            if side == .right, local.maxX >= 0.999 { right = regionMinX + regionWidth }
-            var c = CropRect(x: x, y: local.y, width: right - x, height: local.height).normalized()
+        /// The box placed on this page where the stack shows it: the same size on
+        /// every page and the same distance from the fold. Where it reaches past a
+        /// narrower half's outer edge, it stops at that edge. Kept inside its side
+        /// at a size export leaves alone.
+        func clampedCrop(_ crop: CropRect) -> CropRect {
+            let shown = pageCrop(crop.normalized())
             let end = regionMinX + regionWidth
+            let lo = max(regionMinX, shown.minX), hi = min(end, shown.maxX)
+            var c = CropRect(x: lo, y: shown.y, width: max(0, hi - lo), height: shown.height).normalized()
             c.width = min(c.width, regionWidth)
             c.x = max(regionMinX, min(c.x, end - c.width))
             return c
@@ -65,6 +79,27 @@ struct PageStack: Identifiable {
 
     let id: Kind
     let members: [Member]
+
+    init(id: Kind, members: [Member]) {
+        self.id = id
+        let span = members.map(\.regionWidth).max() ?? 1
+        self.members = members.map { var m = $0; m.span = span; return m }
+    }
+
+    /// The stack's width as a share of a scan (see Member.span).
+    var span: Double { members.first?.span ?? 1 }
+
+    /// A box drawn when the stack was `oldSpan` wide, moved to this stack's width so
+    /// it covers the same place on the page: the same size and distance from the fold.
+    func rescaled(_ crop: CropRect, from oldSpan: Double) -> CropRect {
+        guard oldSpan != span, span > 0 else { return crop }
+        let k = oldSpan / span
+        switch id {
+        case .left: return CropRect(x: 1 - (1 - crop.x) * k, y: crop.y, width: crop.width * k, height: crop.height)
+        case .right: return CropRect(x: crop.x * k, y: crop.y, width: crop.width * k, height: crop.height)
+        default: return crop
+        }
+    }
 
     static func groups(pages: [BookPage]) -> [PageStack] {
         var groups: [Kind: [Member]] = [:]

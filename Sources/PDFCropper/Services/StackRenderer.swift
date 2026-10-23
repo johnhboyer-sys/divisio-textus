@@ -15,13 +15,16 @@ enum StackRenderer {
     static func render(_ stack: PageStack, workers: Int, open: @escaping () -> PDFDocument?,
                        isCancelled: @escaping () -> Bool) -> CGImage? {
         guard let document = open() else { return nil }
+        // Each side at true size: one scale for every page (a usual scan's width in
+        // pixels), with the stack as wide as its widest side (see PageStack.Member.span).
         let sizes = stack.members.compactMap { member -> CGSize? in
             guard let page = document.page(at: member.page.sourceIndex) else { return nil }
             let size = PDFRenderer.displaySize(of: page)
-            return CGSize(width: size.width * member.regionWidth * 30 / 72, height: size.height * 30 / 72)
+            return CGSize(width: size.width * 30 / 72, height: size.height * 30 / 72)
         }
         guard sizes.count == stack.members.count, !sizes.isEmpty else { return nil }
-        let width = max(1, Int(PageStack.median(sizes.map { Double($0.width) }).rounded()))
+        let scanWidth = PageStack.median(sizes.map { Double($0.width) })
+        let width = max(1, Int((scanWidth * stack.span).rounded()))
         let height = max(1, Int(PageStack.median(sizes.map { Double($0.height) }).rounded()))
 
         let members = stack.members
@@ -59,14 +62,22 @@ enum StackRenderer {
                   let image = PDFRenderer.renderCGImage(page: page, dpi: 30) else { return false }
             let straight = ImageTransform.deskewedComposite(image, splitX: p.splitX,
                 leftDegrees: p.leftSkew, rightDegrees: p.rightSkew, isSpread: p.isSpread)
-            let region = CGRect(x: member.regionMinX * Double(straight.width), y: 0,
-                                width: member.regionWidth * Double(straight.width), height: Double(straight.height))
-            guard let side = straight.cropping(to: region.integral),
-                  let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                     bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
             else { return false }
             context.interpolationQuality = .medium
-            context.draw(side, in: CGRect(x: 0, y: 0, width: width, height: height))
+            context.setFillColor(gray: 1, alpha: 1)               // a narrower side leaves paper-white
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            // The whole scan at the stack's scale, placed so the fold lands where the
+            // stack's coordinates put it (a left side's at the right edge, a right
+            // side's at the left), and clipped to this side: no rounding to pixels.
+            let scan = Double(width) / member.span                // pixels per scan width
+            let origin = member.side == .left ? Double(width) - p.splitX * scan
+                : member.side == .right ? -p.splitX * scan : 0
+            let side = CGRect(x: origin + member.regionMinX * scan, y: 0,
+                              width: member.regionWidth * scan, height: Double(height))
+            context.clip(to: side)
+            context.draw(straight, in: CGRect(x: origin, y: 0, width: scan, height: Double(height)))
             guard let data = context.data else { return false }
             let gray = data.bindMemory(to: UInt8.self, capacity: ink.count)
             for i in ink.indices { ink[i] += (255 - Double(gray[i])) / 255 }

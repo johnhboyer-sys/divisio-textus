@@ -16,6 +16,21 @@ final class AppModel: ObservableObject {
     /// flagged page comes back to the same stack and box.
     @Published var stackKind: PageStack.Kind = .left
     @Published var stackCrops: [PageStack.Kind: CropRect] = [:]
+
+    /// The stack width each drawn box was drawn at (see PageStack.rescaled).
+    private var stackCropSpans: [PageStack.Kind: Double] = [:]
+
+    /// The box drawn on a stack, kept on the same place on the page however the
+    /// stack's width has changed since, or else the stack's usual crop.
+    func stackDraft(for stack: PageStack) -> CropRect {
+        guard let crop = stackCrops[stack.id] else { return stack.medianCrop.normalized() }
+        return stack.rescaled(crop, from: stackCropSpans[stack.id] ?? stack.span)
+    }
+
+    func setStackDraft(_ crop: CropRect, for stack: PageStack) {
+        stackCrops[stack.id] = crop
+        stackCropSpans[stack.id] = stack.span
+    }
     /// The whole-spread stack's draft split and crops; nil: the stack's usual layout.
     @Published var spreadLayout: SpreadLayout?
 
@@ -174,6 +189,7 @@ final class AppModel: ObservableObject {
         editSnapshot = nil
         stackKind = .left
         stackCrops = [:]
+        stackCropSpans = [:]
         spreadLayout = nil
         document = doc
         sourceURL = url
@@ -665,8 +681,8 @@ final class AppModel: ObservableObject {
             for member in members {
                 guard let i = pages.firstIndex(where: { $0.id == member.id }),
                       pages[i].classification == member.page.classification else { continue }
-                let live = PageStack.Member(page: pages[i], side: member.side)
-                let c = live.clampedCrop(crop, usualWidth: stack.usualRegionWidth)
+                let live = PageStack.Member(page: pages[i], side: member.side, span: stack.span)
+                let c = live.clampedCrop(crop)
                 if member.side == .right { pages[i].rightCrop = c }
                 else { pages[i].leftCrop = c }
                 count += 1
