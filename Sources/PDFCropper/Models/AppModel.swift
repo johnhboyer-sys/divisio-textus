@@ -43,9 +43,10 @@ final class AppModel: ObservableObject {
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
     @Published var ocrEnabled = true
-    @Published var exportMode: ExportMode = .crop
     /// The open PDF already has a text layer (see PDFExporter.hasText).
     @Published private(set) var sourceHasText = false
+    /// The running check for it (see checkForText), so tests can wait for it.
+    private(set) var textCheck: Task<Void, Never>?
     @Published var enhanceMode: EnhanceMode = .color {
         didSet { if enhanceMode != oldValue { clearImageCaches() } }
     }
@@ -144,8 +145,7 @@ final class AppModel: ObservableObject {
     }
 
     var outputPageCount: Int {
-        if exportMode == .textOnly { return pages.count }
-        return pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
+        pages.reduce(0) { $0 + $1.outputCrops(direction: direction).count }
     }
 
     /// Added to the status on opening a PDF that already has text.
@@ -200,7 +200,7 @@ final class AppModel: ObservableObject {
         spreadLayout = nil
         document = doc
         sourceURL = url
-        sourceHasText = PDFExporter.hasText(doc)
+        sourceHasText = false   // until checkForText finds some
         documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
         isStraightening = false
@@ -235,6 +235,26 @@ final class AppModel: ObservableObject {
         }
         selectedPageID = pages.first?.id
         analyzeAll()
+        checkForText()
+    }
+
+    /// Look for an existing text layer off the main thread (reading a page's
+    /// text can be slow when it has a lot), and say so when there is one.
+    private func checkForText() {
+        guard let current = document, let url = sourceURL else { return }
+        let password = documentPassword
+        textCheck = Task.detached {
+            // A separate PDFDocument, as in analyzeAll.
+            let found = Self.reopen(url, password: password).map { PDFExporter.hasText($0) } ?? false
+            await MainActor.run {
+                guard found, self.document === current else { return }
+                self.sourceHasText = true
+                // Analysis's Ready message will say it; a message already up says it only
+                // if it is the load's own (not an error or an export's progress).
+                let loadMessage = self.statusText.hasPrefix("Ready — ") || self.statusText.hasPrefix("Restored your earlier edits")
+                if !self.isBusy, loadMessage, !self.statusText.contains(self.textNote) { self.statusText += self.textNote }
+            }
+        }
     }
 
     /// Ask for the password of a protected PDF until it unlocks or the user cancels.
@@ -1176,7 +1196,7 @@ final class AppModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         let base = sourceURL?.deletingPathExtension().lastPathComponent ?? "book"
-        panel.nameFieldStringValue = "\(base)-\(exportMode == .textOnly ? "searchable" : "cropped").pdf"
+        panel.nameFieldStringValue = "\(base)-cropped.pdf"
         panel.directoryURL = sourceURL?.deletingLastPathComponent()   // next to the original
         if panel.runModal() == .OK, let url = panel.url {
             export(to: url)
@@ -1192,15 +1212,13 @@ final class AppModel: ObservableObject {
             return
         }
         let password = documentPassword
-        let textOnly = exportMode == .textOnly
         isExporting = true
         exportProgress = 0
         // Vision can take a minute or more to start after a while unused; say so
         // rather than look stuck.
-        statusText = ocrEnabled || textOnly ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
+        statusText = ocrEnabled ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
-        // Add text only always reads the text: that is all it does.
-        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled || textOnly, enhanceMode: enhanceMode)
+        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel
@@ -1212,7 +1230,11 @@ final class AppModel: ObservableObject {
             do {
                 // Own PDFDocument, for the same reason as analyzeAll.
                 guard let doc = Self.reopen(src, password: password) else { throw PDFExporter.ExportError.sourceUnreadable }
-                let progress = { (done: Int, total: Int) in
+                let report = try PDFExporter.export(pages: pagesSnapshot,
+                                                    from: doc,
+                                                    to: url,
+                                                    settings: settings,
+                                                    isCancelled: { cancel.isSet }) { done, total in
                     let elapsed = Date().timeIntervalSince(started)
                     Task { @MainActor in
                         guard self.isExporting, !cancel.isSet else { return }   // keep the final message
@@ -1228,11 +1250,6 @@ final class AppModel: ObservableObject {
                         self.statusText = text
                     }
                 }
-                let report = textOnly
-                    ? try PDFExporter.addTextLayer(from: doc, to: url, settings: settings,
-                                                   isCancelled: { cancel.isSet }, progress: progress)
-                    : try PDFExporter.export(pages: pagesSnapshot, from: doc, to: url, settings: settings,
-                                             isCancelled: { cancel.isSet }, progress: progress)
                 Task { @MainActor in
                     self.isExporting = false
                     self.exportProgress = 1

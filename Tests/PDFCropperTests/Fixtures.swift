@@ -87,38 +87,6 @@ enum Fixtures {
         CTLineDraw(line, c)
     }
 
-    /// The data of every image the page draws, also inside form objects, as
-    /// stored in the file (a JPEG stays JPEG bytes), with its storage format.
-    static func imageStreams(_ page: CGPDFPage) -> [(data: Data, format: CGPDFDataFormat)] {
-        var found: [(Data, CGPDFDataFormat)] = []
-        func walk(_ resources: CGPDFDictionaryRef, depth: Int) {
-            var xobjects: CGPDFDictionaryRef?
-            guard depth < 4, CGPDFDictionaryGetDictionary(resources, "XObject", &xobjects), let xo = xobjects else { return }
-            CGPDFDictionaryApplyBlock(xo, { _, object, _ in
-                var stream: CGPDFStreamRef?
-                guard CGPDFObjectGetValue(object, .stream, &stream), let s = stream,
-                      let dict = CGPDFStreamGetDictionary(s) else { return true }
-                var subtype: UnsafePointer<CChar>?
-                CGPDFDictionaryGetName(dict, "Subtype", &subtype)
-                switch subtype.map({ String(cString: $0) }) {
-                case "Image":
-                    var format = CGPDFDataFormat.raw
-                    if let data = CGPDFStreamCopyData(s, &format) { found.append((data as Data, format)) }
-                case "Form":
-                    var r: CGPDFDictionaryRef?
-                    if CGPDFDictionaryGetDictionary(dict, "Resources", &r), let r { walk(r, depth: depth + 1) }
-                default: break
-                }
-                return true
-            }, nil)
-        }
-        if let dict = page.dictionary {
-            var r: CGPDFDictionaryRef?
-            if CGPDFDictionaryGetDictionary(dict, "Resources", &r), let r { walk(r, depth: 0) }
-        }
-        return found
-    }
-
     static func save(_ page: PDFPage, _ name: String, options: [PDFDocumentWriteOption: Any] = [:]) -> URL {
         let doc = PDFDocument()
         doc.insert(page, at: 0)

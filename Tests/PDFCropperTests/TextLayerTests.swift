@@ -42,7 +42,7 @@ struct ExistingTextTests {
     private func mixedPDF(_ name: String) throws -> PDFDocument {
         let media = CGRect(x: 0, y: 0, width: 400, height: 600)
         let url = Fixtures.writePDF(name, media: media, pages: [
-            { Fixtures.drawText("Existing words stay as they are", in: $0, at: CGPoint(x: 40, y: 500)) },
+            { Fixtures.drawText("Existing words", in: $0, at: CGPoint(x: 40, y: 500)) },
             { $0.draw(Fixtures.scan(1000, 1500), in: media) },
         ])
         return try #require(PDFDocument(url: url))
@@ -66,43 +66,12 @@ struct ExistingTextTests {
         let doc = try mixedPDF("load-text-\(UUID().uuidString).pdf")
         let m = testModel()
         m.load(url: try #require(doc.documentURL)); await waitUntilIdle(m)
+        await m.textCheck?.value   // runs in the background, apart from analysis
         #expect(m.sourceHasText)
         #expect(m.statusText.contains("already has text"), "\(m.statusText)")
         m.load(url: Fixtures.sampleBook()); await waitUntilIdle(m)
+        await m.textCheck?.value
         #expect(!m.sourceHasText)
         #expect(!m.statusText.contains("already has text"))
     }
-
-    @Test("Add text only: a page with text keeps exactly its text and isn't read again")
-    func keepsExistingText() throws {
-        let doc = try mixedPDF("keep-text-\(UUID().uuidString).pdf")
-        let out = Fixtures.url("keep-text-out-\(UUID().uuidString).pdf")
-        let calls = Counter()
-        let report = try PDFExporter.addTextLayer(from: doc, to: out, settings: PDFExporter.Settings(), recognize: { _ in
-            calls.add()
-            return OCRService.Recognition(lines: [OCRService.Line(text: "Added by OCR", box: CGRect(x: 0.1, y: 0.5, width: 0.6, height: 0.03))],
-                                          complete: true)
-        })
-        #expect(calls.value == 1)
-        #expect(report.pageCount == 2 && report.ocrFailedPages.isEmpty)
-        let result = try #require(PDFDocument(url: out))
-        #expect(result.page(at: 0)?.string == doc.page(at: 0)?.string)
-        #expect(result.page(at: 1)?.string?.contains("Added by OCR") == true)
-    }
-
-    @Test("Add text only: a page Vision fails on is reported")
-    func reportsFailedPages() throws {
-        let doc = try mixedPDF("fail-text-\(UUID().uuidString).pdf")
-        let out = Fixtures.url("fail-text-out-\(UUID().uuidString).pdf")
-        let report = try PDFExporter.addTextLayer(from: doc, to: out, settings: PDFExporter.Settings(), recognize: { _ in nil })
-        #expect(report.ocrFailedPages == [2])
-    }
-}
-
-/// Counts calls from several threads at once.
-final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
-    func add() { lock.lock(); count += 1; lock.unlock() }
 }
