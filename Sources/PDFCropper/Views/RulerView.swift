@@ -147,12 +147,17 @@ private struct CropSizes: View {
 
     var body: some View {
         GeometryReader { geo in
-            let marks = page.marks.indices.compactMap { i in span(i, horizontal: true, in: geo.size).map { (i, $0) } }
-            let heights = page.marks.indices.compactMap { i in span(i, horizontal: false, in: geo.size).map { (i, $0) } }
-            ForEach(marks, id: \.0) { i, x in
-                pill(page.marks[i], length: page.marks[i].crop.width * page.size.width)
-                    .position(x: x, y: 10)
+            // Only crops with some part in view.
+            let shown = page.marks.indices.compactMap { i -> (Int, Double, Double)? in
+                guard let x = span(i, horizontal: true, in: geo.size),
+                      let y = span(i, horizontal: false, in: geo.size) else { return nil }
+                return (i, x, y)
             }
+            ForEach(shown, id: \.0) { i, x, _ in
+                pill(page.marks[i], length: page.marks[i].crop.width * page.size.width)
+                    .position(x: min(max(x, 32), geo.size.width - 32), y: 10)
+            }
+            let heights = shown.map { ($0.0, $0.2) }
             let ys = spaced(heights.map(\.1))
             ForEach(heights.indices, id: \.self) { n in
                 let i = heights[n].0
@@ -164,11 +169,16 @@ private struct CropSizes: View {
     }
 
     /// A spread's two crops share most of their height: two pills that would touch
-    /// sit one above the other, either side of their midpoint.
+    /// sit one above the other, either side of their midpoint. All stay below the row
+    /// of width pills.
     private func spaced(_ ys: [Double]) -> [Double] {
-        guard ys.count == 2, abs(ys[0] - ys[1]) < 20 else { return ys }
-        let mid = (ys[0] + ys[1]) / 2
-        return ys[0] <= ys[1] ? [mid - 10, mid + 10] : [mid + 10, mid - 10]
+        var ys = ys
+        if ys.count == 2, abs(ys[0] - ys[1]) < 20 {
+            let mid = (ys[0] + ys[1]) / 2
+            ys = ys[0] <= ys[1] ? [mid - 10, mid + 10] : [mid + 10, mid - 10]
+        }
+        let down = max(0, 30 - (ys.min() ?? 30))
+        return ys.map { $0 + down }
     }
 
     /// The middle of the crop's visible part along one axis, or nil when it's out of view.

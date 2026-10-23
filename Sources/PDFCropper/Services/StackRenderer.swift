@@ -17,9 +17,18 @@ enum StackRenderer {
     /// full-resolution scans is most of the time, so this scales with the cores.
     static func render(_ stack: PageStack, workers: Int, open: @escaping () -> PDFDocument?,
                        isCancelled: @escaping () -> Bool) -> CGImage? {
-        guard let document = open(), let size = pointSize(of: stack, in: document) else { return nil }
-        let width = max(1, Int((size.width * dpi / 72).rounded()))
-        let height = max(1, Int((size.height * dpi / 72).rounded()))
+        guard let document = open() else { return nil }
+        // Each side at true size: one scale for every page (a usual scan's width in
+        // pixels), with the stack as wide as its widest side (see PageStack.Member.span).
+        let sizes = stack.members.compactMap { member -> CGSize? in
+            guard let page = document.page(at: member.page.sourceIndex) else { return nil }
+            let size = PDFRenderer.displaySize(of: page)
+            return CGSize(width: size.width * dpi / 72, height: size.height * dpi / 72)
+        }
+        guard sizes.count == stack.members.count, !sizes.isEmpty else { return nil }
+        let scanWidth = PageStack.median(sizes.map { Double($0.width) })
+        let width = max(1, Int((scanWidth * stack.span).rounded()))
+        let height = max(1, Int(PageStack.median(sizes.map { Double($0.height) }).rounded()))
 
         let members = stack.members
         let count = max(1, min(workers, members.count))
@@ -47,9 +56,8 @@ enum StackRenderer {
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
-    /// The stack's real size in PDF points. Each side at true size: one scale for every
-    /// page (a usual scan's width), with the stack as wide as its widest side (see
-    /// PageStack.Member.span).
+    /// The stack's real size in PDF points, as `render` lays it out; its picture is
+    /// this rounded to whole pixels.
     static func pointSize(of stack: PageStack, in document: PDFDocument) -> CGSize? {
         let sizes = stack.members.compactMap { member -> CGSize? in
             document.page(at: member.page.sourceIndex).map(PDFRenderer.displaySize)
