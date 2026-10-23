@@ -73,6 +73,7 @@ private struct PageSections: View {
             }
 
             Section("Crops") {
+                CropTargetPicker()
                 Button {
                     model.reanalyzeSelected()
                 } label: {
@@ -227,14 +228,7 @@ private struct BookSections: View {
         .disabled(model.isBusy)
 
         Section("Detection") {
-            Picker("Crop to", selection: Binding(get: { model.cropTarget },
-                                                 set: { model.setCropTarget($0) })) {
-                ForEach(CropTarget.allCases) { t in
-                    Text(t.label).tag(t)
-                }
-            }
-            .disabled(model.isBusy)
-            .help("Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+            CropTargetPicker()
             if let size = model.pageSize {
                 PageSizeRow(size: size)
             }
@@ -244,6 +238,23 @@ private struct BookSections: View {
 }
 
 /// How the exported PDF is made, and the Export button.
+/// What auto-detect crops to, for the whole book. In the Page tab beside
+/// Auto-detect as well as in the Book tab.
+private struct CropTargetPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Picker("Crop to", selection: Binding(get: { model.cropTarget },
+                                             set: { model.setCropTarget($0) })) {
+            ForEach(CropTarget.allCases) { t in
+                Text(t.label).tag(t)
+            }
+        }
+        .disabled(model.isBusy)
+        .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+    }
+}
+
 private struct ExportSections: View {
     @EnvironmentObject var model: AppModel
 
