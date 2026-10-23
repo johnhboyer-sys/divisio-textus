@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import PDFKit
 @testable import PDFCropper
 
 /// The rulers' ticks: real page size (72 points to the inch), in the Mac's units,
@@ -91,6 +92,32 @@ struct RulerTests {
         #expect(RulerScale(unit: .inches, screenPerPoint: .nan).ticks(length: 612, origin: 0).isEmpty)
         #expect(RulerScale(unit: .inches, screenPerPoint: 1).ticks(length: 0, origin: 0).count == 1)
         #expect(RulerScale(unit: .inches, screenPerPoint: 1).ticks(length: -5, origin: 0).isEmpty)
+    }
+
+    @Test("Stack rulers measure the PDF, not the rounded stack picture (Codex review)")
+    func stackSize() throws {
+        // A 612-point Letter spread split in half: each half is 306 points, which at
+        // the stack's 30 pixels to the inch is 127.5 pixels, drawn as 128.
+        let media = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let url = Fixtures.writePDF("ruler-stack-\(UUID().uuidString).pdf", media: media,
+                                    pages: [{ c in c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media) }])
+        let doc = try #require(PDFDocument(url: url))
+        let stack = try #require(PageStack.groups(pages: [BookPage(sourceIndex: 0, analyzed: true)]).first { $0.id == .left })
+        let size = try #require(StackRenderer.pointSize(of: stack, in: doc))
+        #expect(abs(size.width - 306) < 1e-9)
+        #expect(abs(size.height - 792) < 1e-9)
+        let image = try #require(StackRenderer.render(stack, from: doc))
+        #expect(image.width == 128)
+        #expect(image.height == 330)
+    }
+
+    @Test("Crop sizes read in the ruler's unit, in the Mac's number format")
+    func sizeLabels() {
+        let us = Locale(identifier: "en_US"), fr = Locale(identifier: "fr_FR")
+        #expect(RulerUnit.inches.label(points: 442, locale: us) == "6.14 in")
+        #expect(RulerUnit.inches.label(points: 612, locale: us) == "8.50 in")
+        #expect(RulerUnit.centimeters.label(points: 72 / 2.54 * 21.04, locale: fr) == "21,0 cm")
+        #expect(RulerUnit.centimeters.label(points: 72 / 2.54 * 9.96, locale: us) == "10.0 cm")
     }
 
     @Test("Rulers start hidden, under a fixed defaults key")

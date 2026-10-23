@@ -23,6 +23,12 @@ enum RulerUnit: Equatable {
 
     var symbol: String { self == .inches ? "in" : "cm" }
 
+    /// A length as the crop size pills show it: hundredths of an inch, tenths of a centimetre.
+    func label(points: Double, locale: Locale = .current) -> String {
+        (points / self.points).formatted(.number.precision(.fractionLength(self == .inches ? 2 : 1)).locale(locale))
+            + " " + symbol
+    }
+
     /// Steps finer than one unit, finest first: every one divides one unit.
     fileprivate var fractions: [Double] {
         self == .inches ? [1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 2] : [0.1, 0.5]

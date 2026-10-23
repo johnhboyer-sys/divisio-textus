@@ -77,6 +77,9 @@ struct RulerFrame<Content: View>: View {
                 }
                 content
                     .coordinateSpace(name: rulerSpace)
+                    .overlay {
+                        if shows, let page { CropSizes(page: page, unit: unit) }
+                    }
             }
         }
         .onPreferenceChange(RulerPageKey.self) { pageState.wrappedValue = $0 }
@@ -105,11 +108,11 @@ private struct RulerBar: View {
                     : CGRect(x: across - depth, y: from, width: depth, height: to - from)
             }
 
-            // Each crop: a line at its start and end, a thin strip between.
+            // Each crop: a faint band, and a line where it starts and one where it ends.
             for mark in page.marks {
                 let start = origin + (horizontal ? mark.crop.minX : mark.crop.minY) * drawn
                 let end = origin + (horizontal ? mark.crop.maxX : mark.crop.maxY) * drawn
-                context.fill(Path(rect(start, end, depth: 3)), with: .color(mark.color.opacity(0.45)))
+                context.fill(Path(rect(start, end, depth: across)), with: .color(mark.color.opacity(0.15)))
                 context.fill(Path(rect(start - 0.75, start + 0.75, depth: across)), with: .color(mark.color))
                 context.fill(Path(rect(end - 0.75, end + 0.75, depth: across)), with: .color(mark.color))
             }
@@ -120,7 +123,7 @@ private struct RulerBar: View {
                 let depth = tick.size == .long ? across * 0.75 : tick.size == .medium ? across * 0.45 : across * 0.25
                 ticks.addRect(rect(tick.position - 0.5, tick.position + 0.5, depth: depth))
                 if let label = tick.label {
-                    let text = Text(label).font(.system(size: 9).monospacedDigit())
+                    let text = Text(label).font(.system(size: 9).monospacedDigit()).foregroundColor(.secondary)
                     if horizontal {
                         context.draw(text, at: CGPoint(x: tick.position + 2, y: 1), anchor: .topLeading)
                     } else {
@@ -128,11 +131,63 @@ private struct RulerBar: View {
                     }
                 }
             }
-            context.fill(ticks, with: .style(.secondary))
+            context.fill(ticks, with: .color(.primary.opacity(0.6)))
         }
-        .foregroundStyle(.secondary)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: horizontal ? .bottom : .trailing) { Divider() }
         .clipped()
+    }
+}
+
+/// Each crop's width under the top ruler and height beside the left one, in the
+/// rulers' unit, centred on the part of the crop in view.
+private struct CropSizes: View {
+    let page: RulerPage
+    let unit: RulerUnit
+
+    var body: some View {
+        GeometryReader { geo in
+            let marks = page.marks.indices.compactMap { i in span(i, horizontal: true, in: geo.size).map { (i, $0) } }
+            let heights = page.marks.indices.compactMap { i in span(i, horizontal: false, in: geo.size).map { (i, $0) } }
+            ForEach(marks, id: \.0) { i, x in
+                pill(page.marks[i], length: page.marks[i].crop.width * page.size.width)
+                    .position(x: x, y: 10)
+            }
+            let ys = spaced(heights.map(\.1))
+            ForEach(heights.indices, id: \.self) { n in
+                let i = heights[n].0
+                pill(page.marks[i], length: page.marks[i].crop.height * page.size.height)
+                    .position(x: 30, y: ys[n])
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// A spread's two crops share most of their height: two pills that would touch
+    /// sit one above the other, either side of their midpoint.
+    private func spaced(_ ys: [Double]) -> [Double] {
+        guard ys.count == 2, abs(ys[0] - ys[1]) < 20 else { return ys }
+        let mid = (ys[0] + ys[1]) / 2
+        return ys[0] <= ys[1] ? [mid - 10, mid + 10] : [mid + 10, mid - 10]
+    }
+
+    /// The middle of the crop's visible part along one axis, or nil when it's out of view.
+    private func span(_ i: Int, horizontal: Bool, in size: CGSize) -> Double? {
+        let crop = page.marks[i].crop
+        let origin = horizontal ? page.frame.minX : page.frame.minY
+        let drawn = horizontal ? page.frame.width : page.frame.height
+        let start = origin + (horizontal ? crop.minX : crop.minY) * drawn
+        let end = origin + (horizontal ? crop.maxX : crop.maxY) * drawn
+        let lo = max(start, 0), hi = min(end, horizontal ? size.width : size.height)
+        return hi > lo ? (lo + hi) / 2 : nil
+    }
+
+    private func pill(_ mark: RulerMark, length: Double) -> some View {
+        Text(unit.label(points: length))
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(mark.color, in: Capsule())
+            .foregroundStyle(.white)
+            .fixedSize()
     }
 }

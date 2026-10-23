@@ -170,9 +170,7 @@ struct StackView: View {
                         Image(decorative: image, scale: 1)
                             .resizable()
                             .frame(width: frame.width, height: frame.height)
-                            // The stack is drawn true size, StackRenderer.dpi pixels to the inch.
-                            .rulerPage(size: CGSize(width: Double(image.width) * 72 / StackRenderer.dpi,
-                                                    height: Double(image.height) * 72 / StackRenderer.dpi),
+                            .rulerPage(size: model.document.flatMap { StackRenderer.pointSize(of: stack, in: $0) } ?? .zero,
                                        marks: stack.id == .spreads
                                            ? [RulerMark(crop: layout(stack).wrappedValue.leftCrop, color: .blue),
                                               RulerMark(crop: layout(stack).wrappedValue.rightCrop, color: .green)]
