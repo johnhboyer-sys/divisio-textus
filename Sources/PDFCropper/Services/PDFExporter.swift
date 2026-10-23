@@ -237,6 +237,12 @@ enum PDFExporter {
     ///     tight and the space glyphs intact. (Scale the context, not the text
     ///     matrix: CTLineDraw places glyphs at the font's own advances and
     ///     ignores the text matrix for that, which spreads the letters out.)
+    ///   • keep a line's glyphs (ascent + descent, as tall as the font size)
+    ///     clear of its neighbours'. OCR boxes in tight print, like footnotes,
+    ///     can be taller than the gap between baselines; PDFKit then reads the
+    ///     two lines as one and runs the last word of one into the first of the
+    ///     next. So where neighbours would overlap, only the height shrinks: the
+    ///     baseline and the width stay put, so each word still covers its print.
     /// Every line uses the one `font` object made for the export, so the PDF
     /// embeds Helvetica once. (Making a font per line at that line's size usually
     /// got a cached font back, but under memory pressure each line embedded its
@@ -248,12 +254,13 @@ enum PDFExporter {
         ctx.setTextDrawingMode(.invisible)
         ctx.textMatrix = .identity
 
-        for line in lines {
+        struct Run { let ctLine: CTLine; let x: Double; let baseline: Double; let width: Double; let size: Double; var height: Double }
+        var runs: [Run] = lines.compactMap { line in
             let box = CGRect(x: line.box.minX * pageSize.width,
                              y: line.box.minY * pageSize.height,
                              width: line.box.width * pageSize.width,
                              height: line.box.height * pageSize.height)
-            guard box.width > 1, box.height > 1 else { continue }
+            guard box.width > 1, box.height > 1 else { return nil }
 
             let ctLine = CTLineCreateWithAttributedString(
                 NSAttributedString(string: line.text, attributes: [.font: font]))
@@ -262,12 +269,37 @@ enum PDFExporter {
             if naturalWidth > 0, naturalWidth * size / baseSize > box.width {
                 size = max(1, box.width * baseSize / naturalWidth)
             }
-            let scale = size / baseSize
+            return Run(ctLine: ctLine, x: box.minX, baseline: box.minY + size * 0.18,
+                       width: naturalWidth * size / baseSize, size: size, height: size)
+        }
+
+        // Where lines that share some x would overlap, shrink both heights by the
+        // factor that makes the upper one's descent meet the lower one's ascent.
+        // Factors come from the full heights and each line keeps its smallest,
+        // so a line over several pieces of one row shrinks once, not once per
+        // piece. Lines whose baselines are under half a line apart are the same
+        // row of print (or a duplicate), not neighbours.
+        let ascent = CTFontGetAscent(font) / baseSize, descent = CTFontGetDescent(font) / baseSize
+        var factor = [Double](repeating: 1, count: runs.count)
+        for i in runs.indices {
+            for j in runs.indices where runs[j].baseline < runs[i].baseline {
+                let pitch = runs[i].baseline - runs[j].baseline
+                guard pitch > 0.5 * min(runs[i].size, runs[j].size),
+                      runs[i].x < runs[j].x + runs[j].width, runs[j].x < runs[i].x + runs[i].width else { continue }
+                let needed = descent * runs[i].size + ascent * runs[j].size
+                guard needed > pitch else { continue }
+                factor[i] = min(factor[i], pitch / needed)
+                factor[j] = min(factor[j], pitch / needed)
+            }
+        }
+        for i in runs.indices { runs[i].height = runs[i].size * factor[i] }
+
+        for run in runs {
             ctx.saveGState()
-            ctx.translateBy(x: box.minX, y: box.minY + size * 0.18)
-            ctx.scaleBy(x: scale, y: scale)
+            ctx.translateBy(x: run.x, y: run.baseline)
+            ctx.scaleBy(x: run.size / baseSize, y: run.height / baseSize)
             ctx.textPosition = .zero
-            CTLineDraw(ctLine, ctx)
+            CTLineDraw(run.ctLine, ctx)
             ctx.restoreGState()
         }
         ctx.restoreGState()
