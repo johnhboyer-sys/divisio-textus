@@ -284,6 +284,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - Previews
 
+    /// A page's real size as the editor shows it, in PDF points.
+    func displaySize(of page: BookPage) -> CGSize? {
+        document?.page(at: page.sourceIndex).map(PDFRenderer.displaySize)
+    }
+
     /// The straightened page as the editor shows it. `zoom` picks the detail:
     /// zoomed in, the page renders at 2× or 3× the normal preview resolution so
     /// crop edges can be placed precisely.

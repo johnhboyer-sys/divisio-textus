@@ -4,6 +4,9 @@ import PDFKit
 
 /// Blends low-resolution, straightened sides without retaining every page image.
 enum StackRenderer {
+    /// Pixels to the inch of a stack image.
+    static let dpi = 30.0
+
     static func render(_ stack: PageStack, from document: PDFDocument,
                        isCancelled: @escaping () -> Bool = { false }) -> CGImage? {
         render(stack, workers: 1, open: { document }, isCancelled: isCancelled)
@@ -20,7 +23,7 @@ enum StackRenderer {
         let sizes = stack.members.compactMap { member -> CGSize? in
             guard let page = document.page(at: member.page.sourceIndex) else { return nil }
             let size = PDFRenderer.displaySize(of: page)
-            return CGSize(width: size.width * 30 / 72, height: size.height * 30 / 72)
+            return CGSize(width: size.width * dpi / 72, height: size.height * dpi / 72)
         }
         guard sizes.count == stack.members.count, !sizes.isEmpty else { return nil }
         let scanWidth = PageStack.median(sizes.map { Double($0.width) })
@@ -59,7 +62,7 @@ enum StackRenderer {
         autoreleasepool { () -> Bool in
             let p = member.page
             guard let page = document.page(at: p.sourceIndex),
-                  let image = PDFRenderer.renderCGImage(page: page, dpi: 30) else { return false }
+                  let image = PDFRenderer.renderCGImage(page: page, dpi: dpi) else { return false }
             let straight = ImageTransform.deskewedComposite(image, splitX: p.splitX,
                 leftDegrees: p.leftSkew, rightDegrees: p.rightSkew, isSpread: p.isSpread)
             guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,

@@ -161,51 +161,60 @@ struct StackView: View {
     }
 
     private func canvas(_ stack: PageStack) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Color(nsColor: .underPageBackgroundColor)
-                if let image = imageState.wrappedValue {
-                    let frame = imageFrame(image, in: geo.size)
-                    Image(decorative: image, scale: 1)
-                        .resizable()
-                        .frame(width: frame.width, height: frame.height)
-                        .position(x: frame.midX, y: frame.midY)
-                    let flagged = Set(stack.outliers.map(\.id))
-                    if stack.id == .spreads {
-                        ForEach(stack.members) { member in
-                            splitMark(member.page.splitX, in: frame, color: flagged.contains(member.id) ? .red : .blue,
-                                      width: flagged.contains(member.id) ? 2 : 1,
-                                      opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+        RulerFrame {
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    Color(nsColor: .underPageBackgroundColor)
+                    if let image = imageState.wrappedValue {
+                        let frame = imageFrame(image, in: geo.size)
+                        Image(decorative: image, scale: 1)
+                            .resizable()
+                            .frame(width: frame.width, height: frame.height)
+                            // The stack is drawn true size, StackRenderer.dpi pixels to the inch.
+                            .rulerPage(size: CGSize(width: Double(image.width) * 72 / StackRenderer.dpi,
+                                                    height: Double(image.height) * 72 / StackRenderer.dpi),
+                                       marks: stack.id == .spreads
+                                           ? [RulerMark(crop: layout(stack).wrappedValue.leftCrop, color: .blue),
+                                              RulerMark(crop: layout(stack).wrappedValue.rightCrop, color: .green)]
+                                           : [RulerMark(crop: draft(stack).wrappedValue, color: .orange)])
+                            .position(x: frame.midX, y: frame.midY)
+                        let flagged = Set(stack.outliers.map(\.id))
+                        if stack.id == .spreads {
+                            ForEach(stack.members) { member in
+                                splitMark(member.page.splitX, in: frame, color: flagged.contains(member.id) ? .red : .blue,
+                                          width: flagged.contains(member.id) ? 2 : 1,
+                                          opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                            }
+                            CropBoxView(crop: layout(stack).leftCrop, imageFrame: frame,
+                                        color: .blue, label: "Left", tracksPageEdits: false)
+                            CropBoxView(crop: layout(stack).rightCrop, imageFrame: frame,
+                                        color: .green, label: "Right", labelEdge: .trailing, tracksPageEdits: false)
+                            SplitLine(splitX: split(stack), imageFrame: frame, tracksPageEdits: false)
+                            HGuide(y: margin(stack, top: true), imageFrame: frame, edge: .top, tracksPageEdits: false)
+                            HGuide(y: margin(stack, top: false), imageFrame: frame, edge: .bottom, tracksPageEdits: false)
+                        } else {
+                            ForEach(stack.members) { member in
+                                outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
+                                        width: flagged.contains(member.id) ? 2 : 1,
+                                        opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                            }
+                            CropBoxView(crop: draft(stack), imageFrame: frame,
+                                        color: .orange, label: "Stack crop", tracksPageEdits: false)
+                            outline(stack.medianCrop, in: frame, color: .primary, width: 1, opacity: 0.8, dashed: true)
                         }
-                        CropBoxView(crop: layout(stack).leftCrop, imageFrame: frame,
-                                    color: .blue, label: "Left", tracksPageEdits: false)
-                        CropBoxView(crop: layout(stack).rightCrop, imageFrame: frame,
-                                    color: .green, label: "Right", labelEdge: .trailing, tracksPageEdits: false)
-                        SplitLine(splitX: split(stack), imageFrame: frame, tracksPageEdits: false)
-                        HGuide(y: margin(stack, top: true), imageFrame: frame, edge: .top, tracksPageEdits: false)
-                        HGuide(y: margin(stack, top: false), imageFrame: frame, edge: .bottom, tracksPageEdits: false)
+                    } else if model.isAnalyzing {
+                        Text("Waiting for page analysis to finish…")
+                            .foregroundStyle(.secondary)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    } else if loadingState.wrappedValue {
+                        ProgressView().frame(width: geo.size.width, height: geo.size.height)
                     } else {
-                        ForEach(stack.members) { member in
-                            outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
-                                    width: flagged.contains(member.id) ? 2 : 1,
-                                    opacity: flagged.contains(member.id) ? 0.8 : 0.18)
-                        }
-                        CropBoxView(crop: draft(stack), imageFrame: frame,
-                                    color: .orange, label: "Stack crop", tracksPageEdits: false)
-                        outline(stack.medianCrop, in: frame, color: .primary, width: 1, opacity: 0.8, dashed: true)
+                        Text("Could not build the stack. Press Refresh to try again.")
+                            .frame(width: geo.size.width, height: geo.size.height)
                     }
-                } else if model.isAnalyzing {
-                    Text("Waiting for page analysis to finish…")
-                        .foregroundStyle(.secondary)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                } else if loadingState.wrappedValue {
-                    ProgressView().frame(width: geo.size.width, height: geo.size.height)
-                } else {
-                    Text("Could not build the stack. Press Refresh to try again.")
-                        .frame(width: geo.size.width, height: geo.size.height)
                 }
+                .clipped()
             }
-            .clipped()
         }
     }
 

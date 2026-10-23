@@ -19,47 +19,59 @@ struct PageEditorView: View {
     @ViewBuilder
     private func editor(for idx: Int) -> some View {
         let page = model.pages[idx]
-        GeometryReader { geo in
-            let image = model.previewImage(for: page, zoom: model.zoom)
-            let fit = imageFrame(image: image, in: geo.size)
-            let zoom = min(8, max(1, CGFloat(model.zoom) * pinch))
-            // Zoomed, the page grows inside a scroll view; the canvas is at least the
-            // window's size so a small page stays centered.
-            let canvas = CGSize(width: max(geo.size.width, fit.width * zoom + 48),
-                                height: max(geo.size.height, fit.height * zoom + 48))
-            let frame = CGRect(x: (canvas.width - fit.width * zoom) / 2,
-                               y: (canvas.height - fit.height * zoom) / 2,
-                               width: fit.width * zoom, height: fit.height * zoom)
+        RulerFrame {
+            GeometryReader { geo in
+                let image = model.previewImage(for: page, zoom: model.zoom)
+                let fit = imageFrame(image: image, in: geo.size)
+                let zoom = min(8, max(1, CGFloat(model.zoom) * pinch))
+                // Zoomed, the page grows inside a scroll view; the canvas is at least the
+                // window's size so a small page stays centered.
+                let canvas = CGSize(width: max(geo.size.width, fit.width * zoom + 48),
+                                    height: max(geo.size.height, fit.height * zoom + 48))
+                let frame = CGRect(x: (canvas.width - fit.width * zoom) / 2,
+                                   y: (canvas.height - fit.height * zoom) / 2,
+                                   width: fit.width * zoom, height: fit.height * zoom)
 
-            ScrollView([.horizontal, .vertical]) {
-                ZStack {
-                    Color(nsColor: .underPageBackgroundColor)
+                ScrollView([.horizontal, .vertical]) {
+                    ZStack {
+                        Color(nsColor: .underPageBackgroundColor)
 
-                    if let image {
-                        Image(nsImage: image)
-                            .resizable()
-                            .frame(width: frame.width, height: frame.height)
-                            .position(x: frame.midX, y: frame.midY)
-                    } else {
-                        ProgressView()
+                        if let image {
+                            Image(nsImage: image)
+                                .resizable()
+                                .frame(width: frame.width, height: frame.height)
+                                .rulerPage(size: model.displaySize(of: page) ?? .zero, marks: rulerMarks(page))
+                                .position(x: frame.midX, y: frame.midY)
+                        } else {
+                            ProgressView()
+                        }
+
+                        if page.classification == .skip {
+                            skipOverlay(frame: frame)
+                        } else if frame.width > 0 {
+                            overlays(for: idx, frame: frame)
+                        }
                     }
-
-                    if page.classification == .skip {
-                        skipOverlay(frame: frame)
-                    } else if frame.width > 0 {
-                        overlays(for: idx, frame: frame)
-                    }
+                    .frame(width: canvas.width, height: canvas.height)
                 }
-                .frame(width: canvas.width, height: canvas.height)
+                .scrollDisabled(zoom <= 1)
+                .simultaneousGesture(
+                    MagnifyGesture()
+                        .updating($pinch) { value, state, _ in state = value.magnification }
+                        .onEnded { value in
+                            model.zoom = min(8, max(1, model.zoom * value.magnification))
+                        }
+                )
             }
-            .scrollDisabled(zoom <= 1)
-            .simultaneousGesture(
-                MagnifyGesture()
-                    .updating($pinch) { value, state, _ in state = value.magnification }
-                    .onEnded { value in
-                        model.zoom = min(8, max(1, model.zoom * value.magnification))
-                    }
-            )
+        }
+    }
+
+    /// Where the crops start and end, for the rulers.
+    private func rulerMarks(_ page: BookPage) -> [RulerMark] {
+        switch page.classification {
+        case .skip: return []
+        case .single: return [RulerMark(crop: page.leftCrop, color: .blue)]
+        case .spread: return [RulerMark(crop: page.leftCrop, color: .blue), RulerMark(crop: page.rightCrop, color: .green)]
         }
     }
 

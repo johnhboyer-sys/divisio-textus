@@ -46,6 +46,8 @@ struct PDFCropperApp: App {
                     .keyboardShortcut("0")
                     .disabled(model.document == nil)
                 Divider()
+                RulerMenuButton()
+                Divider()
             }
             CommandMenu("Go") {
                 Button("Page View") { model.showsStack = false }
