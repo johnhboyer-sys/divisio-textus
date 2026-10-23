@@ -93,17 +93,21 @@ struct PageEditorView: View {
         let page = model.pages[idx]
 
         // Left / single crop.
+        let leftOut = page.isSpread && page.omittedSide == .left
         CropBoxView(crop: leftBinding(idx),
                     imageFrame: frame,
-                    color: .blue,
-                    label: page.classification == .single ? "Page" : "Left")
+                    color: leftOut ? .gray : .blue,
+                    label: page.classification == .single ? "Page" : leftOut ? "Left · not exported" : "Left",
+                    dimmed: leftOut)
 
         if page.classification == .spread {
+            let rightOut = page.omittedSide == .right
             CropBoxView(crop: rightBinding(idx),
                         imageFrame: frame,
-                        color: .green,
-                        label: "Right",
-                        labelEdge: .trailing)
+                        color: rightOut ? .gray : .green,
+                        label: rightOut ? "Right · not exported" : "Right",
+                        labelEdge: .trailing,
+                        dimmed: rightOut)
             SplitLine(splitX: splitBinding(idx), imageFrame: frame)
             // Shared top/bottom margin guides: drag once to move BOTH pages'
             // top (or bottom) crop edge together.

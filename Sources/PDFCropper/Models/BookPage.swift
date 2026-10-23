@@ -55,6 +55,16 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// to another type must re-detect them. Absent in older saves.
     var typeBeforeSkip: PageClassification?
 
+    /// For a spread: the one side left out of the export. Nil exports both. The
+    /// side keeps its crop and skew, so choosing both again brings it back as it
+    /// was. A single or skipped page ignores it. Absent in older saves.
+    var omittedSide: Side?
+
+    enum Side: String, Codable, CaseIterable, Identifiable {
+        case left, right
+        var id: String { rawValue }
+    }
+
     init(sourceIndex: Int,
          classification: PageClassification = .spread,
          splitX: Double = 0.5,
@@ -87,7 +97,11 @@ struct BookPage: Identifiable, Codable, Equatable {
         case .spread:
             let l = leftCrop.normalized()
             let r = rightCrop.normalized()
-            return direction == .leftToRight ? [l, r] : [r, l]
+            switch omittedSide {
+            case .left:  return [r]
+            case .right: return [l]
+            case nil:    return direction == .leftToRight ? [l, r] : [r, l]
+            }
         }
     }
 }

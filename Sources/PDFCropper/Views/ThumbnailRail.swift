@@ -105,11 +105,17 @@ private struct ThumbnailRow: View {
                     .fontWeight(.semibold)
                 Text("·").foregroundStyle(.secondary)
                 Image(systemName: page.classification.symbol)
-                Text(page.classification.label)
+                Text(page.classification.label + omittedNote)
             }
             .font(.caption)
             .foregroundStyle(page.classification == .skip ? .secondary : .primary)
         }
+    }
+
+    /// " · right only" on a spread whose left page is left out, and the like.
+    private var omittedNote: String {
+        guard page.isSpread, let out = page.omittedSide else { return "" }
+        return out == .left ? " · right only" : " · left only"
     }
 
     private var flagHelp: String {

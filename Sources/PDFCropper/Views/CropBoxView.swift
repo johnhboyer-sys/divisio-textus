@@ -12,6 +12,8 @@ struct CropBoxView: View {
     /// Which end of the box's top edge the label sits over.
     var labelEdge: HorizontalEdge = .leading
     var tracksPageEdits = true
+    /// A page left out of the export: grey, with a dashed edge.
+    var dimmed = false
 
     // Snapshot of the crop when a drag begins, so deltas are stable.
     // (Spelled State(initialValue:) rather than @State: in the macOS 27 SDK @State is a
@@ -36,8 +38,8 @@ struct CropBoxView: View {
         ZStack(alignment: .topLeading) {
             // Body: drag to move.
             Rectangle()
-                .fill(color.opacity(0.07))
-                .overlay(Rectangle().stroke(color, lineWidth: 1.5))
+                .fill(color.opacity(dimmed ? 0.15 : 0.07))
+                .overlay(Rectangle().stroke(color, style: StrokeStyle(lineWidth: 1.5, dash: dimmed ? [5, 3] : [])))
                 .frame(width: r.width, height: r.height)
                 .offset(x: r.minX, y: r.minY)
                 .gesture(moveGesture)
