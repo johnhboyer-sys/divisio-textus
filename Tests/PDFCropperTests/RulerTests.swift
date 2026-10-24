@@ -225,6 +225,20 @@ struct RulerTests {
         #expect(l == applied)                              // what the draft shows is what Apply gives
     }
 
+    @Test("Lock on: moving the split slides both boxes with it, widths kept, cut at the scan's edge (John, 2026-10-24)")
+    func slideSplit() {
+        var l = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.38, height: 0.8),
+                             rightCrop: CropRect(x: 0.52, y: 0.1, width: 0.38, height: 0.8))
+        l.slideSplit(to: 0.56)
+        #expect(abs(l.splitX - 0.56) < 1e-12)
+        #expect(abs(l.leftCrop.x - 0.16) < 1e-12 && abs(l.leftCrop.width - 0.38) < 1e-12)
+        #expect(abs(l.rightCrop.x - 0.58) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
+        #expect(l.leftCrop.y == 0.1 && l.rightCrop.height == 0.8)
+        l.slideSplit(to: 0.62)                                    // the right box reaches the scan's edge
+        #expect(abs(l.rightCrop.maxX - 1) < 1e-12 && abs(l.rightCrop.x - 0.64) < 1e-12)
+        #expect(abs(l.leftCrop.width - 0.38) < 1e-12)
+    }
+
     @Test("Match Sizes on the stack draft gives what the page's Match Sizes gives")
     func layoutMatchSizes() {
         var l = layout

@@ -417,6 +417,12 @@ private struct PageSizeRow: View {
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
+            if size.override != nil, size.tooBig > 0, let room = size.room {
+                Text("Larger than the scan's pages on \(size.tooBig) page\(size.tooBig == 1 ? "" : "s") "
+                     + "(about \(Self.describe(room)) in there), so those crops are cut to the page. "
+                     + "A scan's PDF often measures smaller than the printed book: type the size the rulers show.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
         }
         .help(size.details.joined(separator: "\n"))
         .onAppear { entry = size.override.map(Self.describe) ?? "" }

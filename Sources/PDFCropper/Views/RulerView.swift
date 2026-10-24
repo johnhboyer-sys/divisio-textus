@@ -81,7 +81,7 @@ struct SpreadSizeControls: View {
             .disabled(readout.same != false)
             .help("Give the left box the right's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up")
         Toggle("Lock sizes", isOn: $locks)
-            .help("While on, dragging one box of a spread gives the other box its size. Turning it on changes nothing until you drag.")
+            .help("While on, dragging one box of a spread gives the other box its size, and moving the split moves both boxes with it, widths kept. Turning it on changes nothing until you drag.")
     }
 }
 

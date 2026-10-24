@@ -50,7 +50,9 @@ struct StackView: View {
 
     private func split(_ stack: PageStack) -> Binding<Double> {
         Binding(get: { layout(stack).wrappedValue.splitX },
-                set: { var l = layout(stack).wrappedValue; l.moveSplit(to: $0); model.spreadLayout = l })
+                set: { var l = layout(stack).wrappedValue
+                       if locksSizes { l.slideSplit(to: $0) } else { l.moveSplit(to: $0) }
+                       model.spreadLayout = l })
     }
 
     /// The shared top (or bottom) of the draft's two crops: the average of the

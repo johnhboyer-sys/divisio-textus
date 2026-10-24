@@ -141,6 +141,15 @@ struct PageEditorView: View {
         Binding(
             get: { model.pages[idx].splitX },
             set: { newValue in
+                if locksSizes {                 // the boxes slide with the split, widths kept
+                    let p = model.pages[idx]
+                    var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop)
+                    l.slideSplit(to: newValue)
+                    model.pages[idx].splitX = l.splitX
+                    model.pages[idx].leftCrop = l.leftCrop
+                    model.pages[idx].rightCrop = l.rightCrop
+                    return
+                }
                 let clamped = max(0.05, min(newValue, 0.95))
                 model.pages[idx].splitX = clamped
                 // Tie inner crop edges to the gutter.
