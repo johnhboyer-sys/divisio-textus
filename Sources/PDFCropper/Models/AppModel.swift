@@ -913,9 +913,10 @@ final class AppModel: ObservableObject {
                 let W = d.width / 72, H = d.height / 72
                 rooms += p.classification == .spread ? [(p.splitX * W, H), ((1 - p.splitX) * W, H)] : [(W, H)]
             }
-            summary.tooBig = rooms.filter { typed.width > $0.w + 0.005 || typed.height > $0.h + 0.005 }.count
-            if !rooms.isEmpty {
-                summary.room = PageSize(width: PageStack.median(rooms.map(\.w)), height: PageStack.median(rooms.map(\.h)))
+            let small = rooms.filter { typed.width > $0.w + 0.005 || typed.height > $0.h + 0.005 }
+            summary.tooBig = small.count
+            if !small.isEmpty {        // the room on the pages it doesn't fit
+                summary.room = PageSize(width: PageStack.median(small.map(\.w)), height: PageStack.median(small.map(\.h)))
             }
         }
         let own = plans.filter { $0.value.ownSize }

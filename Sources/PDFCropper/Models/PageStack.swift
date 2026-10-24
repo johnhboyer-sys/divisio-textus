@@ -243,16 +243,14 @@ struct SpreadLayout: Equatable {
     }
 
     /// Lock sizes: moves the split and both crops with it, so their widths and their
-    /// distance from the fold stay; a crop that reaches the scan's edge is cut there.
+    /// distance from the fold stay. The split stops where a crop reaches the scan's
+    /// edge: nothing is cut, so dragging back loses nothing.
     mutating func slideSplit(to x: Double) {
-        let to = max(0.05, min(x, 0.95)), d = to - splitX
-        splitX = to
-        func slid(_ c: CropRect) -> CropRect {
-            let a = max(0, c.minX + d), b = min(1, c.maxX + d)
-            return CropRect(x: a, y: c.y, width: max(0, b - a), height: c.height)
-        }
-        leftCrop = slid(leftCrop)
-        rightCrop = slid(rightCrop)
+        let to = max(0.05, min(x, 0.95))
+        let d = min(max(to - splitX, -max(0, leftCrop.minX)), max(0, 1 - rightCrop.maxX))
+        splitX += d
+        leftCrop.x += d
+        rightCrop.x += d
     }
 
     /// Sets one crop; with `locked`, the other becomes the same size (CropRect.matched).
