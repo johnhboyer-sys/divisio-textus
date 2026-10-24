@@ -33,6 +33,8 @@ final class AppModel: ObservableObject {
     }
     /// The whole-spread stack's draft split and crops; nil: the stack's usual layout.
     @Published var spreadLayout: SpreadLayout?
+    /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
+    func spreadLayout(for stack: PageStack) -> SpreadLayout { spreadLayout ?? stack.medianLayout }
 
     @Published var direction: ReadingDirection = .leftToRight
     /// What auto-detection crops each book page to (see setCropTarget).
@@ -1188,6 +1190,20 @@ final class AppModel: ObservableObject {
                 pages[i].rightCrop = page.rightCrop.matched(to: page.leftCrop, foldOnRight: false)
             } else {
                 pages[i].leftCrop = page.leftCrop.matched(to: page.rightCrop, foldOnRight: true)
+            }
+        }
+    }
+
+    /// A drag of one of a spread's crops. With `locked`, the other crop takes its size.
+    /// The drag's begin/endEdit make both one undo step.
+    func setSpreadCrop(_ crop: CropRect, on side: BookPage.Side, at index: Int, locked: Bool) {
+        guard pages.indices.contains(index) else { return }
+        if side == .left { pages[index].leftCrop = crop } else { pages[index].rightCrop = crop }
+        if locked && pages[index].isSpread {
+            if side == .left {
+                pages[index].rightCrop = pages[index].rightCrop.matched(to: crop, foldOnRight: false)
+            } else {
+                pages[index].leftCrop = pages[index].leftCrop.matched(to: crop, foldOnRight: true)
             }
         }
     }

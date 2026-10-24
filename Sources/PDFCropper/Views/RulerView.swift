@@ -11,30 +11,43 @@ struct RulerMenuButton: View {
 }
 
 /// The crop boxes' sizes, in the gap under the page; with two boxes, whether
-/// they are the same size. Shown with or without the rulers.
+/// they are the same size. Shown with or without the rulers. Matching the two
+/// boxes is done in the inspector (SpreadSizeControls).
 struct CropSizeLabel: View {
     let readout: CropSizeReadout
-    /// Match Sizes, with two boxes: true makes the right box match the left.
-    var match: ((Bool) -> Void)? = nil
 
     var body: some View {
         // One line where it fits; in a narrow window the verdict goes on a second.
         ViewThatFits(in: .horizontal) {
-            framed(HStack(spacing: 10) { sizes; verdict; menu })
+            framed(HStack(spacing: 10) { sizes; SizeVerdict(readout: readout) })
             framed(VStack(spacing: 1) {
                 HStack(spacing: 10) { sizes }
-                HStack(spacing: 10) { verdict; menu }
+                SizeVerdict(readout: readout)
             })
         }
         .padding(.bottom, 2)
     }
 
-    // Only the menu takes clicks: the rest lets drags reach the handles under it.
+    // The label takes no clicks: drags reach the handles under it.
     private var sizes: some View {
         ForEach(readout.sizes, id: \.self) { Text($0) }.allowsHitTesting(false)
     }
 
-    @ViewBuilder private var verdict: some View {
+    private func framed(_ content: some View) -> some View {
+        content
+            // Small enough to sit under the page's bottom handles, not on them.
+            .font(.caption2.monospacedDigit())
+            .padding(.horizontal, 8).padding(.vertical, 1)
+            .background { RoundedRectangle(cornerRadius: 8).fill(.regularMaterial).allowsHitTesting(false) }
+            .fixedSize()
+    }
+}
+
+/// "Same size" or how the right box differs, with a tick or a warning.
+private struct SizeVerdict: View {
+    let readout: CropSizeReadout
+
+    var body: some View {
         if let verdict = readout.verdict, let same = readout.same {
             Label {
                 Text(verdict)
@@ -45,26 +58,30 @@ struct CropSizeLabel: View {
             .allowsHitTesting(false)
         }
     }
+}
 
-    @ViewBuilder private var menu: some View {
-        if readout.same == false, let match {
-            Menu("Match Sizes") {
-                Button("Make Right Match Left") { match(true) }
-                Button("Make Left Match Right") { match(false) }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up")
+/// A spread's two crop sizes, the buttons that make one match the other, and the
+/// Lock sizes switch: rows for the inspector's Crops section (Page view) and for
+/// the whole-spread stack.
+struct SpreadSizeControls: View {
+    let readout: CropSizeReadout
+    /// true makes the right box match the left; false, the left match the right.
+    let match: (Bool) -> Void
+    @AppStorage(CropLock.storageKey) private var locks = CropLock.onByDefault
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(readout.sizes, id: \.self) { Text($0).monospacedDigit() }
+            SizeVerdict(readout: readout)
         }
-    }
-
-    private func framed(_ content: some View) -> some View {
-        content
-            // Small enough to sit under the page's bottom handles, not on them.
-            .font(.caption2.monospacedDigit())
-            .padding(.horizontal, 8).padding(.vertical, 1)
-            .background { RoundedRectangle(cornerRadius: 8).fill(.regularMaterial).allowsHitTesting(false) }
-            .fixedSize()
+        Button("Make Right Match Left") { match(true) }
+            .disabled(readout.same != false)
+            .help("Give the right box the left's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up")
+        Button("Make Left Match Right") { match(false) }
+            .disabled(readout.same != false)
+            .help("Give the left box the right's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up")
+        Toggle("Lock sizes", isOn: $locks)
+            .help("While on, dragging one box of a spread gives the other box its size. Turning it on changes nothing until you drag.")
     }
 }
 

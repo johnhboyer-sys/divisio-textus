@@ -10,6 +10,16 @@ enum Rulers {
     }
 }
 
+/// The Lock sizes setting: while on, dragging one box of a spread gives the other its size.
+enum CropLock {
+    static let storageKey = "locksSpreadSizes"
+    static let onByDefault = false
+
+    static func isOn(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: storageKey) as? Bool ?? onByDefault
+    }
+}
+
 /// The rulers' unit: inches where the Mac measures in US units, else centimetres.
 enum RulerUnit: Equatable {
     case inches, centimeters
@@ -49,6 +59,12 @@ struct CropSizeReadout: Equatable {
     var sizes: [String]
     var verdict: String?
     var same: Bool?
+
+    /// The sizes of crops drawn on a page `page` PDF points across.
+    init(leftCrop: CropRect, rightCrop: CropRect?, in page: CGSize, unit: RulerUnit, locale: Locale = .current) {
+        func points(_ c: CropRect) -> CGSize { CGSize(width: c.width * page.width, height: c.height * page.height) }
+        self.init(left: points(leftCrop), right: rightCrop.map(points), unit: unit, locale: locale)
+    }
 
     /// `left` is the only box on a single page or a one-box stack; sizes in PDF points.
     init(left: CGSize, right: CGSize?, unit: RulerUnit, locale: Locale = .current) {

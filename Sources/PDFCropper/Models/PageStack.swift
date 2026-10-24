@@ -224,6 +224,26 @@ struct SpreadLayout: Equatable {
         rightCrop.x = splitX; rightCrop.width = right - splitX
     }
 
+    /// Sets one crop; with `locked`, the other becomes the same size (CropRect.matched).
+    /// Locked, both are cut back to their own side first, as Apply cuts them, so the
+    /// sizes the draft shows are the sizes Apply gives.
+    mutating func setCrop(_ crop: CropRect, on side: BookPage.Side, locked: Bool) {
+        if side == .left { leftCrop = crop } else { rightCrop = crop }
+        guard locked else { return }
+        self = clamped
+        matchSizes(rightMatchesLeft: side == .left)
+        self = clamped
+    }
+
+    /// Match Sizes: the right crop takes the left's size, or the left takes the right's.
+    mutating func matchSizes(rightMatchesLeft: Bool) {
+        if rightMatchesLeft {
+            rightCrop = rightCrop.matched(to: leftCrop, foldOnRight: false)
+        } else {
+            leftCrop = leftCrop.matched(to: rightCrop, foldOnRight: true)
+        }
+    }
+
     /// The crops cut back to their own side of the split.
     var clamped: SpreadLayout {
         func clamp(_ crop: CropRect, _ lo: Double, _ hi: Double) -> CropRect {

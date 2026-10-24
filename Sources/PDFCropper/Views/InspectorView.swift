@@ -93,6 +93,11 @@ private struct PageSections: View {
                 }
                 switch page.classification {
                 case .spread:
+                    if let size = model.displaySize(of: page) {
+                        SpreadSizeControls(
+                            readout: CropSizeReadout(leftCrop: page.leftCrop, rightCrop: page.rightCrop, in: size, unit: RulerUnit()),
+                            match: { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) })
+                    }
                     Button {
                         model.applyLayoutToAllSpreads()
                     } label: {
@@ -159,6 +164,20 @@ private struct StackSections: View {
     var body: some View {
         let stacks = PageStack.all(pages: model.pages)
         if let stack = stacks.first(where: { $0.id == model.stackKind }) ?? stacks.first {
+            // The orange draft's two boxes, once analysis has settled them.
+            if stack.id == .spreads, !model.isAnalyzing, let document = model.document,
+               let size = StackRenderer.pointSize(of: stack, in: document) {
+                Section("Crops") {
+                    let layout = model.spreadLayout(for: stack)
+                    SpreadSizeControls(
+                        readout: CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit()),
+                        match: { rightMatchesLeft in
+                            var l = model.spreadLayout(for: stack)
+                            l.matchSizes(rightMatchesLeft: rightMatchesLeft)
+                            model.spreadLayout = l
+                        })
+                }
+            }
             Section {
                 // Until analysis is done the crops are placeholders, so judging them misleads.
                 if model.isAnalyzing {

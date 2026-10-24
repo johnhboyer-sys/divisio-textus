@@ -100,7 +100,9 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    right-hand) pages. A spread's **Export** choice (Both, Left only, Right
    only) leaves one of its pages out of the export. A label under the page
    gives each crop box's width × height and says whether Left and Right are
-   the same size; **Match Sizes** makes one box the other's size. **View >
+   the same size. The inspector's Crops section lists both sizes, has buttons
+   that make one box the other's size, and a **Lock sizes** switch: while it
+   is on, dragging one box gives the other its size. **View >
    Show Rulers** (⌥⌘R) adds rulers in the page's real size, inches or
    centimetres by the Mac's setting. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
    pinch or ⌘= / ⌘− / ⌘0 to zoom. Edits are saved automatically and come back
