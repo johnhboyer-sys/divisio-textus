@@ -4,6 +4,7 @@ import SwiftUI
 /// and (for spreads) a draggable gutter / split line.
 struct PageEditorView: View {
     @EnvironmentObject var model: AppModel
+    @AppStorage(CropLock.storageKey) private var locksSizes = CropLock.onByDefault
 
     var body: some View {
         if let idx = model.selectedIndex {
@@ -65,8 +66,7 @@ struct PageEditorView: View {
             }
             .overlay(alignment: .bottom) {
                 if let readout = sizeReadout(page) {
-                    CropSizeLabel(readout: readout, match: page.isSpread
-                                  ? { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) } : nil)
+                    CropSizeLabel(readout: readout)
                 }
             }
         }
@@ -74,9 +74,8 @@ struct PageEditorView: View {
 
     private func sizeReadout(_ page: BookPage) -> CropSizeReadout? {
         guard page.classification != .skip, let size = model.displaySize(of: page) else { return nil }
-        func points(_ c: CropRect) -> CGSize { CGSize(width: c.width * size.width, height: c.height * size.height) }
-        return CropSizeReadout(left: points(page.leftCrop),
-                               right: page.classification == .spread ? points(page.rightCrop) : nil, unit: RulerUnit())
+        return CropSizeReadout(leftCrop: page.leftCrop, rightCrop: page.classification == .spread ? page.rightCrop : nil,
+                               in: size, unit: RulerUnit())
     }
 
     /// Where the crops start and end, for the rulers.
@@ -129,13 +128,14 @@ struct PageEditorView: View {
 
     // MARK: - Bindings into the pages array
 
+    // A box drag sets the crop here; with Lock sizes on, a spread's other box follows it.
     private func leftBinding(_ idx: Int) -> Binding<CropRect> {
         Binding(get: { model.pages[idx].leftCrop },
-                set: { model.pages[idx].leftCrop = $0 })
+                set: { model.setSpreadCrop($0, on: .left, at: idx, locked: locksSizes) })
     }
     private func rightBinding(_ idx: Int) -> Binding<CropRect> {
         Binding(get: { model.pages[idx].rightCrop },
-                set: { model.pages[idx].rightCrop = $0 })
+                set: { model.setSpreadCrop($0, on: .right, at: idx, locked: locksSizes) })
     }
     private func splitBinding(_ idx: Int) -> Binding<Double> {
         Binding(

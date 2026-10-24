@@ -3,6 +3,7 @@ import SwiftUI
 /// Review the common crop and the pages whose edges differ from it.
 struct StackView: View {
     @EnvironmentObject var model: AppModel
+    @AppStorage(CropLock.storageKey) private var locksSizes = CropLock.onByDefault
     private let imageState = State<CGImage?>(initialValue: nil)
     private let loadingState = State<Bool>(initialValue: false)
     private let refreshState = State<Int>(initialValue: 0)
@@ -30,8 +31,21 @@ struct StackView: View {
 
     /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
     private func layout(_ stack: PageStack) -> Binding<SpreadLayout> {
-        Binding(get: { model.spreadLayout ?? stack.medianLayout },
+        Binding(get: { model.spreadLayout(for: stack) },
                 set: { model.spreadLayout = $0 })
+    }
+
+    /// One of the whole-spread draft's crops. A drag of it sets it; with Lock sizes on,
+    /// the other crop follows.
+    private func spreadCrop(_ stack: PageStack, _ side: BookPage.Side) -> Binding<CropRect> {
+        Binding(
+            get: { side == .left ? layout(stack).wrappedValue.leftCrop : layout(stack).wrappedValue.rightCrop },
+            set: { crop in
+                var l = layout(stack).wrappedValue
+                l.setCrop(crop, on: side, locked: locksSizes)
+                model.spreadLayout = l
+            }
+        )
     }
 
     private func split(_ stack: PageStack) -> Binding<Double> {
@@ -183,9 +197,9 @@ struct StackView: View {
                                           width: flagged.contains(member.id) ? 2 : 1,
                                           opacity: flagged.contains(member.id) ? 0.8 : 0.18)
                             }
-                            CropBoxView(crop: layout(stack).leftCrop, imageFrame: frame,
+                            CropBoxView(crop: spreadCrop(stack, .left), imageFrame: frame,
                                         color: .blue, label: "Left", tracksPageEdits: false)
-                            CropBoxView(crop: layout(stack).rightCrop, imageFrame: frame,
+                            CropBoxView(crop: spreadCrop(stack, .right), imageFrame: frame,
                                         color: .green, label: "Right", labelEdge: .trailing, tracksPageEdits: false)
                             SplitLine(splitX: split(stack), imageFrame: frame, tracksPageEdits: false)
                             HGuide(y: margin(stack, top: true), imageFrame: frame, edge: .top, tracksPageEdits: false)
@@ -215,15 +229,7 @@ struct StackView: View {
             }
             .overlay(alignment: .bottom) {
                 if imageState.wrappedValue != nil, let readout = sizeReadout(stack) {
-                    CropSizeLabel(readout: readout, match: stack.id == .spreads ? { rightMatchesLeft in
-                        var l = layout(stack).wrappedValue
-                        if rightMatchesLeft {
-                            l.rightCrop = l.rightCrop.matched(to: l.leftCrop, foldOnRight: false)
-                        } else {
-                            l.leftCrop = l.leftCrop.matched(to: l.rightCrop, foldOnRight: true)
-                        }
-                        model.spreadLayout = l
-                    } : nil)
+                    CropSizeLabel(readout: readout)
                 }
             }
         }
@@ -231,12 +237,11 @@ struct StackView: View {
 
     private func sizeReadout(_ stack: PageStack) -> CropSizeReadout? {
         guard let document = model.document, let size = StackRenderer.pointSize(of: stack, in: document) else { return nil }
-        func points(_ c: CropRect) -> CGSize { CGSize(width: c.width * size.width, height: c.height * size.height) }
         if stack.id == .spreads {
             let l = layout(stack).wrappedValue
-            return CropSizeReadout(left: points(l.leftCrop), right: points(l.rightCrop), unit: RulerUnit())
+            return CropSizeReadout(leftCrop: l.leftCrop, rightCrop: l.rightCrop, in: size, unit: RulerUnit())
         }
-        return CropSizeReadout(left: points(draft(stack).wrappedValue), right: nil, unit: RulerUnit())
+        return CropSizeReadout(leftCrop: draft(stack).wrappedValue, rightCrop: nil, in: size, unit: RulerUnit())
     }
 
     private func outline(_ crop: CropRect, in frame: CGRect, color: Color,

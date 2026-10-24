@@ -52,6 +52,91 @@ struct ModelTests {
         #expect(abs(m.pages[i].leftCrop.width - 0.42) < 1e-12 && abs(m.pages[i].leftCrop.maxX - 0.45) < 1e-12)
     }
 
+    @Test("The sidebar's stack Match Sizes gives what the page's matchCropSizes gives")
+    func sidebarMatchesPageMatch() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread
+        setBoxes(m, undo, page: i)
+        for rightMatchesLeft in [true, false] {
+            var l = SpreadLayout(splitX: m.pages[i].splitX, leftCrop: m.pages[i].leftCrop, rightCrop: m.pages[i].rightCrop)
+            l.matchSizes(rightMatchesLeft: rightMatchesLeft)
+            undoable(undo) { m.matchCropSizes(of: m.pages[i].id, rightMatchesLeft: rightMatchesLeft) }
+            #expect(m.pages[i].leftCrop == l.leftCrop && m.pages[i].rightCrop == l.rightCrop)
+            undo.undo()
+        }
+    }
+
+    /// A drag of one box the way the canvas does it: begin, several moves, end.
+    private func drag(_ m: AppModel, page i: Int, side: BookPage.Side, locked: Bool, to steps: [CropRect]) {
+        m.selectedPageID = m.pages[i].id
+        m.beginEdit()
+        for crop in steps { m.setSpreadCrop(crop, on: side, at: i, locked: locked) }
+        m.endEdit("Adjust Crop")
+    }
+
+    private func setBoxes(_ m: AppModel, _ undo: UndoManager, page i: Int) {
+        undoable(undo) { m.perform("Adjust Crop") {
+            m.pages[i].leftCrop = CropRect(x: 0.05, y: 0.1, width: 0.4, height: 0.8)
+            m.pages[i].rightCrop = CropRect(x: 0.52, y: 0.12, width: 0.42, height: 0.75)
+        } }
+    }
+
+    @Test("Lock off: dragging one box leaves the other alone")
+    func lockOff() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread
+        setBoxes(m, undo, page: i)
+        let before = m.pages[i]
+        let wider = CropRect(x: 0.03, y: 0.1, width: 0.42, height: 0.8)
+        undoable(undo) { drag(m, page: i, side: .left, locked: false, to: [wider]) }
+        #expect(m.pages[i].leftCrop == wider)
+        #expect(m.pages[i].rightCrop == before.rightCrop)
+    }
+
+    @Test("Lock on: the other box follows the dragged one, and one undo restores both")
+    func lockOn() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread
+        setBoxes(m, undo, page: i)
+        let before = m.pages[i]
+        // The left box's outer edge out by 0.02, in two moves.
+        let steps = [CropRect(x: 0.04, y: 0.1, width: 0.41, height: 0.8), CropRect(x: 0.03, y: 0.1, width: 0.42, height: 0.8)]
+        undoable(undo) { drag(m, page: i, side: .left, locked: true, to: steps) }
+        let left = m.pages[i].leftCrop, right = m.pages[i].rightCrop
+        #expect(left == steps[1])
+        #expect(abs(right.width - left.width) < 1e-12)
+        #expect(right.y == left.y && right.height == left.height)
+        #expect(right.x == before.rightCrop.x)                       // the fold edges stay
+        #expect(abs(left.maxX - before.leftCrop.maxX) < 1e-12)
+        undo.undo()
+        #expect(m.pages[i] == before)
+    }
+
+    @Test("Lock on: dragging the right box gives the left its size, fold edge fixed")
+    func lockOnRight() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread
+        setBoxes(m, undo, page: i)
+        let before = m.pages[i]
+        let moved = CropRect(x: 0.52, y: 0.12, width: 0.45, height: 0.7)
+        undoable(undo) { drag(m, page: i, side: .right, locked: true, to: [moved]) }
+        let left = m.pages[i].leftCrop
+        #expect(m.pages[i].rightCrop == moved)
+        #expect(abs(left.maxX - before.leftCrop.maxX) < 1e-12)
+        #expect(abs(left.width - 0.45) < 1e-12 && left.y == 0.12 && abs(left.height - 0.7) < 1e-12)
+    }
+
+    @Test("Lock on does nothing to a single page")
+    func lockSingle() async {
+        let (m, undo, _) = await loadedSample()
+        let before = m.pages[0]
+        #expect(!before.isSpread)
+        let crop = CropRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)
+        undoable(undo) { drag(m, page: 0, side: .left, locked: true, to: [crop]) }
+        #expect(m.pages[0].leftCrop == crop)
+        #expect(m.pages[0].rightCrop == before.rightCrop)
+    }
+
     @Test("Spread to Single re-detects a whole-page crop; undo and redo")
     func typeChange() async {
         let (m, undo, _) = await loadedSample()

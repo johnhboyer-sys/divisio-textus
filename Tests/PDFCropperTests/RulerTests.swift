@@ -184,6 +184,73 @@ struct RulerTests {
         #expect(r.x == 0.7 && abs(r.maxX - 1) < 1e-12)
     }
 
+    private let layout = SpreadLayout(splitX: 0.485,
+                                      leftCrop: CropRect(x: 0.05, y: 0.1, width: 0.435, height: 0.8),
+                                      rightCrop: CropRect(x: 0.52, y: 0.12, width: 0.42, height: 0.75))
+
+    @Test("Stack draft, lock off: setting one crop leaves the other")
+    func layoutLockOff() {
+        var l = layout
+        let dragged = CropRect(x: 0.03, y: 0.1, width: 0.455, height: 0.8)
+        l.setCrop(dragged, on: .left, locked: false)
+        #expect(l.leftCrop == dragged && l.rightCrop == layout.rightCrop && l.splitX == layout.splitX)
+    }
+
+    @Test("Stack draft, lock on: the other crop follows, fold edge fixed")
+    func layoutLockOn() {
+        var l = layout
+        let dragged = CropRect(x: 0.03, y: 0.1, width: 0.455, height: 0.8)
+        l.setCrop(dragged, on: .left, locked: true)
+        #expect(l.leftCrop == dragged)
+        #expect(l.rightCrop == layout.rightCrop.matched(to: dragged, foldOnRight: false))
+        #expect(l.rightCrop.x == layout.rightCrop.x && l.rightCrop.width == dragged.width)
+        #expect(l.rightCrop.y == dragged.y && l.rightCrop.height == dragged.height)
+
+        var r = layout
+        let draggedRight = CropRect(x: 0.52, y: 0.05, width: 0.45, height: 0.9)
+        r.setCrop(draggedRight, on: .right, locked: true)
+        #expect(r.rightCrop == draggedRight)
+        #expect(r.leftCrop == layout.leftCrop.matched(to: draggedRight, foldOnRight: true))
+        #expect(abs(r.leftCrop.maxX - layout.leftCrop.maxX) < 1e-12)
+    }
+
+    @Test("Match Sizes on the stack draft gives what the page's Match Sizes gives")
+    func layoutMatchSizes() {
+        var l = layout
+        l.matchSizes(rightMatchesLeft: true)
+        #expect(l.leftCrop == layout.leftCrop && l.splitX == layout.splitX)
+        #expect(l.rightCrop == layout.rightCrop.matched(to: layout.leftCrop, foldOnRight: false))
+        var r = layout
+        r.matchSizes(rightMatchesLeft: false)
+        #expect(r.rightCrop == layout.rightCrop)
+        #expect(r.leftCrop == layout.leftCrop.matched(to: layout.rightCrop, foldOnRight: true))
+    }
+
+    @Test("The sidebar's readout reads the sizes from the crops, and says same once they match")
+    func sidebarReadout() {
+        let page = CGSize(width: 612, height: 792)
+        func readout(_ l: CropRect, _ r: CropRect) -> CropSizeReadout {
+            CropSizeReadout(leftCrop: l, rightCrop: r, in: page, unit: .inches, locale: Locale(identifier: "en_US"))
+        }
+        let differ = readout(layout.leftCrop, layout.rightCrop)
+        #expect(differ.same == false)
+        #expect(differ.sizes.count == 2 && differ.sizes[0].hasPrefix("Left ") && differ.sizes[1].hasPrefix("Right "))
+        var l = layout
+        l.matchSizes(rightMatchesLeft: true)
+        #expect(readout(l.leftCrop, l.rightCrop).same == true)
+        #expect(readout(layout.leftCrop, layout.leftCrop).verdict == "Same size")
+    }
+
+    @Test("Lock sizes starts off, under a fixed defaults key")
+    func lockDefault() {
+        #expect(CropLock.storageKey == "locksSpreadSizes")
+        #expect(CropLock.onByDefault == false)
+        let defaults = UserDefaults(suiteName: "CropLockTests-\(UUID().uuidString)")!
+        #expect(CropLock.isOn(in: defaults) == false)
+        defaults.set(true, forKey: CropLock.storageKey)
+        #expect(CropLock.isOn(in: defaults) == true)
+    }
+
     @Test("Rulers start hidden, under a fixed defaults key")
     func toggleDefault() {
         #expect(Rulers.storageKey == "showsRulers")
