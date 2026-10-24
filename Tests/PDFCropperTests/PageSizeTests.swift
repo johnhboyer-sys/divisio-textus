@@ -140,7 +140,7 @@ struct PageSizeTests {
         }
     }
 
-    @Test("A page edited by hand takes a typed page size too, keeping its edge at the fold (John, 2026-10-24)")
+    @Test("A page edited by hand takes a typed page size too, its boxes against the split (John, 2026-10-24)")
     func handEditSized() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))
         let edited = CropRect(x: 0.05, y: 0.2, width: 0.4, height: 0.6)          // room for 5.8 × 8.5 in
@@ -149,7 +149,8 @@ struct PageSizeTests {
         undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
         let c = points(m.pages[2].leftCrop)
         #expect(abs(c.x1 - c.x0 - 5.8 * 72) < 0.5 && abs(c.y1 - c.y0 - 8.5 * 72) < 0.5, "\(c)")
-        #expect(abs(m.pages[2].leftCrop.maxX - edited.maxX) < 1e-9)                          // the fold edge stays
+        #expect(abs(m.pages[2].leftCrop.maxX - m.pages[2].splitX) < 1e-9)                   // against the split
+        #expect(abs(m.pages[2].rightCrop.minX - m.pages[2].splitX) < 1e-9)
         #expect(abs(m.pages[2].leftCrop.y + m.pages[2].leftCrop.height / 2 - (edited.y + edited.height / 2)) < 1e-9)   // and its middle
         undo.undo()
         #expect(m.pages == before)
@@ -590,9 +591,10 @@ struct UndoDuringAnalysisTests {
         undo.undo()                              // mid-drag: the page is analysis's again
         undoable(undo) { m.pages[1].leftCrop = mark; m.endEdit("Adjust Crop") }
         undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
-        // A hand edit: sized where it is, its edge at the fold kept (analysis's pages
-        // are placed where their sheet is instead).
-        #expect(abs(m.pages[1].leftCrop.maxX - mark.maxX) < 1e-9, "\(m.pages[1].leftCrop)")
+        // A hand edit: sized against the split (analysis's pages are placed where
+        // their sheet is instead), its own middle down kept.
+        #expect(abs(m.pages[1].leftCrop.maxX - m.pages[1].splitX) < 1e-9, "\(m.pages[1].leftCrop)")
+        #expect(abs(m.pages[1].leftCrop.y + m.pages[1].leftCrop.height / 2 - (mark.y + mark.height / 2)) < 1e-9)
     }
 
     /// Every page of `m` as a fresh pass over a copy of `url` with `target` leaves it.

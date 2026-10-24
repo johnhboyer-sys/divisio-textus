@@ -450,6 +450,7 @@ final class AppModel: ObservableObject {
         pages[i].splitX = a.result.splitX
         pages[i].leftCrop = a.result.leftCrop
         pages[i].rightCrop = a.result.rightCrop
+        pages[i].offSplit = nil                          // placed by the app: on the split by default
         pages[i].analyzed = true
     }
 
@@ -710,6 +711,7 @@ final class AppModel: ObservableObject {
                 pages[i].splitX = sel.splitX
                 pages[i].leftCrop = sel.leftCrop
                 pages[i].rightCrop = sel.rightCrop
+                pages[i].offSplit = sel.offSplit
             }
         }
         statusText = "Applied this spread's layout to every spread."
@@ -742,6 +744,9 @@ final class AppModel: ObservableObject {
                 let c = live.clampedCrop(crop)
                 if member.side == .right { pages[i].rightCrop = c }
                 else { pages[i].leftCrop = c }
+                if let side = BookPage.Side(rawValue: member.side.rawValue), pages[i].isSpread {
+                    markSplitGap(i, side)               // placed as the stack shows it
+                }
                 count += 1
             }
         }
@@ -761,6 +766,7 @@ final class AppModel: ObservableObject {
                 pages[i].splitX = l.splitX
                 pages[i].leftCrop = l.leftCrop
                 pages[i].rightCrop = l.rightCrop
+                markSplitGap(i, .left); markSplitGap(i, .right)
                 count += 1
             }
         }
@@ -942,9 +948,9 @@ final class AppModel: ObservableObject {
         registerPageSizeUndo(restoring: changed, size: old)
     }
 
-    /// Pages edited by hand take a typed size too (John, 2026-10-24): each box keeps
-    /// its edge at the fold (a single page, its middle across) and its middle down,
-    /// cut to its page.
+    /// Pages edited by hand take a typed size too (John, 2026-10-24): a spread's boxes
+    /// go against the split (a single page keeps its middle across), each keeps its
+    /// middle down, cut to the page.
     private func sizeEditedPages(_ size: PageSize) {
         func span(_ lo: Double, _ hi: Double, length: Double, keep: Double?) -> (Double, Double) {
             guard let keep else {                               // about the middle, kept on the page
@@ -963,8 +969,12 @@ final class AppModel: ObservableObject {
                 return CropRect(x: across.0, y: down.0, width: across.1 - across.0, height: down.1 - down.0)
             }
             if pages[i].classification == .spread {
-                pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: true)
-                pages[i].rightCrop = sized(pages[i].rightCrop, foldAtRight: false)
+                let split = pages[i].splitX
+                var l = pages[i].leftCrop, r = pages[i].rightCrop
+                l.x = split - l.width; r.x = split                  // against the split first
+                pages[i].leftCrop = sized(l, foldAtRight: true)
+                pages[i].rightCrop = sized(r, foldAtRight: false)
+                pages[i].offSplit = nil
             } else {
                 pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
             }
@@ -1222,6 +1232,7 @@ final class AppModel: ObservableObject {
     func setSpreadCrop(_ crop: CropRect, on side: BookPage.Side, at index: Int, locked: Bool) {
         guard pages.indices.contains(index) else { return }
         if side == .left { pages[index].leftCrop = crop } else { pages[index].rightCrop = crop }
+        if pages[index].isSpread { markSplitGap(index, side) }  // set off the split by hand, or back on it
         if locked && pages[index].isSpread {
             if side == .left {
                 pages[index].rightCrop = pages[index].rightCrop.matched(to: crop, foldOnRight: false)
@@ -1229,6 +1240,43 @@ final class AppModel: ObservableObject {
                 pages[index].leftCrop = pages[index].leftCrop.matched(to: crop, foldOnRight: true)
             }
         }
+    }
+
+    /// How near the split an inner edge counts as on it (a few pixels at preview size).
+    static let onSplit = 0.002
+
+    /// Records whether a spread's box on `side` sits off the split, as the user placed it.
+    private func markSplitGap(_ i: Int, _ side: BookPage.Side) {
+        let inner = side == .left ? pages[i].leftCrop.maxX : pages[i].rightCrop.minX
+        var off = pages[i].offSplit ?? []
+        if abs(inner - pages[i].splitX) > Self.onSplit { off.insert(side) } else { off.remove(side) }
+        pages[i].offSplit = off.isEmpty ? nil : off
+    }
+
+    /// Page view's split drag. Boxes are on the split by default: with the lock, they
+    /// ride it at their widths; without, their inner edges follow it. A box set off
+    /// the split by hand keeps its place: with the lock it keeps its gap, without it
+    /// stays put unless the split runs into it.
+    func moveSplit(at index: Int, to x: Double, locked: Bool) {
+        guard pages.indices.contains(index) else { return }
+        var p = pages[index]
+        let off = p.offSplit ?? []
+        if locked {
+            var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop)
+            l.slideSplit(to: x, keepLeftGap: off.contains(.left), keepRightGap: off.contains(.right))
+            (p.splitX, p.leftCrop, p.rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
+        } else {
+            let s = max(0.05, min(x, 0.95))
+            p.splitX = s
+            var l = p.leftCrop
+            if (!off.contains(.left) || l.maxX > s) && s > l.minX + 0.02 { l.width = s - l.minX }
+            l.normalize()
+            var r = p.rightCrop
+            if (!off.contains(.right) || r.minX < s) && s < r.maxX - 0.02 { let right = r.maxX; r.x = s; r.width = right - s }
+            r.normalize()
+            (p.leftCrop, p.rightCrop) = (l, r)
+        }
+        pages[index] = p
     }
 
     // MARK: - Undo

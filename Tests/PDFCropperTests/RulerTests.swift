@@ -225,25 +225,25 @@ struct RulerTests {
         #expect(l == applied)                              // what the draft shows is what Apply gives
     }
 
-    @Test("Lock on: moving the split slides both boxes with it, widths kept, stopping at the scan's edge (John, 2026-10-24)")
+    @Test("Lock on: moving the split puts both boxes against it, widths kept, stopping at the scan's edge (John, 2026-10-24)")
     func slideSplit() {
         var l = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.38, height: 0.8),
-                             rightCrop: CropRect(x: 0.52, y: 0.1, width: 0.38, height: 0.8))
+                             rightCrop: CropRect(x: 0.53, y: 0.1, width: 0.38, height: 0.8))   // a gap each side
         l.slideSplit(to: 0.56)
         #expect(abs(l.splitX - 0.56) < 1e-12)
-        #expect(abs(l.leftCrop.x - 0.16) < 1e-12 && abs(l.leftCrop.width - 0.38) < 1e-12)
-        #expect(abs(l.rightCrop.x - 0.58) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
+        #expect(abs(l.leftCrop.maxX - 0.56) < 1e-12 && abs(l.leftCrop.width - 0.38) < 1e-12)   // against the split
+        #expect(abs(l.rightCrop.x - 0.56) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
         #expect(l.leftCrop.y == 0.1 && l.rightCrop.height == 0.8)
         l.slideSplit(to: 0.9)                                     // the right box stops at the scan's edge,
-        #expect(abs(l.splitX - 0.6) < 1e-12 && abs(l.rightCrop.maxX - 1) < 1e-12)   // and the split with it
-        #expect(abs(l.leftCrop.width - 0.38) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
+        #expect(abs(l.splitX - 0.62) < 1e-12 && abs(l.rightCrop.maxX - 1) < 1e-12)  // and the split with it
         l.slideSplit(to: 0.5)                                     // back: nothing was lost (Codex review)
-        #expect(abs(l.leftCrop.x - 0.1) < 1e-12 && abs(l.rightCrop.x - 0.52) < 1e-12)
+        #expect(abs(l.leftCrop.x - 0.12) < 1e-12 && abs(l.rightCrop.x - 0.5) < 1e-12)
         #expect(abs(l.leftCrop.width - 0.38) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
         var edge = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.38, height: 0.8),
                                 rightCrop: CropRect(x: 0.8, y: 0.1, width: 0.1, height: 0.8))
         edge.slideSplit(to: 0.95)                                 // never off the scan
         #expect(edge.rightCrop.maxX <= 1 + 1e-12 && abs(edge.rightCrop.width - 0.1) < 1e-12)
+        #expect(abs(edge.rightCrop.x - edge.splitX) < 1e-12)
     }
 
     @Test("Match Sizes on the stack draft gives what the page's Match Sizes gives")
@@ -291,5 +291,70 @@ struct RulerTests {
         #expect(Rulers.isShown(in: defaults) == false)
         defaults.set(true, forKey: Rulers.storageKey)
         #expect(Rulers.isShown(in: defaults) == true)
+    }
+}
+
+/// Boxes on the split by default; a box set off it by hand keeps its place (John, 2026-10-24).
+@Suite("Boxes and the split")
+@MainActor
+struct SplitSnapTests {
+    private func spread(left: CropRect, right: CropRect) -> BookPage {
+        BookPage(sourceIndex: 0, classification: .spread, splitX: 0.5, leftCrop: left, rightCrop: right, analyzed: true)
+    }
+
+    @Test("Lock on: a box set off the split by hand keeps its gap; the other snaps")
+    func slideKeepsHandGap() {
+        var l = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.05, y: 0.1, width: 0.38, height: 0.8),
+                             rightCrop: CropRect(x: 0.53, y: 0.1, width: 0.38, height: 0.8))
+        l.slideSplit(to: 0.55, keepLeftGap: true, keepRightGap: false)
+        #expect(abs(l.leftCrop.maxX - 0.48) < 1e-12)              // its 0.07 gap, moved with the split
+        #expect(abs(l.rightCrop.x - 0.55) < 1e-12)                // on the split
+        #expect(abs(l.leftCrop.width - 0.38) < 1e-12 && abs(l.rightCrop.width - 0.38) < 1e-12)
+    }
+
+    @Test("Dragging a box off the split marks it; back onto the split clears it")
+    func dragMarksGap() {
+        let m = testModel()
+        m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.4, height: 0.8),
+                          right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))]
+        m.setSpreadCrop(CropRect(x: 0.1, y: 0.1, width: 0.35, height: 0.8), on: .left, at: 0, locked: false)
+        #expect(m.pages[0].offSplit == [.left])
+        m.setSpreadCrop(CropRect(x: 0.1, y: 0.1, width: 0.4, height: 0.8), on: .left, at: 0, locked: false)
+        #expect((m.pages[0].offSplit ?? []).isEmpty)
+    }
+
+    @Test("Lock off: the split's first move takes app-placed boxes with it, but leaves one set off by hand")
+    func unlockedMove() {
+        let m = testModel()
+        m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.36, height: 0.8),     // a gap the app left
+                          right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))]
+        m.moveSplit(at: 0, to: 0.52, locked: false)
+        #expect(abs(m.pages[0].leftCrop.maxX - 0.52) < 1e-12 && abs(m.pages[0].rightCrop.minX - 0.52) < 1e-12)
+        m.setSpreadCrop(CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8), on: .left, at: 0, locked: false)  // by hand
+        m.moveSplit(at: 0, to: 0.48, locked: false)
+        #expect(abs(m.pages[0].leftCrop.maxX - 0.4) < 1e-12)       // stays
+        #expect(abs(m.pages[0].rightCrop.minX - 0.48) < 1e-12)
+        m.moveSplit(at: 0, to: 0.35, locked: false)                // runs into it: pushes its edge
+        #expect(abs(m.pages[0].leftCrop.maxX - 0.35) < 1e-12)
+    }
+
+    @Test("Lock on: app-placed boxes snap onto the split on its first move")
+    func lockedMoveSnaps() {
+        let m = testModel()
+        m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.36, height: 0.8),
+                          right: CropRect(x: 0.53, y: 0.1, width: 0.36, height: 0.8))]
+        m.moveSplit(at: 0, to: 0.5, locked: true)
+        #expect(abs(m.pages[0].leftCrop.maxX - 0.5) < 1e-12 && abs(m.pages[0].rightCrop.minX - 0.5) < 1e-12)
+        #expect(abs(m.pages[0].leftCrop.width - 0.36) < 1e-12)
+    }
+
+    @Test("The mark is saved with the edits; older saves load without it")
+    func markSaved() {
+        var p = spread(left: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),
+                       right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))
+        p.offSplit = [.left]
+        let data = try? JSONEncoder().encode(p)
+        let back = data.flatMap { try? JSONDecoder().decode(BookPage.self, from: $0) }
+        #expect(back?.offSplit == [.left])                          // saved with the edits
     }
 }

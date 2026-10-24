@@ -242,15 +242,19 @@ struct SpreadLayout: Equatable {
         rightCrop.x = splitX; rightCrop.width = right - splitX
     }
 
-    /// Lock sizes: moves the split and both crops with it, so their widths and their
-    /// distance from the fold stay. The split stops where a crop reaches the scan's
-    /// edge: nothing is cut, so dragging back loses nothing.
-    mutating func slideSplit(to x: Double) {
-        let to = max(0.05, min(x, 0.95))
-        let d = min(max(to - splitX, -max(0, leftCrop.minX)), max(0, 1 - rightCrop.maxX))
-        splitX += d
-        leftCrop.x += d
-        rightCrop.x += d
+    /// Lock sizes: moves the split with both crops on it, their widths kept (as
+    /// without the lock the inner edges follow the split, but the widths change). A
+    /// crop set off the split by hand (`keep…Gap`) keeps its gap instead. The split
+    /// stops where a crop would leave the scan, so dragging back loses nothing.
+    mutating func slideSplit(to x: Double, keepLeftGap: Bool = false, keepRightGap: Bool = false) {
+        let s = splitX, lw = leftCrop.width, rw = rightCrop.width
+        let lo = max(0.05, keepLeftGap ? s - leftCrop.minX : lw)
+        let hi = min(0.95, keepRightGap ? s + 1 - rightCrop.maxX : 1 - rw)
+        guard lo <= hi else { return }                  // two crops wider than the scan
+        let t = max(lo, min(x, hi)), d = t - s
+        leftCrop.x = keepLeftGap ? leftCrop.x + d : t - lw
+        rightCrop.x = keepRightGap ? rightCrop.x + d : t
+        splitX = t
     }
 
     /// Sets one crop; with `locked`, the other becomes the same size (CropRect.matched).

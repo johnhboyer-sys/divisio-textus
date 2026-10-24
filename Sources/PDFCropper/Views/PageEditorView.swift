@@ -140,29 +140,7 @@ struct PageEditorView: View {
     private func splitBinding(_ idx: Int) -> Binding<Double> {
         Binding(
             get: { model.pages[idx].splitX },
-            set: { newValue in
-                if locksSizes {                 // the boxes slide with the split, widths kept
-                    let p = model.pages[idx]
-                    var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop)
-                    l.slideSplit(to: newValue)
-                    model.pages[idx].splitX = l.splitX
-                    model.pages[idx].leftCrop = l.leftCrop
-                    model.pages[idx].rightCrop = l.rightCrop
-                    return
-                }
-                let clamped = max(0.05, min(newValue, 0.95))
-                model.pages[idx].splitX = clamped
-                // Tie inner crop edges to the gutter.
-                var l = model.pages[idx].leftCrop
-                if clamped > l.minX + 0.02 { l.width = clamped - l.minX }
-                l.normalize(); model.pages[idx].leftCrop = l
-                var r = model.pages[idx].rightCrop
-                if clamped < r.maxX - 0.02 {
-                    let right = r.maxX
-                    r.x = clamped; r.width = right - clamped
-                }
-                r.normalize(); model.pages[idx].rightCrop = r
-            }
+            set: { model.moveSplit(at: idx, to: $0, locked: locksSizes) }
         )
     }
 

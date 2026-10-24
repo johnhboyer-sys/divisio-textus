@@ -60,6 +60,10 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// was. A single or skipped page ignores it. Absent in older saves.
     var omittedSide: Side?
 
+    /// The sides whose box was set off the split by hand, which the split then leaves
+    /// where it is. Absent in older saves (none).
+    var offSplit: Set<Side>?
+
     enum Side: String, Codable, CaseIterable, Identifiable {
         case left, right
         var id: String { rawValue }
