@@ -40,13 +40,14 @@ swift test -c release -Xswiftc -enable-testing
 
 Run the tests as an optimized build: the image analysis is pixel loops, which a
 debug build runs many times slower (plain `swift test` works but takes minutes).
-About 78 tests (~20 seconds plus the build) covering page analysis (splits,
+About 180 tests (about a minute plus the build) covering page analysis (splits,
 crops, scanner bands, shadows, the book block's edge, a speck or hairline on a
 blank page, 300 random pages), whole-page crops (the sheet on a dark scanner bed,
 a black fold, the corners straightening leaves empty), straightening (known turns, two columns, sparse
 lines, tinted paper, pictures beside text), rendering, gray detection,
 scan-resolution detection, export (page size, cancel, reading order, skipped
-pages) and editing (undo/redo, autosave, re-detect, odd/even crops). Test PDFs are generated on the fly; saved edits go to
+pages, one page of a spread left out, the text layer) and editing (undo/redo,
+autosave, re-detect, odd/even crops, matching crop sizes, rulers). Test PDFs are generated on the fly; saved edits go to
 a temporary folder, never your real ones. OCR isn't covered: Vision is too slow
 and erratic for an automated suite.
 
@@ -84,7 +85,7 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    strip, with ragged streaks). When analysis finishes, blank and nearly empty
    pages (part titles, chapter ends) get the book's usual crop and split, so
    every page comes out a matching size. **Crop to: Whole page** (the default
-   for new books) crops to the sheet of paper instead, margins included: it leaves out the scanner
+   for new books; the choice is in both the Page and Book tabs) crops to the sheet of paper instead, margins included: it leaves out the scanner
    background around the sheet and a black fold at the gutter, and keeps clear
    of the corners straightening leaves empty (but never cuts printed text).
    It then gives the whole book one page size: measured on the pages whose
@@ -96,7 +97,12 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    green (right) crop boxes, right-click a thumbnail to change its type.
    "Apply layout to all spreads" copies one spread's layout everywhere; for
    single-page scans, crops can go to all pages or to alternate (left-hand /
-   right-hand) pages. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
+   right-hand) pages. A spread's **Export** choice (Both, Left only, Right
+   only) leaves one of its pages out of the export. A label under the page
+   gives each crop box's width × height and says whether Left and Right are
+   the same size; **Match Sizes** makes one box the other's size. **View >
+   Show Rulers** (⌥⌘R) adds rulers in the page's real size, inches or
+   centimetres by the Mac's setting. ↑/↓ move between pages; ⌘Z / ⇧⌘Z undo and redo edits;
    pinch or ⌘= / ⌘− / ⌘0 to zoom. Edits are saved automatically and come back
    when you reopen the same PDF. The inspector's **Whole book** group (also in
    the Edit menu) has Auto-detect all pages, which starts over, and
@@ -122,13 +128,14 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
 | `Models/CropRect.swift` | Normalized (top-left origin) crop rectangle |
 | `Models/BookPage.swift` | Per-source-page state: type, split, crops |
 | `Models/PageStack.swift` | Stack view groups, side coordinates, flagged pages |
+| `Models/Ruler.swift` | Ruler units, tick spacing, crop size labels |
 | `Models/AppModel.swift` | `ObservableObject` document/app state + actions |
 | `Services/GrayBuffer.swift` | Fast downsampled grayscale for analysis |
 | `Services/PageAnalyzer.swift` | Gutter + content-bounds + classification heuristics |
 | `Services/PDFRenderer.swift` | Render PDF pages to bitmaps; crop |
 | `Services/PDFExporter.swift` | Crops → output PDF with OCR text layer |
 | `Services/StackRenderer.swift` | Blends a stack's pages into one image |
-| `Views/*` | Thumbnail rail, page editor canvas, stack view, inspector |
+| `Views/*` | Thumbnail rail, page editor canvas, stack view, rulers, inspector |
 | `Tools/make_sample.swift` | Standalone generator for `sample-book.pdf` |
 | `Tests/PDFCropperTests/` | `swift test` suite (Swift Testing) |
 
