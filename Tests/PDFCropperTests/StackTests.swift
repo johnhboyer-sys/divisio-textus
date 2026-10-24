@@ -515,3 +515,17 @@ struct StackPickTests {
         #expect(ProjectStore.stored(exclusions: [.right: []]) == nil)       // nothing left out: field absent
     }
 }
+
+@Suite("Stack box past the stack's edge")
+struct StackEdgeTests {
+    @Test("A box reaching past the stack's edge is cut there on Apply, not shifted (Codex review)")
+    func cutNotShifted() {
+        // Left pages; once the wider half is left out, the stack is this page's 0.4
+        // wide half and the draft, rescaled, starts left of the stack's edge.
+        let page = BookPage(sourceIndex: 0, classification: .spread, splitX: 0.4)
+        let member = PageStack.Member(page: page, side: .left, span: 0.4)
+        let c = member.clampedCrop(CropRect(x: -0.35, y: 0.1, width: 0.9, height: 0.8))
+        #expect(abs(c.maxX - 0.22) < 1e-9, "ends at \(c.maxX)")      // where the canvas shows its edge
+        #expect(abs(c.minX) < 1e-9)
+    }
+}

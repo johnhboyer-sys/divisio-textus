@@ -67,7 +67,10 @@ struct PageStack: Identifiable {
         /// narrower half's outer edge, it stops at that edge. Kept inside its side
         /// at a size export leaves alone.
         func clampedCrop(_ crop: CropRect) -> CropRect {
-            let shown = pageCrop(crop.normalized())
+            // Cut, not shifted, to the stack: a box that reaches past the stack's edge
+            // (as a draft does once a wider half is left out) is shown cut there.
+            let x0 = max(0, crop.minX), x1 = min(1, crop.maxX), y0 = max(0, crop.minY), y1 = min(1, crop.maxY)
+            let shown = pageCrop(CropRect(x: x0, y: y0, width: max(0, x1 - x0), height: max(0, y1 - y0)).normalized())
             let end = regionMinX + regionWidth
             let lo = max(regionMinX, shown.minX), hi = min(end, shown.maxX)
             var c = CropRect(x: lo, y: shown.y, width: max(0, hi - lo), height: shown.height).normalized()
