@@ -493,6 +493,76 @@ struct AnalysisTests {
         #expect(f.crop.minX > 150.0 / 1300)
     }
 
+    @Test("A thin fold line beside the gutter, slanted by straightening, is not content (Wallace 1957)",
+          arguments: [false, true])
+    func slantedFoldLine(rightPage: Bool) throws {
+        // As on Wallace 1957 p17: a thin, wavy black line where the book block
+        // meets the fold, with a blot at the top, a clear margin from the text,
+        // and the page turned 1.2°, so the line drifts across several columns.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            if rightPage { c.translateBy(x: CGFloat(Self.width), y: 0); c.scaleBy(x: -1, y: 1) }
+            Self.text(c, 380, 900)
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+            for y in stride(from: 0, to: Self.height, by: 4) {
+                let drift = 24 * Double(Self.height - y) / Double(Self.height)
+                let wave = 3 * sin(Double(y) / 37)
+                c.fill(CGRect(x: 1010 + drift + wave, y: Double(y), width: 5, height: 4))
+            }
+            c.fill(CGRect(x: 1005, y: Self.height - 40, width: 25, height: 40))   // the blot at the top
+        }
+        let g = try #require(GrayBuffer(cgImage: image))
+        let found = PageAnalyzer.textBounds(g, xRange: rightPage ? 0.47..<1.0 : 0.0..<0.53).crop
+        // The text spans x 380-900 (mirrored: 1100-1620) and rows 131-1196.
+        if rightPage {
+            #expect(found.minX > 1000.0 / 2000, "crop starts at \(found.minX * 2000)")
+        } else {
+            #expect(found.maxX < 1000.0 / 2000, "crop ends at \(found.maxX * 2000)")
+        }
+        #expect(found.minY > 80.0 / 1300, "crop starts at row \(found.minY * 1300)")
+    }
+
+    @Test("A short word ending a line near a slanted fold line is kept (Freudenthal 1999)", arguments: [false, true])
+    func wordBesideSlantedFoldLine(rightPage: Bool) throws {
+        // As on Freudenthal p194: one line's last word ("of") ends near the fold
+        // line, too little ink for the column test, in the clear gap beside it.
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            if rightPage { c.translateBy(x: CGFloat(Self.width), y: 0); c.scaleBy(x: -1, y: 1) }
+            Self.text(c, 380, 900)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            c.fill(CGRect(x: 912, y: Self.height - 139, width: 33, height: 6))          // the word, on the first line
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+            for y in stride(from: 0, to: Self.height, by: 4) {
+                let drift = 24 * Double(Self.height - y) / Double(Self.height)
+                c.fill(CGRect(x: 1015 + drift + 3 * sin(Double(y) / 37), y: Double(y), width: 5, height: 4))
+            }
+        }
+        let g = try #require(GrayBuffer(cgImage: image))
+        let found = PageAnalyzer.textBounds(g, xRange: rightPage ? 0.47..<1.0 : 0.0..<0.53).crop
+        let end = 945.0                                                                // the word's end
+        if rightPage {
+            #expect(found.minX <= (2000 - end) / 2000, "crop starts at \(found.minX * 2000)")
+        } else {
+            #expect(found.maxX >= end / 2000, "crop ends at \(found.maxX * 2000)")
+        }
+    }
+
+    @Test("A running foot in the clear gap beside a fold line is still kept (Codex review)")
+    func runningFootBesideFoldLine() throws {
+        // A fold line down the left, body text well in from it, and a short
+        // running foot between them, below the text, too short for the column test.
+        let page = Fixtures.image(400, 800) { c in
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))
+            c.fill(CGRect(x: 50, y: 0, width: 3, height: 800))                       // the fold line
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 60, to: 690, by: 20) { c.fill(CGRect(x: 120, y: 800 - y - 6, width: 230, height: 6)) }
+            for x in stride(from: 75, to: 95, by: 5) { c.fill(CGRect(x: x, y: 800 - 716, width: 3, height: 6)) }  // the foot
+            for x in stride(from: 225, to: 245, by: 5) { c.fill(CGRect(x: x, y: 800 - 749, width: 3, height: 9)) } // a folio
+        }
+        let found = try #require(GrayBuffer(cgImage: page)).pipe { PageAnalyzer.textBounds($0, xRange: 0.0..<1.0) }.crop
+        #expect(found.minX <= 75.0 / 400, "crop starts at \(found.minX * 400)")
+        #expect(found.minX > 53.0 / 400, "crop starts at \(found.minX * 400)")
+    }
+
     @Test("A thin scan-edge line below the text is not content; a footer line and a folio are")
     func scanEdgeLine() throws {
         let page = Fixtures.image(1300, 2000) { c in

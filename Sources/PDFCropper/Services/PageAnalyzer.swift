@@ -763,6 +763,7 @@ enum PageAnalyzer {
         // at the very edge of what was found, then a clear gap before the text.
         // A folio is short and a column of line numbers is wide; they stay.
         var leftLimit = x0, rightLimit = x1 - 1
+        var edgeStrips: [ClosedRange<Int>] = []        // left out as the book block's edge
         if right > left {
             let isContent = { (x: Int) in columnDark[x - bx0] > Int(Double(contentHeight) * minRunFraction) }
             let narrow = max(2, (bx1 - bx0) / 50), clear = max(3, (bx1 - bx0) / 50)
@@ -773,15 +774,40 @@ enum PageAnalyzer {
                 for y in by0..<by1 { if Double(g.value(x, y)) < threshold { run += 1; best = max(best, run) } else { run = 0 } }
                 return best
             }
-            func strip(from start: Int, step: Int) -> Int? {
-                var x = start, last = start, tallest = 0, longest = 0
+            // A fold line can end in a blot where it meets the scan's top or bottom:
+            // ink only near that edge, beside the line.
+            let edgeRows = max(1, (by1 - by0) * 15 / 100), touch = max(1, (by1 - by0) / 50)
+            let middle = (by0 + edgeRows)..<max(by0 + edgeRows, by1 - edgeRows)
+            func dark(_ x: Int, _ rows: Range<Int>) -> Bool { rows.contains { Double(g.value(x, $0)) < threshold } }
+            func midInk(_ x: Int) -> Bool {
+                middle.filter { Double(g.value(x, $0)) < threshold }.count > Int(Double(contentHeight) * minRunFraction)
+            }
+            func blot(_ x: Int) -> Bool { !midInk(x) && (dark(x, by0..<(by0 + touch)) || dark(x, (by1 - touch)..<by1)) }
+            /// The first column of content past the strip, and the strip's own inner edge.
+            func strip(from start: Int, step: Int) -> (next: Int, last: Int)? {
+                var x = start, last = start, line = start, tallest = 0, longest = 0
                 var rowsInked = Set<Int>()
-                while (x - start) * step <= narrow + 2 && x >= left && x <= right {
+                // A fold line on a straightened page runs at a slant, across more
+                // columns than its width, and ends in blots: look on, up to a clear gap.
+                while (x - start) * step <= 4 * narrow + 2 && (x - last) * step < clear && x >= left && x <= right {
                     if isContent(x) {
+                        if !blot(x) { line = x }
                         last = x; tallest = max(tallest, columnDark[x - bx0]); longest = max(longest, longestRunDown(x))
                         for y in by0..<by1 where Double(g.value(x, y)) < threshold { rowsInked.insert(y) }
                     }
                     x += step
+                }
+                // The line is narrow in nearly every row it inks, however it drifts
+                // (the start of the text is not).
+                func thinInRows() -> Bool {
+                    var rows = 0, thin = 0
+                    for y in middle {
+                        let xs = stride(from: start, through: line, by: step).filter { Double(g.value($0, y)) < threshold }
+                        guard let a = xs.first, let b = xs.last else { continue }
+                        rows += 1
+                        if abs(b - a) <= narrow { thin += 1 }
+                    }
+                    return rows > 0 && thin * 100 >= rows * 90
                 }
                 // Or a dashed streak: ink in at least half the rows over a long span
                 // (line numbers fill a few percent of theirs).
@@ -792,15 +818,16 @@ enum PageAnalyzer {
                 let border = max(2, (bx1 - bx0) * 15 / 1000)
                 let atBorder = step > 0 ? last - bx0 <= border : bx1 - 1 - last <= border
                 let streak = Double(tallest) >= 0.12 * Double(by1 - by0) && (Double(longest) >= 0.04 * Double(by1 - by0) || dashed)
-                guard (last - start) * step <= narrow, streak || atBorder else { return nil }
+                let width = (line - start) * step
+                guard width <= narrow || thinInRows(), streak || atBorder else { return nil }
                 var next = last + step
                 while next >= left && next <= right && !isContent(next) { next += step }
                 guard next >= left && next <= right, (next - last) * step >= clear else { return nil }
-                return next
+                return (next, last)
             }
             let before = (left, right)
-            if let n = strip(from: left, step: 1) { leftLimit = max(bx0, n - clear + 1); left = n }
-            if let n = strip(from: right, step: -1) { rightLimit = min(bx1 - 1, n + clear - 1); right = n }
+            if let s = strip(from: left, step: 1) { leftLimit = max(bx0, s.next - clear + 1); edgeStrips.append(left...s.last); left = s.next }
+            if let s = strip(from: right, step: -1) { rightLimit = min(bx1 - 1, s.next + clear - 1); edgeStrips.append(s.last...right); right = s.next }
             // The strip's ink was in every row: count the rows again without it.
             if before != (left, right) {
                 let from = max(rowX0, left)
@@ -929,7 +956,11 @@ enum PageAnalyzer {
             }
             // The trimmed zones: a band or shadow cut off the side, and any edge strip removed.
             // A printed mark is several pixels wide; a fleck of dust is one.
-            func supported(_ x: Int) -> Bool { marks(x) && ((x > x0 && marks(x - 1)) || (x + 1 < x1 && marks(x + 1))) }
+            // Not in a strip of the book block's edge: a wavy fold line crosses
+            // each column in short runs too.
+            func supported(_ x: Int) -> Bool {
+                !edgeStrips.contains { $0.contains(x) } && marks(x) && ((x > x0 && marks(x - 1)) || (x + 1 < x1 && marks(x + 1)))
+            }
             if let far = stride(from: x1 - 1, through: min(bx1, rightLimit + 1), by: -1).first(where: supported) {
                 right = max(right, far)
             }
@@ -941,24 +972,26 @@ enum PageAnalyzer {
         // A line of its own beside the text block (a running foot set off to the
         // side, a folio, a caption): a band of content rows with nothing in the
         // block's columns. Its small type can be too short for the column test.
-        // A speck is smaller than any line of type, and stays out.
+        // A speck is smaller than any line of type, and stays out. So does a strip
+        // of the book block's edge, already left out above (but not the gap beside it).
         if bottom > top && right >= left {
             let rowLimit = Int(Double(bx1 - bx0) * minRunFraction)
             let minThick = max(2, (by1 - by0) / 250), minWide = max(3, (bx1 - bx0) / 100)
+            let cols = (rowX0..<rowX1).filter { x in !edgeStrips.contains { $0.contains(x) } }
             var y = top
             while y <= bottom {
-                guard (rowX0..<rowX1).filter({ ink($0, y) }).count > rowLimit else { y += 1; continue }
+                guard cols.filter({ ink($0, y) }).count > rowLimit else { y += 1; continue }
                 var end = y
-                while end + 1 <= bottom && (rowX0..<rowX1).filter({ ink($0, end + 1) }).count > rowLimit { end += 1 }
+                while end + 1 <= bottom && cols.filter({ ink($0, end + 1) }).count > rowLimit { end += 1 }
                 let inBlock = (y...end).contains { yy in (left...right).contains { ink($0, yy) } }
                 if !inBlock && end - y + 1 >= minThick {
                     // Its ink across the band, column by column: a line of type is
                     // pieces side by side (letters, digits); dust is one piece.
-                    let inked = (bx0..<bx1).map { x in (y...end).contains { ink(x, $0) } }
+                    let inked = cols.map { x in (y...end).contains { ink(x, $0) } }
                     var lo = Int.max, hi = Int.min, pieces = 0
                     for (i, on) in inked.enumerated() where on {
-                        if i == 0 || !inked[i - 1] { pieces += 1 }
-                        lo = min(lo, bx0 + i); hi = max(hi, bx0 + i)
+                        if i == 0 || !inked[i - 1] || cols[i] != cols[i - 1] + 1 { pieces += 1 }
+                        lo = min(lo, cols[i]); hi = max(hi, cols[i])
                     }
                     if pieces >= 2 && hi - lo + 1 >= minWide { left = min(left, lo); right = max(right, hi) }
                 }
