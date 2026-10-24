@@ -50,6 +50,18 @@ private struct PageSections: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                if page.classification == .spread {
+                    Picker("Export", selection: Binding(
+                        get: { model.pages[idx].omittedSide },
+                        set: { model.setOmittedSide($0, for: page.id) })
+                    ) {
+                        Text("Both").tag(BookPage.Side?.none)
+                        Text("Left only").tag(BookPage.Side?.some(.right))     // leaves the right out
+                        Text("Right only").tag(BookPage.Side?.some(.left))
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Choose which page or pages of this spread go in the export. The page left out keeps its crop.")
+                }
                 if page.classification == .skip {
                     Text("Left out of the export.")
                         .foregroundStyle(.secondary)

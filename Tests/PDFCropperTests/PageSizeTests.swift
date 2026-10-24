@@ -151,6 +151,16 @@ struct PageSizeTests {
         #expect(m.pages.indices.filter { m.pages[$0] != before[$0] } == m.pages.indices.filter { $0 != 2 })
     }
 
+    @Test("Leaving a side out of the export is no crop edit: the spread still gets the page size (Codex review)")
+    func omittedSideKeepsSize() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        undoable(undo) { m.setOmittedSide(.right, for: m.pages[2].id) }
+        let before = m.pages
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        #expect(m.pages[2].leftCrop != before[2].leftCrop && m.pages[2].rightCrop != before[2].rightCrop)
+        #expect(m.pages[2].omittedSide == .right)
+    }
+
     @Test("The page size can be set by hand: one undo step, kept with the edits, empty goes back to measured")
     func override() async throws {
         let (m, undo, url) = await load(Book(count: 12, strips: true))
