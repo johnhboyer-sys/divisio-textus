@@ -291,3 +291,241 @@ struct StackTests {
         #expect(a.count == b.count && zip(a, b).allSatisfy { abs(Int($0) - Int($1)) <= 1 })
     }
 }
+
+@Suite("Leaving pages out of a stack", .serialized)
+struct StackPickTests {
+    /// Five spreads whose left crops are the same size except page 2, which is wider.
+    private func book() -> [BookPage] {
+        (0..<5).map { i in
+            var page = BookPage(sourceIndex: i, splitX: 0.5, analyzed: true)
+            page.leftCrop = CropRect(x: 0.05, y: 0.1, width: i == 2 ? 0.40 : 0.30, height: 0.8)
+            page.rightCrop = CropRect(x: 0.55, y: 0.1, width: 0.3, height: 0.8)
+            return page
+        }
+    }
+
+    private func stack(_ kind: PageStack.Kind, _ pages: [BookPage], out: [Int]) throws -> PageStack {
+        let excluded = Set(out.map { pages[$0].id })
+        return try #require(PageStack.all(pages: pages, excluded: [kind: excluded]).first { $0.id == kind })
+    }
+
+    @Test("A page left out is not a member of its stack, but is still listed with the rest")
+    func membersLeaveOut() throws {
+        let pages = book()
+        let left = try stack(.left, pages, out: [1, 3])
+        #expect(left.members.map { $0.page.sourceIndex } == [0, 2, 4])
+        #expect(left.excludedMembers.map { $0.page.sourceIndex } == [1, 3])
+        #expect(left.allMembers.map { $0.page.sourceIndex } == [0, 1, 2, 3, 4])
+        // Without a list of exclusions nothing changes.
+        #expect(PageStack.all(pages: pages).allSatisfy { $0.excludedMembers.isEmpty })
+        #expect(PageStack.all(pages: pages).first { $0.id == .left }?.members.count == 5)
+    }
+
+    @Test("A page left out of one stack stays in the others")
+    func perStack() throws {
+        let pages = book()
+        let excluded: [PageStack.Kind: Set<BookPage.ID>] = [.left: [pages[0].id]]
+        let stacks = PageStack.all(pages: pages, excluded: excluded)
+        func count(_ kind: PageStack.Kind) -> Int? { stacks.first { $0.id == kind }?.members.count }
+        #expect(count(.left) == 4)
+        #expect(count(.right) == 5)
+        #expect(count(.spreads) == 5)
+    }
+
+    @Test("A stack with every page left out still exists, and is empty")
+    func allOut() throws {
+        let pages = book()
+        let empty = try stack(.right, pages, out: [0, 1, 2, 3, 4])
+        #expect(empty.members.isEmpty && empty.excludedMembers.count == 5)
+        #expect(empty.outliers.isEmpty)
+    }
+
+    @Test("Outliers and the median crop ignore a page left out")
+    func outliersAndMedian() throws {
+        let pages = book()
+        #expect(try stack(.left, pages, out: []).outliers.map { $0.page.sourceIndex } == [2])
+        let without = try stack(.left, pages, out: [2])
+        #expect(without.outliers.isEmpty)
+        // The median is in the stack's own coordinates; on the page it is the usual 0.30.
+        #expect(abs(without.members[0].pageCrop(without.medianCrop).width - 0.30) < 1e-9)
+        let only = try stack(.left, pages, out: [0, 1, 3, 4])
+        #expect(only.members.map { $0.page.sourceIndex } == [2] && only.outliers.isEmpty)
+        // Leaving two pages out moves the median.
+        var tall = book()
+        for i in 0..<5 { tall[i].leftCrop.y = 0.1 + 0.05 * Double(i) }
+        let all = try stack(.left, tall, out: [])
+        let fewer = try stack(.left, tall, out: [3, 4])
+        #expect(abs(all.medianCrop.y - 0.2) < 1e-9)
+        #expect(abs(fewer.medianCrop.y - 0.15) < 1e-9)
+    }
+
+    @Test("The whole-spread stack's median layout and split flags ignore a spread left out")
+    func spreadLayoutIgnores() throws {
+        var pages = book()
+        pages[4].splitX = 0.6
+        pages[4].leftCrop = CropRect(x: 0.1, y: 0.2, width: 0.4, height: 0.6)
+        let all = try stack(.spreads, pages, out: [])
+        #expect(all.outliers.map { $0.page.sourceIndex } == [4])
+        let without = try stack(.spreads, pages, out: [4])
+        #expect(without.outliers.isEmpty)
+        #expect(without.members.count == 4)
+        #expect(without.medianLayout.splitX == 0.5)
+        #expect(without.medianLayout.leftCrop.minY == 0.1)
+        #expect(all.medianLayout.leftCrop.minY == 0.1)
+        // The median is of the crops that are in: put page 4's top high and it moves only when in.
+        pages[4].leftCrop.y = 0.9
+        pages[3].leftCrop.y = 0.9
+        pages[2].leftCrop.y = 0.9
+        #expect(try stack(.spreads, pages, out: []).medianLayout.leftCrop.minY == 0.9)
+        #expect(try stack(.spreads, pages, out: [2, 3, 4]).medianLayout.leftCrop.minY == 0.1)
+    }
+
+    @Test("Apply to the stack and Apply to flagged leave the crops of pages left out as they were")
+    @MainActor
+    func applyLeavesOutPagesAlone() throws {
+        let model = testModel()
+        model.pages = book()
+        let before = model.pages
+        model.setStackPage(before[1].id, included: false, in: .left)
+        model.setStackPage(before[2].id, included: false, in: .left)
+        let left = try #require(model.stacks.first { $0.id == .left })
+        let box = CropRect(x: 0.1, y: 0.2, width: 0.25, height: 0.6)
+        model.applyStackCrop(box, to: left.members, in: left)
+        for i in [1, 2] { #expect(model.pages[i] == before[i], "page \(i) was changed") }
+        for i in [0, 3, 4] { #expect(model.pages[i].leftCrop != before[i].leftCrop, "page \(i) was not changed") }
+        // A page that is out is not flagged either, so Apply to flagged never reaches it.
+        model.pages = book()
+        let flagged = try #require(model.stacks.first { $0.id == .left })
+        #expect(flagged.outliers.map { $0.page.sourceIndex } == [2])
+        model.setStackPage(model.pages[2].id, included: false, in: .left)
+        let after = try #require(model.stacks.first { $0.id == .left })
+        let kept = model.pages
+        model.applyStackCrop(box, to: after.outliers, in: after)
+        #expect(model.pages == kept)
+        // The same page is still in the Right pages stack.
+        #expect(model.stacks.first { $0.id == .right }?.members.count == 5)
+    }
+
+    @Test("Apply to spreads skips a spread left out")
+    @MainActor
+    func applyLayoutSkips() throws {
+        let model = testModel()
+        model.pages = book()
+        let before = model.pages
+        model.setStackPage(before[3].id, included: false, in: .spreads)
+        let spreads = try #require(model.stacks.first { $0.id == .spreads })
+        model.applySpreadLayout(SpreadLayout(splitX: 0.45, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),
+                                             rightCrop: CropRect(x: 0.5, y: 0.1, width: 0.3, height: 0.8)),
+                                to: spreads.members)
+        #expect(model.pages[3] == before[3])
+        #expect(model.pages[0].splitX == 0.45)
+    }
+
+    @Test("All puts every page back and None takes every page out, in that stack only")
+    @MainActor
+    func allAndNone() throws {
+        let model = testModel()
+        model.pages = book()
+        model.setStackPage(model.pages[0].id, included: false, in: .right)
+        let left = try #require(model.stacks.first { $0.id == .left })
+        model.setAllStackPages(included: false, in: left)
+        #expect(model.stacks.first { $0.id == .left }?.members.isEmpty == true)
+        #expect(model.stacks.first { $0.id == .left }?.excludedMembers.count == 5)
+        #expect(model.stacks.first { $0.id == .right }?.members.count == 4)    // not touched
+        let emptied = try #require(model.stacks.first { $0.id == .left })
+        model.setAllStackPages(included: true, in: emptied)
+        #expect(model.stacks.first { $0.id == .left }?.members.count == 5)
+        #expect(model.stackExclusions[.left] == nil)
+        // One page back in.
+        model.setStackPage(model.pages[0].id, included: true, in: .right)
+        #expect(model.stacks.first { $0.id == .right }?.members.count == 5)
+    }
+
+    @Test("A page left out of a stack is not flagged on the rail either")
+    @MainActor
+    func railFlags() throws {
+        let model = testModel()
+        model.pages = book()
+        #expect(model.flaggedSides[model.pages[2].id] == [.left])
+        model.setStackPage(model.pages[2].id, included: false, in: .left)
+        #expect(model.flaggedSides[model.pages[2].id] == nil)
+    }
+
+    @Test("The blend draws only the pages in the stack")
+    func blendIgnoresLeftOut() throws {
+        let media = CGRect(x: 0, y: 0, width: 240, height: 240)
+        let url = Fixtures.writePDF("stackpick-\(UUID().uuidString).pdf", media: media, pages: (0..<4).map { i in
+            { c in
+                c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+                c.setFillColor(CGColor(gray: 0, alpha: 1))
+                if i == 0 { c.fill(CGRect(x: 72, y: 48, width: 24, height: 24)) }   // only page 0 has it
+                c.fill(CGRect(x: 24, y: 168, width: 24, height: 24))
+            }
+        })
+        let doc = try #require(PDFDocument(url: url))
+        let pages = (0..<4).map { BookPage(sourceIndex: $0) }
+        let plain = try #require(PageStack.groups(pages: pages).first)
+        let withAll = try #require(StackRenderer.render(plain, from: doc))
+        let mark = try #require(GrayBuffer(cgImage: withAll))
+        #expect(abs(Int(mark.value(35, 75)) - 128) < 12)                     // one page in four
+        let stack = try #require(PageStack.groups(pages: pages, excluded: [.left: [pages[0].id]]).first)
+        let image = try #require(StackRenderer.render(stack, from: doc))
+        let gray = try #require(GrayBuffer(cgImage: image))
+        #expect(gray.value(35, 75) > 245)                                    // page 0 is gone
+        #expect(gray.value(15, 25) < 20)                                     // the shared mark stays
+    }
+
+    @Test("Pages left out are saved with the edits and come back when the PDF is opened again")
+    @MainActor
+    func roundTrip() async throws {
+        let model = testModel()
+        let url = Fixtures.sampleBook()
+        model.load(url: url); await waitUntilIdle(model)
+        let spreads = model.pages.filter { $0.classification == .spread }
+        try #require(spreads.count >= 3)
+        model.setStackPage(spreads[0].id, included: false, in: .left)
+        model.setStackPage(spreads[1].id, included: false, in: .spreads)
+        let expected = model.stackExclusions
+        #expect(expected.count == 2)
+        model.load(url: Fixtures.sampleBook()); await waitUntilIdle(model)     // saves this book, opens another
+        #expect(model.stackExclusions.isEmpty)
+        model.load(url: url); await waitUntilIdle(model)
+        #expect(model.stackExclusions == expected)
+        #expect(model.stacks.first { $0.id == .left }?.excludedMembers.map(\.id) == [spreads[0].id])
+    }
+
+    @Test("A save made before this setting existed opens with nothing left out")
+    func olderSave() throws {
+        _ = Fixtures.directory
+        let pages = book()
+        let key = "older-\(UUID().uuidString)"
+        try ProjectStore.save(ProjectStore.Saved(pages: pages, direction: .leftToRight), key: key)
+        let file = ProjectStore.directory!.appendingPathComponent("\(key).json")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(!text.contains("stackExcluded"))                             // as an older build wrote it
+        let loaded = try #require(ProjectStore.load(key: key))
+        #expect(loaded.stackExcluded == nil)
+        // Present: it reads back as written.
+        try ProjectStore.save(ProjectStore.Saved(pages: pages, direction: .leftToRight,
+                                                 stackExcluded: ["left": [pages[0].id]]), key: key)
+        #expect(ProjectStore.load(key: key)?.stackExcluded == ["left": [pages[0].id]])
+        // A kind this build doesn't know is dropped, not an error.
+        #expect(ProjectStore.exclusions(from: ["left": [pages[0].id], "someday": [pages[1].id]]) == [.left: [pages[0].id]])
+        #expect(ProjectStore.exclusions(from: nil).isEmpty)
+        #expect(ProjectStore.stored(exclusions: [.right: []]) == nil)       // nothing left out: field absent
+    }
+}
+
+@Suite("Stack box past the stack's edge")
+struct StackEdgeTests {
+    @Test("A box reaching past the stack's edge is cut there on Apply, not shifted (Codex review)")
+    func cutNotShifted() {
+        // Left pages; once the wider half is left out, the stack is this page's 0.4
+        // wide half and the draft, rescaled, starts left of the stack's edge.
+        let page = BookPage(sourceIndex: 0, classification: .spread, splitX: 0.4)
+        let member = PageStack.Member(page: page, side: .left, span: 0.4)
+        let c = member.clampedCrop(CropRect(x: -0.35, y: 0.1, width: 0.9, height: 0.8))
+        #expect(abs(c.maxX - 0.22) < 1e-9, "ends at \(c.maxX)")      // where the canvas shows its edge
+        #expect(abs(c.minX) < 1e-9)
+    }
+}

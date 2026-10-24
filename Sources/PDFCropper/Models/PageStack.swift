@@ -67,7 +67,10 @@ struct PageStack: Identifiable {
         /// narrower half's outer edge, it stops at that edge. Kept inside its side
         /// at a size export leaves alone.
         func clampedCrop(_ crop: CropRect) -> CropRect {
-            let shown = pageCrop(crop.normalized())
+            // Cut, not shifted, to the stack: a box that reaches past the stack's edge
+            // (as a draft does once a wider half is left out) is shown cut there.
+            let x0 = max(0, crop.minX), x1 = min(1, crop.maxX), y0 = max(0, crop.minY), y1 = min(1, crop.maxY)
+            let shown = pageCrop(CropRect(x: x0, y: y0, width: max(0, x1 - x0), height: max(0, y1 - y0)).normalized())
             let end = regionMinX + regionWidth
             let lo = max(regionMinX, shown.minX), hi = min(end, shown.maxX)
             var c = CropRect(x: lo, y: shown.y, width: max(0, hi - lo), height: shown.height).normalized()
@@ -78,12 +81,26 @@ struct PageStack: Identifiable {
     }
 
     let id: Kind
+    /// The pages in the stack: all of its pages but those left out (see `excludedMembers`).
     let members: [Member]
+    /// Pages the user left out of this stack. Only this stack: they are not drawn
+    /// in its blend, counted in its medians or flags, or changed by its Apply.
+    let excludedMembers: [Member]
 
-    init(id: Kind, members: [Member]) {
+    init(id: Kind, members: [Member], excludedMembers: [Member] = []) {
         self.id = id
         let span = members.map(\.regionWidth).max() ?? 1
         self.members = members.map { var m = $0; m.span = span; return m }
+        self.excludedMembers = excludedMembers
+    }
+
+    /// Every page that belongs to the stack, in or out, in book order.
+    var allMembers: [Member] { (members + excludedMembers).sorted { $0.page.sourceIndex < $1.page.sourceIndex } }
+
+    /// The stack of `members` with the ones whose page is in `excluded` set aside.
+    private init(id: Kind, members: [Member], excluding excluded: Set<BookPage.ID>) {
+        self.init(id: id, members: members.filter { !excluded.contains($0.id) },
+                  excludedMembers: members.filter { excluded.contains($0.id) })
     }
 
     /// The stack's width as a share of a scan (see Member.span).
@@ -101,7 +118,8 @@ struct PageStack: Identifiable {
         }
     }
 
-    static func groups(pages: [BookPage]) -> [PageStack] {
+    /// `excluded`: the pages left out of each stack (see AppModel.stackExclusions).
+    static func groups(pages: [BookPage], excluded: [Kind: Set<BookPage.ID>] = [:]) -> [PageStack] {
         var groups: [Kind: [Member]] = [:]
         var singlePosition = 0
         for page in pages {
@@ -118,20 +136,20 @@ struct PageStack: Identifiable {
         }
         return Kind.allCases.compactMap { kind in
             guard let members = groups[kind], !members.isEmpty else { return nil }
-            return PageStack(id: kind, members: members)
+            return PageStack(id: kind, members: members, excluding: excluded[kind] ?? [])
         }
     }
 
     /// Every spread whole, to set the split and both crops on one blend, as Briss
     /// does. Kept out of `groups`, which measures the page size and marks the rail.
-    static func wholeSpreads(pages: [BookPage]) -> PageStack? {
+    static func wholeSpreads(pages: [BookPage], excluded: [Kind: Set<BookPage.ID>] = [:]) -> PageStack? {
         let members = pages.filter { $0.classification == .spread }.map { Member(page: $0, side: .whole) }
-        return members.isEmpty ? nil : PageStack(id: .spreads, members: members)
+        return members.isEmpty ? nil : PageStack(id: .spreads, members: members, excluding: excluded[.spreads] ?? [])
     }
 
     /// The stacks the Stack view offers: the sides, then the whole spreads.
-    static func all(pages: [BookPage]) -> [PageStack] {
-        groups(pages: pages) + [wholeSpreads(pages: pages)].compactMap { $0 }
+    static func all(pages: [BookPage], excluded: [Kind: Set<BookPage.ID>] = [:]) -> [PageStack] {
+        groups(pages: pages, excluded: excluded) + [wholeSpreads(pages: pages, excluded: excluded)].compactMap { $0 }
     }
 
     static func median(_ values: [Double]) -> Double {

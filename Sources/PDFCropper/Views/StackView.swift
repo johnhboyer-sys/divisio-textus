@@ -20,7 +20,7 @@ struct StackView: View {
         nonmutating set { imageDocumentState.wrappedValue = newValue }
     }
 
-    private var stacks: [PageStack] { PageStack.all(pages: model.pages) }
+    private var stacks: [PageStack] { model.stacks }
     private var stack: PageStack? { stacks.first { $0.id == model.stackKind } ?? stacks.first }
 
     /// The orange box: the user's draft for this stack, or else the stack's usual crop.
@@ -119,7 +119,7 @@ struct StackView: View {
                         .disabled(stack.outliers.isEmpty)
                     }
                     .fixedSize()
-                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil || loadingState.wrappedValue)
+                    .disabled(model.isAnalyzing || stack.members.isEmpty || imageState.wrappedValue == nil || loadingState.wrappedValue)
                     .help("Set every spread, or only the flagged ones, to the orange split and the blue and green crops")
                 } else if let stack {
                     Menu("Apply Crop") {
@@ -132,12 +132,15 @@ struct StackView: View {
                         .disabled(stack.outliers.isEmpty)
                     }
                     .fixedSize()
-                    .disabled(model.isAnalyzing || imageState.wrappedValue == nil || loadingState.wrappedValue)
+                    .disabled(model.isAnalyzing || stack.members.isEmpty || imageState.wrappedValue == nil || loadingState.wrappedValue)
                     .help("Set every page in this stack, or only the flagged ones, to the orange crop")
                 }
             }
             .padding([.horizontal, .top])
-            if let stack {
+            if let stack, stack.members.isEmpty {
+                Text("No pages in this stack. Tick some in the sidebar.").foregroundStyle(.secondary)
+                Spacer()
+            } else if let stack {
                 // The pages that differ in size are listed in the inspector's Stack tab.
                 canvas(stack)
                     .frame(minWidth: 240, minHeight: 240)
@@ -149,7 +152,7 @@ struct StackView: View {
         .task(id: request) {
             let requested = request
             // Analysis moves splits and skews page by page; build the blend once it settles.
-            guard let stack, !requested.analyzing else {
+            guard let stack, !stack.members.isEmpty, !requested.analyzing else {
                 imageState.wrappedValue = nil
                 loadingState.wrappedValue = false
                 return
