@@ -214,6 +214,17 @@ struct RulerTests {
         #expect(abs(r.leftCrop.maxX - layout.leftCrop.maxX) < 1e-12)
     }
 
+    @Test("Stack draft, lock on: a box dragged past the split still applies at the size it shows (Codex review)")
+    func layoutLockPastSplit() {
+        var l = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),
+                             rightCrop: CropRect(x: 0.55, y: 0.1, width: 0.3, height: 0.8))
+        l.setCrop(CropRect(x: 0.1, y: 0.1, width: 0.45, height: 0.8), on: .left, locked: true)
+        let applied = l.clamped
+        #expect(abs(applied.leftCrop.width - applied.rightCrop.width) < 1e-9,
+                "left \(applied.leftCrop.width), right \(applied.rightCrop.width)")
+        #expect(l == applied)                              // what the draft shows is what Apply gives
+    }
+
     @Test("Match Sizes on the stack draft gives what the page's Match Sizes gives")
     func layoutMatchSizes() {
         var l = layout
