@@ -858,6 +858,10 @@ final class AppModel: ObservableObject {
         var disagreement: String?
         /// Each stack's own measurement, for a tooltip.
         var details: [String] = []
+        /// Book pages the typed size doesn't fit (wider or taller than their page or
+        /// half of the scan), and the usual size there is, in inches.
+        var tooBig = 0
+        var room: PageSize?
     }
 
     /// nil outside Whole page mode.
@@ -877,6 +881,19 @@ final class AppModel: ObservableObject {
             "\(kind.label): \(inches(plan.width)) × \(inches(plan.height)) in, widths on \(plan.widths.count), "
                 + "heights on \(plan.heights.count) of \(plan.sides.count) pages"
         }
+        // Room for a typed size: each book page's page or half of the scan, in inches.
+        if let typed = pageSizeOverride {
+            var rooms: [(w: Double, h: Double)] = []
+            for p in pages where p.classification != .skip {
+                guard let d = displaySize(of: p) else { continue }
+                let W = d.width / 72, H = d.height / 72
+                rooms += p.classification == .spread ? [(p.splitX * W, H), ((1 - p.splitX) * W, H)] : [(W, H)]
+            }
+            summary.tooBig = rooms.filter { typed.width > $0.w + 0.005 || typed.height > $0.h + 0.005 }.count
+            if !rooms.isEmpty {
+                summary.room = PageSize(width: PageStack.median(rooms.map(\.w)), height: PageStack.median(rooms.map(\.h)))
+            }
+        }
         let own = plans.filter { $0.value.ownSize }
         if !own.isEmpty {
             summary.disagreement = own.sorted { $0.key.rawValue < $1.key.rawValue }.map { kind, plan in
@@ -886,15 +903,47 @@ final class AppModel: ObservableObject {
         return summary
     }
 
-    /// Set the book's page size by hand (nil: back to the measured size). Pages
-    /// analysis set get the new size; pages edited by hand keep theirs. One undo step.
+    /// Set the book's page size by hand (nil: back to the measured size). Every page
+    /// gets a typed size: pages analysis set are placed where their sheet is, pages
+    /// edited by hand keep their place (see sizeEditedPages). Clearing it puts back
+    /// the measured size on analysis's pages only. One undo step.
     func setPageSize(_ size: PageSize?) {
         guard size != pageSizeOverride, !isBusy, size?.isSensible ?? true else { return }
         let before = pages, old = pageSizeOverride
         pageSizeOverride = size
         placeSheets()
+        if let size { sizeEditedPages(size) }
         let changed = pages.indices.filter { before[$0] != pages[$0] }.map { before[$0] }
         registerPageSizeUndo(restoring: changed, size: old)
+    }
+
+    /// Pages edited by hand take a typed size too (John, 2026-10-24): each box keeps
+    /// its edge at the fold (a single page, its middle across) and its middle down,
+    /// cut to its page.
+    private func sizeEditedPages(_ size: PageSize) {
+        func span(_ lo: Double, _ hi: Double, length: Double, keep: Double?) -> (Double, Double) {
+            guard let keep else {                               // about the middle, kept on the page
+                let l = min(length, 1), a = min(max(0, (lo + hi) / 2 - l / 2), 1 - l)
+                return (a, a + l)
+            }
+            return keep == hi ? (max(0, hi - length), hi) : (lo, min(1, lo + length))
+        }
+        for i in pages.indices where setByAnalysis[pages[i].id] == nil && pages[i].classification != .skip {
+            guard let d = displaySize(of: pages[i]), d.width > 0, d.height > 0 else { continue }
+            let w = size.width * 72 / d.width, h = size.height * 72 / d.height
+            func sized(_ c: CropRect, foldAtRight: Bool?) -> CropRect {
+                let c = c.normalized()
+                let across = span(c.minX, c.maxX, length: w, keep: foldAtRight.map { $0 ? c.maxX : c.minX })
+                let down = span(c.minY, c.maxY, length: h, keep: nil)
+                return CropRect(x: across.0, y: down.0, width: across.1 - across.0, height: down.1 - down.0)
+            }
+            if pages[i].classification == .spread {
+                pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: true)
+                pages[i].rightCrop = sized(pages[i].rightCrop, foldAtRight: false)
+            } else {
+                pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
+            }
+        }
     }
 
     /// Undo for setPageSize: puts back the size and the pages, which stay analysis's.

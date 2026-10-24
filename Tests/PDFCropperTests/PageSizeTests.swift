@@ -140,15 +140,33 @@ struct PageSizeTests {
         }
     }
 
-    @Test("A page edited by hand keeps its crop when the page size is set")
-    func handEditKept() async throws {
+    @Test("A page edited by hand takes a typed page size too, keeping its edge at the fold (John, 2026-10-24)")
+    func handEditSized() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))
-        let edited = CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.6)
+        let edited = CropRect(x: 0.05, y: 0.2, width: 0.4, height: 0.6)          // room for 5.8 × 8.5 in
         undoable(undo) { m.perform("Adjust Crop") { m.pages[2].leftCrop = edited } }
         let before = m.pages
         undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
-        #expect(m.pages[2] == before[2])
-        #expect(m.pages.indices.filter { m.pages[$0] != before[$0] } == m.pages.indices.filter { $0 != 2 })
+        let c = points(m.pages[2].leftCrop)
+        #expect(abs(c.x1 - c.x0 - 5.8 * 72) < 0.5 && abs(c.y1 - c.y0 - 8.5 * 72) < 0.5, "\(c)")
+        #expect(abs(m.pages[2].leftCrop.maxX - edited.maxX) < 1e-9)                          // the fold edge stays
+        #expect(abs(m.pages[2].leftCrop.y + m.pages[2].leftCrop.height / 2 - (edited.y + edited.height / 2)) < 1e-9)   // and its middle
+        undo.undo()
+        #expect(m.pages == before)
+    }
+
+    @Test("A typed size larger than the scan's pages says so, and crops stay on their page")
+    func sizeTooBig() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        undoable(undo) { m.setPageSize(PageSize(width: 8, height: 9)) }      // a half is 7 in wide
+        let size = try #require(m.pageSize)
+        #expect(size.tooBig == size.total, "\(size)")
+        for p in m.pages {
+            #expect(p.leftCrop.minX >= -1e-9 && p.leftCrop.maxX <= p.splitX + 1e-9)
+            #expect(p.rightCrop.minX >= p.splitX - 1e-9 && p.rightCrop.maxX <= 1 + 1e-9)
+        }
+        undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
+        #expect(m.pageSize?.tooBig == 0)
     }
 
     @Test("Leaving a side out of the export is no crop edit: the spread still gets the page size (Codex review)")
@@ -572,7 +590,9 @@ struct UndoDuringAnalysisTests {
         undo.undo()                              // mid-drag: the page is analysis's again
         undoable(undo) { m.pages[1].leftCrop = mark; m.endEdit("Adjust Crop") }
         undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
-        #expect(m.pages[1].leftCrop == mark)
+        // A hand edit: sized where it is, its edge at the fold kept (analysis's pages
+        // are placed where their sheet is instead).
+        #expect(abs(m.pages[1].leftCrop.maxX - mark.maxX) < 1e-9, "\(m.pages[1].leftCrop)")
     }
 
     /// Every page of `m` as a fresh pass over a copy of `url` with `target` leaves it.
