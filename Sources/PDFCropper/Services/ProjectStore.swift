@@ -22,6 +22,8 @@ enum ProjectStore {
         /// Pages whose crops analysis set and nobody has edited since, with what
         /// it found on them (see AppModel.setByAnalysis); absent in older saves.
         var claims: [BookPage.ID: AnalysisClaim]?
+        /// Pages left out of each stack, by stack kind; absent in older saves: none.
+        var stackExcluded: [String: [BookPage.ID]]?
     }
 
     /// Identifies a PDF by a hash of all its bytes and its size.
@@ -80,5 +82,22 @@ enum ProjectStore {
 
     private static func fileURL(for key: String) -> URL? {
         directory?.appendingPathComponent("\(key).json")
+    }
+}
+
+extension ProjectStore {
+    /// The pages left out of each stack, as a save holds them: by the stack's name,
+    /// absent when none are. A name this build doesn't know is dropped.
+    static func exclusions(from stored: [String: [BookPage.ID]]?) -> [PageStack.Kind: Set<BookPage.ID>] {
+        var result: [PageStack.Kind: Set<BookPage.ID>] = [:]
+        for (name, ids) in stored ?? [:] {
+            if let kind = PageStack.Kind(rawValue: name), !ids.isEmpty { result[kind] = Set(ids) }
+        }
+        return result
+    }
+
+    static func stored(exclusions: [PageStack.Kind: Set<BookPage.ID>]) -> [String: [BookPage.ID]]? {
+        let held = exclusions.filter { !$0.value.isEmpty }
+        return held.isEmpty ? nil : Dictionary(uniqueKeysWithValues: held.map { ($0.key.rawValue, Array($0.value)) })
     }
 }

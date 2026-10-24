@@ -31,6 +31,25 @@ final class AppModel: ObservableObject {
         stackCrops[stack.id] = crop
         stackCropSpans[stack.id] = stack.span
     }
+    /// The pages the user left out of each stack. Only the stack shows it: the
+    /// pages are untouched in Page view, export, page size and detection. Saved
+    /// with the edits; not undoable, as it is a choice of view.
+    @Published private(set) var stackExclusions: [PageStack.Kind: Set<BookPage.ID>] = [:]
+
+    /// The stacks Stack view offers, without the pages left out of them.
+    var stacks: [PageStack] { PageStack.all(pages: pages, excluded: stackExclusions) }
+
+    func setStackPage(_ id: BookPage.ID, included: Bool, in kind: PageStack.Kind) {
+        var out = stackExclusions[kind] ?? []
+        if included { out.remove(id) } else { out.insert(id) }
+        stackExclusions[kind] = out.isEmpty ? nil : out
+    }
+
+    /// All: every page of the stack back in. None: every page out.
+    func setAllStackPages(included: Bool, in stack: PageStack) {
+        stackExclusions[stack.id] = included ? nil : Set(stack.allMembers.map(\.id))
+    }
+
     /// The whole-spread stack's draft split and crops; nil: the stack's usual layout.
     @Published var spreadLayout: SpreadLayout?
     /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
@@ -123,10 +142,10 @@ final class AppModel: ObservableObject {
 
     init() {
         // Save a moment after the last change, and immediately on quit.
-        autosave = Publishers.CombineLatest3($pages, $direction, $pageSizeOverride)
+        autosave = Publishers.CombineLatest4($pages, $direction, $pageSizeOverride, $stackExclusions)
             .dropFirst()
             .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
-            .sink { [weak self] pages, direction, _ in self?.saveEdits(pages, direction, wait: false) }
+            .sink { [weak self] pages, direction, _, _ in self?.saveEdits(pages, direction, wait: false) }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -199,6 +218,7 @@ final class AppModel: ObservableObject {
         stackKind = .left
         stackCrops = [:]
         stackCropSpans = [:]
+        stackExclusions = [:]
         spreadLayout = nil
         document = doc
         sourceURL = url
@@ -221,12 +241,14 @@ final class AppModel: ObservableObject {
             cropTarget = saved.cropTarget ?? .text   // what these edits were made with; a new PDF keeps the current choice
             pageSizeOverride = saved.pageSize
             setByAnalysis = saved.claims ?? [:]
+            stackExclusions = ProjectStore.exclusions(from: saved.stackExcluded)
             statusText = "Restored your earlier edits — \(pages.count) source pages → \(outputPageCount) output pages.\(textNote)"
             // An older save moves to the new key at once, and goes, so no other
             // PDF sharing the old key can pick it up.
             if let legacy, let key = projectKey,
                (try? ProjectStore.save(ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
-                                                          pageSize: pageSizeOverride, claims: setByAnalysis), key: key)) != nil {
+                                                          pageSize: pageSizeOverride, claims: setByAnalysis,
+                                                          stackExcluded: ProjectStore.stored(exclusions: stackExclusions)), key: key)) != nil {
                 ProjectStore.remove(key: legacy)          // only once the edits are safe under the new key
             }
         } else {
@@ -340,7 +362,7 @@ final class AppModel: ObservableObject {
             cancel.set()
         }
         guard !Task.isCancelled, document === current,
-              PageStack.all(pages: pages).first(where: { $0.id == stack.id })?.geometry == stack.geometry,
+              stacks.first(where: { $0.id == stack.id })?.geometry == stack.geometry,
               let image else { return nil }
         stackCache[stack.id] = CachedStack(geometry: stack.geometry, image: image)
         return image
@@ -1335,7 +1357,8 @@ final class AppModel: ObservableObject {
     private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {
         guard let key = projectKey, !pages.isEmpty else { return }
         let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
-                                       pageSize: pageSizeOverride, claims: setByAnalysis)
+                                       pageSize: pageSizeOverride, claims: setByAnalysis,
+                                       stackExcluded: ProjectStore.stored(exclusions: stackExclusions))
         // A failed save is said, not swallowed: later edits would go unsaved too.
         let save = { [weak self] in
             do { try ProjectStore.save(saved, key: key) } catch {

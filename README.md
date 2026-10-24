@@ -114,6 +114,9 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    over the blend. Pages whose crop is a different size from the rest turn red
    and are listed; click one to open it. The orange box can be applied to every
    page in the stack, or only to the flagged ones.
+   The inspector's "Pages in this stack" list has a tick for each page; an
+   unticked page is out of that stack only (not blended, judged or changed by
+   Apply) and is still exported. The choice is saved with the edits.
 6. **Export** renders each page at its scan's own resolution (150–600 DPI; a
    fixed DPI for pages without a scan), at its own size (never padded or scaled;
    the page keeps its physical size), adds an invisible OCR text layer, and

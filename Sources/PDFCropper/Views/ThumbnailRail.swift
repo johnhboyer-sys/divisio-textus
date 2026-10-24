@@ -133,7 +133,7 @@ extension AppModel {
     var flaggedSides: [BookPage.ID: [PageStack.Member.Side]] {
         guard !isAnalyzing else { return [:] }
         var sides: [BookPage.ID: [PageStack.Member.Side]] = [:]
-        for stack in PageStack.groups(pages: pages) {
+        for stack in PageStack.groups(pages: pages, excluded: stackExclusions) {
             for member in stack.outliers { sides[member.id, default: []].append(member.side) }
         }
         return sides

@@ -162,7 +162,7 @@ private struct StackSections: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let stacks = PageStack.all(pages: model.pages)
+        let stacks = model.stacks
         if let stack = stacks.first(where: { $0.id == model.stackKind }) ?? stacks.first {
             // The orange draft's two boxes, once analysis has settled them.
             if stack.id == .spreads, !model.isAnalyzing, let document = model.document,
@@ -216,8 +216,41 @@ private struct StackSections: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            pickSection(stack)
         } else {
             Text("No pages to stack.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// A tick for each page of the stack. An unticked page is out of this stack
+    /// only: not blended, judged or changed by Apply, and still exported.
+    private func pickSection(_ stack: PageStack) -> some View {
+        let pages = stack.allMembers
+        return Section {
+            HStack {
+                Button("All") { model.setAllStackPages(included: true, in: stack) }
+                    .disabled(stack.excludedMembers.isEmpty)
+                Button("None") { model.setAllStackPages(included: false, in: stack) }
+                    .disabled(stack.members.isEmpty)
+                Spacer()
+            }
+            // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(pages) { member in
+                        Toggle("p. \(member.page.sourceIndex + 1)", isOn: Binding(
+                            get: { !(model.stackExclusions[stack.id]?.contains(member.id) ?? false) },
+                            set: { model.setStackPage(member.id, included: $0, in: stack.id) }))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: min(180, Double(pages.count) * 24 + 4))
+        } header: {
+            Text("Pages in this stack (\(stack.members.count) of \(pages.count))")
+        } footer: {
+            Text("A page left out is not drawn here, counted or changed by Apply. It is still in Page view and the export.")
                 .foregroundStyle(.secondary)
         }
     }
