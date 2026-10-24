@@ -348,6 +348,31 @@ struct SplitSnapTests {
         #expect(abs(m.pages[0].leftCrop.width - 0.36) < 1e-12)
     }
 
+    @Test("Lock off: the split never passes through a box set off it by hand (Codex review)")
+    func splitNeverCrossesBox() {
+        let m = testModel()
+        var p = spread(left: CropRect(x: 0.3, y: 0.1, width: 0.1, height: 0.8),
+                       right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))
+        p.offSplit = [.left]
+        m.pages = [p]
+        for x in [0.35, 0.31, 0.25, 0.1] {
+            m.moveSplit(at: 0, to: x, locked: false)
+            let l = m.pages[0].leftCrop, r = m.pages[0].rightCrop, s = m.pages[0].splitX
+            #expect(l.maxX <= s + 1e-12 && l.width > 0 && r.minX >= s - 1e-12, "split \(s): \(l) \(r)")
+        }
+    }
+
+    @Test("Apply layout to all spreads marks each box by where it lands (Codex review)")
+    func applyLayoutMarks() {
+        let m = testModel()
+        m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.36, height: 0.8),      // app-placed, a gap
+                          right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8)),
+                   BookPage(sourceIndex: 1, classification: .spread, analyzed: true)]
+        m.selectedPageID = m.pages[0].id
+        m.applyLayoutToAllSpreads()
+        #expect(m.pages[1].offSplit == [.left])
+    }
+
     @Test("The mark is saved with the edits; older saves load without it")
     func markSaved() {
         var p = spread(left: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),

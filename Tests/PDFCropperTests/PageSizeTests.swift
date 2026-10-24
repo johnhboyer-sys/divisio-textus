@@ -156,6 +156,16 @@ struct PageSizeTests {
         #expect(m.pages == before)
     }
 
+    @Test("A typed size puts an edited box wider than its half against the split, on its side (Codex review)")
+    func typedSizeOnItsSide() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let s = m.pages[2].splitX
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[2].leftCrop = CropRect(x: 0.02, y: 0.1, width: s + 0.1, height: 0.8) } }
+        undoable(undo) { m.setPageSize(PageSize(width: 4, height: 8)) }
+        let l = m.pages[2].leftCrop
+        #expect(abs(l.maxX - s) < 1e-9 && abs(l.width - 4 * 72 / Book.media.width) < 1e-9, "\(l), split \(s)")
+    }
+
     @Test("A typed size larger than the scan's pages says so, and crops stay on their page")
     func sizeTooBig() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))

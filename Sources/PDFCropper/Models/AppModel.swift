@@ -711,7 +711,7 @@ final class AppModel: ObservableObject {
                 pages[i].splitX = sel.splitX
                 pages[i].leftCrop = sel.leftCrop
                 pages[i].rightCrop = sel.rightCrop
-                pages[i].offSplit = sel.offSplit
+                markSplitGap(i, .left); markSplitGap(i, .right)
             }
         }
         statusText = "Applied this spread's layout to every spread."
@@ -969,11 +969,12 @@ final class AppModel: ObservableObject {
                 return CropRect(x: across.0, y: down.0, width: across.1 - across.0, height: down.1 - down.0)
             }
             if pages[i].classification == .spread {
-                let split = pages[i].splitX
-                var l = pages[i].leftCrop, r = pages[i].rightCrop
-                l.x = split - l.width; r.x = split                  // against the split first
-                pages[i].leftCrop = sized(l, foldAtRight: true)
-                pages[i].rightCrop = sized(r, foldAtRight: false)
+                // Against the split, each on its own side, cut at the scan's edge.
+                let split = pages[i].splitX, l = pages[i].leftCrop.normalized(), r = pages[i].rightCrop.normalized()
+                let ld = span(l.minY, l.maxY, length: h, keep: nil), rd = span(r.minY, r.maxY, length: h, keep: nil)
+                let lx = max(0, split - w), rx = min(1, split + w)
+                pages[i].leftCrop = CropRect(x: lx, y: ld.0, width: split - lx, height: ld.1 - ld.0)
+                pages[i].rightCrop = CropRect(x: split, y: rd.0, width: rx - split, height: rd.1 - rd.0)
                 pages[i].offSplit = nil
             } else {
                 pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
@@ -1268,12 +1269,18 @@ final class AppModel: ObservableObject {
         } else {
             let s = max(0.05, min(x, 0.95))
             p.splitX = s
+            // An inner edge that follows the split, or that the split runs into, sits on
+            // it; a box the split pushes against its outer edge keeps 2% (and its side).
             var l = p.leftCrop
-            if (!off.contains(.left) || l.maxX > s) && s > l.minX + 0.02 { l.width = s - l.minX }
-            l.normalize()
+            if !off.contains(.left) || l.maxX > s {
+                let x0 = max(0, min(l.minX, s - 0.02))
+                l = CropRect(x: x0, y: l.y, width: max(0, s - x0), height: l.height)
+            }
             var r = p.rightCrop
-            if (!off.contains(.right) || r.minX < s) && s < r.maxX - 0.02 { let right = r.maxX; r.x = s; r.width = right - s }
-            r.normalize()
+            if !off.contains(.right) || r.minX < s {
+                let x1 = min(1, max(r.maxX, s + 0.02))
+                r = CropRect(x: s, y: r.y, width: max(0, x1 - s), height: r.height)
+            }
             (p.leftCrop, p.rightCrop) = (l, r)
         }
         pages[index] = p
