@@ -89,6 +89,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var trimmingPage: BookPage.ID?
     @Published var trimDraft: CropRect = .full
     @Published private(set) var trimmingAllPages = false
+    /// Pages Trim All Pages leaves as they are: to begin with, those whose scan is
+    /// another size than the page shown (a trim is a share of its scan).
+    @Published var trimExcluded: Set<BookPage.ID> = []
 
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
@@ -1354,6 +1357,13 @@ final class AppModel: ObservableObject {
         guard let p = selectedPage, allPages || p.classification != .skip, !isBusy else { return }
         trimDraft = p.trim ?? .full
         trimmingAllPages = allPages
+        trimExcluded = []
+        if allPages, let size = displaySize(of: p) {
+            trimExcluded = Set(pages.filter { q in
+                guard let s = displaySize(of: q) else { return false }
+                return abs(s.width - size.width) > 0.02 * size.width || abs(s.height - size.height) > 0.02 * size.height
+            }.map(\.id))
+        }
         showsStack = false                                      // the trim is drawn on the page
         trimmingPage = p.id
     }
@@ -1371,14 +1381,15 @@ final class AppModel: ObservableObject {
         let t = trimDraft.normalized()
         let trim: CropRect? = t.width >= 0.999 && t.height >= 0.999 ? nil : t
         if trimmingAllPages {
+            let chosen = pages.indices.filter { !trimExcluded.contains(pages[$0].id) }
             perform("Trim All Pages") {
-                for i in pages.indices {
+                for i in chosen {
                     pages[i].trim = trim
                     pages[i].trimByHand = true
                     fitInsideTrim(i)
                 }
             }
-            statusText = "Trimmed all \(pages.count) pages. Auto-detect all pages to place the boxes inside the trim."
+            statusText = "Trimmed \(chosen.count) of \(pages.count) pages. Auto-detect all pages to place the boxes inside the trim."
             return
         }
         guard let i = pages.firstIndex(where: { $0.id == id }) else { return }

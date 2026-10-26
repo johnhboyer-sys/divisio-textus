@@ -278,6 +278,7 @@ private struct TrimSection: View {
                     Button("Cancel") { model.cancelTrim() }
                         .keyboardShortcut(.cancelAction)
                 }
+                if allPages && model.trimmingAllPages { pagesToTrim }
             } else if allPages {
                 Button {
                     model.beginTrim(allPages: true)
@@ -298,6 +299,32 @@ private struct TrimSection: View {
                     .disabled(model.selectedPage?.trim == nil || model.isBusy)
             }
         }
+    }
+
+    /// Trim All Pages: which pages it trims (all, to begin with).
+    @ViewBuilder
+    private var pagesToTrim: some View {
+        let count = model.pages.count - model.trimExcluded.count
+        Text("Pages to trim (\(count) of \(model.pages.count))")
+        HStack {
+            Button("All") { model.trimExcluded = [] }
+                .disabled(model.trimExcluded.isEmpty)
+            Button("None") { model.trimExcluded = Set(model.pages.map(\.id)) }
+                .disabled(count == 0)
+            Spacer()
+        }
+        // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 4) {
+                ForEach(model.pages) { page in
+                    Toggle("p. \(page.sourceIndex + 1)", isOn: Binding(
+                        get: { !model.trimExcluded.contains(page.id) },
+                        set: { if $0 { model.trimExcluded.remove(page.id) } else { model.trimExcluded.insert(page.id) } }))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: min(180, Double(model.pages.count) * 24 + 4))
     }
 }
 

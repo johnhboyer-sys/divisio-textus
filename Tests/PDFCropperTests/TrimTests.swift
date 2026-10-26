@@ -175,6 +175,48 @@ struct TrimTests {
         #expect(m.pages == before)
     }
 
+    @Test("Trim All Pages leaves out the pages unticked (John, 2026-10-26)")
+    func trimAllExcludes() async throws {
+        let (m, undo) = await load(Scan(white: true), count: 3)
+        let before = m.pages
+        m.selectedPageID = m.pages[0].id
+        m.beginTrim(allPages: true)
+        #expect(m.trimExcluded.isEmpty)
+        m.trimDraft = Scan.book
+        m.trimExcluded = [m.pages[1].id]
+        undoable(undo) { m.finishTrim() }
+        #expect(m.pages[0].trim == Scan.book && m.pages[2].trim == Scan.book)
+        #expect(m.pages[1] == before[1])
+        #expect(m.statusText.hasPrefix("Trimmed 2 of 3 pages"))
+        undo.undo()
+        #expect(m.pages == before)
+        undo.redo()
+        #expect(m.pages[0].trim == Scan.book && m.pages[1] == before[1] && m.pages[2].trim == Scan.book)
+        m.beginTrim(allPages: true)
+        #expect(m.trimExcluded.isEmpty)                                 // each time, all pages to begin with
+        m.cancelTrim()
+    }
+
+    @Test("Trim All Pages starts with pages of another scan size left out (John, 2026-10-26)")
+    func otherSizesLeftOut() async throws {
+        let doc = try #require(PDFDocument(url: Scan().write(count: 2)))
+        let small = CGRect(x: 0, y: 0, width: 792, height: 612)                // 11 × 8.5 in, as John's page 1
+        let other = try #require(PDFDocument(url: Fixtures.writePDF("small-\(UUID().uuidString).pdf", media: small, pages: [{ c in
+            c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(small)
+        }])))
+        doc.insert(other.page(at: 0)!, at: 0)
+        let url = Fixtures.url("sizes-\(UUID().uuidString).pdf")
+        #expect(doc.write(to: url))
+        let m = testModel()
+        m.setCropTarget(.page)
+        m.load(url: url)
+        await waitUntilIdle(m)
+        m.selectedPageID = m.pages[1].id
+        m.beginTrim(allPages: true)
+        #expect(m.trimExcluded == [m.pages[0].id])
+        m.cancelTrim()
+    }
+
     @Test("A trim being drawn ends with another page or PDF, and Trim All Pages leaves Stack view (Codex review)")
     func trimSessionEnds() async throws {
         let (m, _) = await load(Scan(white: true), count: 2)
