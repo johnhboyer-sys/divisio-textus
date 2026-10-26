@@ -261,6 +261,7 @@ struct SpreadLayout: Equatable {
     /// kept. Where it would pass the scan's edge, the split moves (the other crop with
     /// it) by the shortfall, as far as the other crop has room on its outer side.
     mutating func matchSizesMovingSplit(rightMatchesLeft: Bool) {
+        self = clamped                                  // each on its own side first, as Apply cuts them
         if rightMatchesLeft {
             let w = leftCrop.width, r0 = rightCrop.minX
             let d = min(max(0, r0 + w - 1), max(0, leftCrop.minX), max(0, splitX - 0.05))
@@ -274,6 +275,13 @@ struct SpreadLayout: Equatable {
             let end = l1 + d, x = max(0, end - w)
             leftCrop = CropRect(x: x, y: rightCrop.y, width: end - x, height: rightCrop.height)
         }
+    }
+
+    /// The status line when Match Sizes couldn't make the boxes equal.
+    static func matchShortfall(rightMatchesLeft: Bool) -> String {
+        "The \(rightMatchesLeft ? "right" : "left") box can't be as wide as the \(rightMatchesLeft ? "left" : "right"): "
+            + "the scan has no more room on that side, even with the split moved. "
+            + "Use \(rightMatchesLeft ? "Make Left Match Right" : "Make Right Match Left") instead."
     }
 
     /// Sets one crop; with `locked`, the other becomes the same size (CropRect.matched).

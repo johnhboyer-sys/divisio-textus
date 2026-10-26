@@ -406,6 +406,11 @@ struct SplitSnapTests {
         n.matchSizesMovingSplit(rightMatchesLeft: true)
         #expect(abs(n.splitX - 0.54) < 1e-12 && abs(n.leftCrop.x) < 1e-12)                  // as far as it goes
         #expect(n.rightCrop.maxX <= 1 + 1e-12 && n.leftCrop.maxX <= n.splitX + 1e-12)
+        var o = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.1, y: 0.1, width: 0.6, height: 0.8),   // past the split
+                             rightCrop: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))
+        o.matchSizesMovingSplit(rightMatchesLeft: true)                                 // (Codex review)
+        #expect(o == o.clamped, "\(o)")                                                 // each on its side, as Apply gives
+        #expect(abs(o.leftCrop.width - o.rightCrop.width) < 1e-12)
     }
 
     @Test("The mark is saved with the edits; older saves load without it")

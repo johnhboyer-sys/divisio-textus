@@ -1227,9 +1227,7 @@ final class AppModel: ObservableObject {
         // Moving the split wasn't enough: say so rather than seem to do nothing.
         let p = pages[i], (moved, other) = rightMatchesLeft ? (p.rightCrop, p.leftCrop) : (p.leftCrop, p.rightCrop)
         if other.width - moved.width > 1e-6 {
-            statusText = "The \(rightMatchesLeft ? "right" : "left") box can't be as wide as the \(rightMatchesLeft ? "left" : "right"): "
-                + "the scan has no more room on that side, even with the split moved. "
-                + "Use \(rightMatchesLeft ? "Make Left Match Right" : "Make Right Match Left") instead."
+            statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft)
         }
     }
 

@@ -175,6 +175,10 @@ private struct StackSections: View {
                             var l = model.spreadLayout(for: stack)
                             l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
                             model.spreadLayout = l
+                            let (moved, other) = rightMatchesLeft ? (l.rightCrop, l.leftCrop) : (l.leftCrop, l.rightCrop)
+                            if other.width - moved.width > 1e-6 {
+                                model.statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft)
+                            }
                         })
                 }
             }
