@@ -23,13 +23,23 @@ struct ThumbnailRail: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
+                        // Trim All Pages: the pages are chosen here, as on a Mac, to leave out.
+                        let choosing = model.trimmingPage != nil && model.trimmingAllPages
                         ForEach(shown) { page in
                             ThumbnailRow(page: page,
-                                         isSelected: page.id == model.selectedPageID,
-                                         flaggedSides: flagged[page.id] ?? [])
+                                         isSelected: choosing ? model.trimSelection.contains(page.id) : page.id == model.selectedPageID,
+                                         flaggedSides: flagged[page.id] ?? [],
+                                         trimmed: choosing ? !model.trimExcluded.contains(page.id) : nil)
                                 .id(page.id)
-                                .onTapGesture { model.selectedPageID = page.id }
-                                .contextMenu { classificationMenu(for: page) }
+                                .onTapGesture {
+                                    guard choosing else { model.selectedPageID = page.id; return }
+                                    let keys = NSEvent.modifierFlags
+                                    model.chooseForTrim(page.id, keys.contains(.shift) ? .range : keys.contains(.command) ? .toggle : .plain,
+                                                        order: shown.map(\.id))
+                                }
+                                .contextMenu {
+                                    if choosing { trimMenu(for: page, order: shown.map(\.id)) } else { classificationMenu(for: page) }
+                                }
                         }
                         if shown.isEmpty {
                             Text(model.isAnalyzing ? "Pages are judged once analysis finishes."
@@ -52,6 +62,18 @@ struct ThumbnailRail: View {
         .frame(minWidth: 170)
     }
 
+    /// Trim All Pages: leave the chosen pages out, or put them back (the page
+    /// right-clicked alone, if it isn't chosen).
+    @ViewBuilder
+    private func trimMenu(for page: BookPage, order: [BookPage.ID]) -> some View {
+        Button("Leave Out") { choose(page, order); model.leaveOutOfTrim(true) }
+        Button("Include") { choose(page, order); model.leaveOutOfTrim(false) }
+    }
+
+    private func choose(_ page: BookPage, _ order: [BookPage.ID]) {
+        if !model.trimSelection.contains(page.id) { model.chooseForTrim(page.id, .plain, order: order) }
+    }
+
     /// The page's type, ticked. Skip again on a skipped page brings back the type it had.
     @ViewBuilder
     private func classificationMenu(for page: BookPage) -> some View {
@@ -71,6 +93,8 @@ private struct ThumbnailRow: View {
     let page: BookPage
     let isSelected: Bool
     let flaggedSides: [PageStack.Member.Side]
+    /// Trim All Pages: whether it trims this page (nil: not choosing).
+    var trimmed: Bool? = nil
 
     /// What shows of the page: its trim, or all of it.
     private func trimmed(_ img: NSImage, to trim: CropRect?) -> NSImage {
@@ -87,7 +111,7 @@ private struct ThumbnailRow: View {
                     Image(nsImage: trimmed(img, to: page.trim))
                         .resizable().scaledToFit()
                         .frame(maxHeight: 120)
-                        .opacity(page.classification == .skip ? 0.4 : 1)
+                        .opacity(page.classification == .skip || trimmed == false ? 0.4 : 1)
                 } else {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(.quaternary)
@@ -96,6 +120,15 @@ private struct ThumbnailRow: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if let trimmed {
+                    Image(systemName: trimmed ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(trimmed ? Color.accentColor : .secondary)
+                        .background(Circle().fill(.background))
+                        .padding(4)
+                }
+            }
             .padding(4)
             .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 6))

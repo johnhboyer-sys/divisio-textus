@@ -92,6 +92,13 @@ final class AppModel: ObservableObject {
     /// Pages Trim All Pages leaves as they are: to begin with, those whose scan is
     /// another size than the page shown (a trim is a share of its scan).
     @Published var trimExcluded: Set<BookPage.ID> = []
+    /// Trim All Pages: the pages chosen in the side panel, to leave out or put back.
+    @Published private(set) var trimSelection: Set<BookPage.ID> = []
+    private var trimAnchor: BookPage.ID?
+
+    /// A click in the side panel, as on a Mac: one page, a run from the last page
+    /// clicked (Shift), or one page more or less (⌘).
+    enum TrimClick { case plain, range, toggle }
 
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
@@ -839,7 +846,10 @@ final class AppModel: ObservableObject {
         if let type = pages[i].typeBeforeSkip { return setClassification(type, for: id) }
         perform("Change Page Type") {
             reanalyze(i)
-            pages[i].omittedSide = nil
+            if pages[i].classification != .skip { pages[i].omittedSide = nil }
+        }
+        if pages[i].classification == .skip {
+            statusText = "Page \(pages[i].sourceIndex + 1) couldn't be read, so it stays skipped."
         }
     }
 
@@ -963,6 +973,13 @@ final class AppModel: ObservableObject {
         /// rounded down so it fits as typed.
         var tooBig = 0
         var fitsAll: PageSize?
+        /// The size Use on All Pages gives: the measured one, or (on an axis not
+        /// measured) the largest that fits every page.
+        var suggested: PageSize? {
+            if let width, let height { return PageSize(width: width, height: height) }
+            guard let fits = fitsAll else { return nil }
+            return PageSize(width: width ?? fits.width, height: height ?? fits.height)
+        }
     }
 
     /// nil outside Whole page mode.
@@ -982,22 +999,21 @@ final class AppModel: ObservableObject {
             "\(kind.label): \(inches(plan.width)) × \(inches(plan.height)) in, widths on \(plan.widths.count), "
                 + "heights on \(plan.heights.count) of \(plan.sides.count) pages"
         }
-        // Room for a typed size: each book page's page or half of the scan, in inches.
+        // Room for a size: each book page's page or half of its trim, in inches.
+        var rooms: [(w: Double, h: Double)] = []
+        for p in pages where p.classification != .skip {
+            guard let d = displaySize(of: p) else { continue }
+            let W = d.width / 72, b = p.bounds, H = b.height * d.height / 72
+            rooms += p.classification == .spread ? [((p.splitX - b.minX) * W, H), ((b.maxX - p.splitX) * W, H)] : [(b.width * W, H)]
+        }
+        if !rooms.isEmpty {            // nil when no size the fields take fits
+            let hi = PageSize.sensible.upperBound
+            let fits = PageSize(width: min(hi, PageSize.roundedDown(rooms.map(\.w).min()!)),
+                                height: min(hi, PageSize.roundedDown(rooms.map(\.h).min()!)))
+            summary.fitsAll = fits.isSensible ? fits : nil
+        }
         if let typed = pageSizeOverride {
-            var rooms: [(w: Double, h: Double)] = []
-            for p in pages where p.classification != .skip {
-                guard let d = displaySize(of: p) else { continue }
-                let W = d.width / 72, b = p.bounds, H = b.height * d.height / 72
-                rooms += p.classification == .spread ? [((p.splitX - b.minX) * W, H), ((b.maxX - p.splitX) * W, H)] : [(b.width * W, H)]
-            }
-            let small = rooms.filter { typed.width > $0.w + 1e-6 || typed.height > $0.h + 1e-6 }   // cut at all: as placeSheets cuts
-            summary.tooBig = small.count
-            if !small.isEmpty {        // nil when no size the field takes fits
-                let hi = PageSize.sensible.upperBound
-                let fits = PageSize(width: min(hi, PageSize.roundedDown(rooms.map(\.w).min()!)),
-                                    height: min(hi, PageSize.roundedDown(rooms.map(\.h).min()!)))
-                summary.fitsAll = fits.isSensible ? fits : nil
-            }
+            summary.tooBig = rooms.filter { typed.width > $0.w + 1e-6 || typed.height > $0.h + 1e-6 }.count   // cut at all: as placeSheets cuts
         }
         let own = plans.filter { $0.value.ownSize }
         if !own.isEmpty {
@@ -1047,11 +1063,11 @@ final class AppModel: ObservableObject {
             if pages[i].classification == .spread {
                 // Against the split, each on its own side, cut at the scan's edge.
                 let split = pages[i].splitX, l = pages[i].leftCrop.normalized(), r = pages[i].rightCrop.normalized()
-                let ld = span(l.minY, l.maxY, length: h, keep: nil, vertical: true)
-                let rd = span(r.minY, r.maxY, length: h, keep: nil, vertical: true)
+                // One top and bottom for both (John, 2026-10-26), about their middles.
+                let down = span((l.minY + r.minY) / 2, (l.maxY + r.maxY) / 2, length: h, keep: nil, vertical: true)
                 let lx = max(b.minX, split - w), rx = min(b.maxX, split + w)
-                pages[i].leftCrop = CropRect(x: lx, y: ld.0, width: split - lx, height: ld.1 - ld.0)
-                pages[i].rightCrop = CropRect(x: split, y: rd.0, width: rx - split, height: rd.1 - rd.0)
+                pages[i].leftCrop = CropRect(x: lx, y: down.0, width: split - lx, height: down.1 - down.0)
+                pages[i].rightCrop = CropRect(x: split, y: down.0, width: rx - split, height: down.1 - down.0)
                 pages[i].handOffSplit = nil
             } else {
                 pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
@@ -1172,6 +1188,8 @@ final class AppModel: ObservableObject {
             claim.rightFound = pages[i].rightCrop
             setByAnalysis[pages[i].id] = claim
         }
+        // The sides placed at a height, and their text, to line up a spread's two.
+        var placedDown: [BookPage.ID: [CropRect?]] = [:]
         for (_, plan) in sheetPlans() {
             // An axis without a size gets what analysis found, so a size cleared
             // or never measured leaves nothing of an earlier one behind.
@@ -1205,9 +1223,24 @@ final class AppModel: ObservableObject {
                     let b = side.member.page.bounds
                     let s = span((y / h, (y + H) / h), side.text.map { ($0.minY, $0.maxY) }, within: (b.minY, b.maxY))
                     crop.y = s.0; crop.height = s.1 - s.0
+                    placedDown[side.member.id, default: []].append(side.text)
                 }
                 if side.isLeft { pages[i].leftCrop = crop } else { pages[i].rightCrop = crop }
             }
+        }
+        // A spread's two boxes share their top and bottom (John, 2026-10-26): about
+        // the middle of the two, as tall as the taller, taking in both pages' text,
+        // inside the trim.
+        for (id, texts) in placedDown where texts.count == 2 {
+            guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification == .spread else { continue }
+            let l = pages[i].leftCrop, r = pages[i].rightCrop, b = pages[i].bounds
+            let h = max(l.height, r.height), mid = (l.minY + l.maxY + r.minY + r.maxY) / 4
+            var top = mid - h / 2, bottom = mid + h / 2
+            for t in texts.compactMap({ $0 }) { top = min(top, t.minY); bottom = max(bottom, t.maxY) }
+            if top < b.minY { bottom = min(b.maxY, bottom + b.minY - top); top = b.minY }
+            if bottom > b.maxY { top = max(b.minY, top - (bottom - b.maxY)); bottom = b.maxY }
+            pages[i].leftCrop.y = top; pages[i].leftCrop.height = bottom - top
+            pages[i].rightCrop.y = top; pages[i].rightCrop.height = bottom - top
         }
     }
 
@@ -1371,6 +1404,8 @@ final class AppModel: ObservableObject {
         trimDraft = p.trim ?? .full
         trimmingAllPages = allPages
         trimExcluded = []
+        trimSelection = []
+        trimAnchor = nil
         if allPages, let size = displaySize(of: p) {
             trimExcluded = Set(pages.filter { q in
                 guard let s = displaySize(of: q) else { return false }
@@ -1422,6 +1457,27 @@ final class AppModel: ObservableObject {
             pages[i].trim = nil
             pages[i].trimByHand = true
         }
+    }
+
+    /// Trim All Pages: choose pages in the side panel; `order` is the side panel's.
+    func chooseForTrim(_ id: BookPage.ID, _ click: TrimClick, order: [BookPage.ID]) {
+        switch click {
+        case .plain:
+            trimSelection = [id]
+            trimAnchor = id
+        case .toggle:
+            if trimSelection.contains(id) { trimSelection.remove(id) } else { trimSelection.insert(id) }
+            trimAnchor = id
+        case .range:
+            guard let anchor = trimAnchor, let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: id)
+            else { return chooseForTrim(id, .plain, order: order) }
+            trimSelection = Set(order[min(a, b)...max(a, b)])
+        }
+    }
+
+    /// Leave Out (or Include) the pages chosen in the side panel.
+    func leaveOutOfTrim(_ out: Bool) {
+        if out { trimExcluded.formUnion(trimSelection) } else { trimExcluded.subtract(trimSelection) }
     }
 
     /// Remove All Trims: every page whole again, which Auto-detect then leaves so.

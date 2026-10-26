@@ -29,6 +29,8 @@ struct PageSizeTests {
         /// A last spread whose fold lies well right of the others and whose right
         /// page is blank: analysis moves its split to the book's usual one.
         var oddLast = false
+        /// How much lower than the left sheet the right one lies on the scan, in points.
+        var rightDrop = 0.0
 
         func fold(_ i: Int) -> Double { oddLast && i == count - 1 ? 604 : 504 + Self.shifts[i % Self.shifts.count].0 }
         /// The sheet's top, from the top of the scan.
@@ -60,15 +62,16 @@ struct PageSizeTests {
             // them) the paper runs past the scan's top and bottom: no edge there,
             // so the box must be placed from the text.
             if [Self.opening, Self.short, 8].contains(i) { fill(1, f - w, 0, 2 * w, H) }
-            else { fill(1, f - w, t, 2 * w, h) }
+            else { fill(1, f - w, t, w, h); fill(1, f, t + rightDrop, w, h) }
             fill(0.04, f - 2, t, 4, h)                                  // the fold
             // Text: 0.75 in from the outer edge, 0.6 in from the fold, 0.75 in
             // from the top, 0.85 in from the bottom.
             for (x0, side) in [(f - w + 54, 0), (f + 43, 1)] {
                 if oddLast && i == count - 1 && side == 1 { continue }
-                var y0 = t + 54, y1 = t + h - 61
-                if i == Self.opening && side == 1 { y0 = t + 260 }
-                if i == Self.short && side == 0 { y1 = t + 250 }
+                let top = side == 1 && ![Self.opening, Self.short, 8].contains(i) ? t + rightDrop : t
+                var y0 = top + 54, y1 = top + h - 61
+                if i == Self.opening && side == 1 { y0 = top + 260 }
+                if i == Self.short && side == 0 { y1 = top + 250 }
                 var y = y0
                 while y + 6 <= y1 {
                     fill(0.1, x0, y, w - 97, 6)
@@ -140,7 +143,7 @@ struct PageSizeTests {
         }
     }
 
-    @Test("A page edited by hand takes a typed page size too, its boxes against the split (John, 2026-10-24)")
+    @Test("A page edited by hand takes a typed page size too, its boxes against the split (John, 2026-10-24), one top and bottom for both about their middles (2026-10-26)")
     func handEditSized() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))
         let edited = CropRect(x: 0.05, y: 0.2, width: 0.4, height: 0.6)          // room for 5.8 × 8.5 in
@@ -151,7 +154,9 @@ struct PageSizeTests {
         #expect(abs(c.x1 - c.x0 - 5.8 * 72) < 0.5 && abs(c.y1 - c.y0 - 8.5 * 72) < 0.5, "\(c)")
         #expect(abs(m.pages[2].leftCrop.maxX - m.pages[2].splitX) < 1e-9)                   // against the split
         #expect(abs(m.pages[2].rightCrop.minX - m.pages[2].splitX) < 1e-9)
-        #expect(abs(m.pages[2].leftCrop.y + m.pages[2].leftCrop.height / 2 - (edited.y + edited.height / 2)) < 1e-9)   // and its middle
+        let middle = (edited.y + edited.height / 2 + before[2].rightCrop.y + before[2].rightCrop.height / 2) / 2   // the two's middle
+        #expect(abs(m.pages[2].leftCrop.y + m.pages[2].leftCrop.height / 2 - middle) < 1e-9)
+        #expect(m.pages[2].leftCrop.y == m.pages[2].rightCrop.y && m.pages[2].leftCrop.height == m.pages[2].rightCrop.height)
         undo.undo()
         #expect(m.pages == before)
     }
@@ -247,6 +252,38 @@ struct PageSizeTests {
             let c = p.leftCrop
             #expect(abs(c.width * 8 - 6) < 0.01 && abs(c.height * 10 - 9) < 0.01, "page \(p.sourceIndex): \(c)")
         }
+    }
+
+    @Test("A spread's two boxes share their top and bottom, measured size or typed (John, 2026-10-26)")
+    func spreadBoxesAligned() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true, rightDrop: 14))
+        func aligned() {
+            for (i, p) in m.pages.enumerated() {
+                #expect(abs(p.leftCrop.minY - p.rightCrop.minY) < 1e-9 && abs(p.leftCrop.maxY - p.rightCrop.maxY) < 1e-9,
+                        "spread \(i): left \(p.leftCrop), right \(p.rightCrop)")
+            }
+        }
+        #expect(m.pageSize?.height != nil)
+        aligned()
+        undoable(undo) { m.setPageSize(PageSize(width: 5.5, height: 8.5)) }
+        aligned()
+        // A page edited by hand takes a typed size aligned too.
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[2].rightCrop.y += 0.03 } }
+        undoable(undo) { m.setPageSize(PageSize(width: 5.6, height: 8.6)) }
+        aligned()
+    }
+
+    @Test("The size Use on All Pages gives: the measured one, or the largest that fits every page (John, 2026-10-26)")
+    func suggestedSize() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let measured = try #require(m.pageSize)
+        #expect(measured.suggested == PageSize(width: try #require(measured.width), height: try #require(measured.height)))
+        undoable(undo) { m.setPageSize(measured.suggested) }
+        #expect(m.pageSize?.override == measured.suggested)
+        let (few, _, _) = await load(Book(count: 4, strips: true))
+        let size = try #require(few.pageSize)
+        #expect(size.width == nil && size.height == nil)
+        #expect(size.suggested != nil && size.suggested == size.fitsAll, "\(size)")
     }
 
     @Test("A size rounded down to the hundredth stays put when it is one already (Codex review)")
@@ -694,11 +731,13 @@ struct UndoDuringAnalysisTests {
         m.beginEdit()
         undo.undo()                              // mid-drag: the page is analysis's again
         undoable(undo) { m.pages[1].leftCrop = mark; m.endEdit("Adjust Crop") }
+        let right = m.pages[1].rightCrop
         undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
         // A hand edit: sized against the split (analysis's pages are placed where
-        // their sheet is instead), its own middle down kept.
+        // their sheet is instead), about the middle of its two boxes, which share it.
         #expect(abs(m.pages[1].leftCrop.maxX - m.pages[1].splitX) < 1e-9, "\(m.pages[1].leftCrop)")
-        #expect(abs(m.pages[1].leftCrop.y + m.pages[1].leftCrop.height / 2 - (mark.y + mark.height / 2)) < 1e-9)
+        let middle = (mark.y + mark.height / 2 + right.y + right.height / 2) / 2
+        #expect(abs(m.pages[1].leftCrop.y + m.pages[1].leftCrop.height / 2 - middle) < 1e-9)
     }
 
     /// Every page of `m` as a fresh pass over a copy of `url` with `target` leaves it.

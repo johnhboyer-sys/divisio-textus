@@ -197,6 +197,32 @@ struct TrimTests {
         m.cancelTrim()
     }
 
+    @Test("Trim All Pages: pages chosen in the side panel as on a Mac (click, Shift-click, ⌘-click) are left out or put back (John, 2026-10-26)")
+    func sidePanelChoice() async throws {
+        let (m, undo) = await load(Scan(white: true), count: 6)
+        let ids = m.pages.map(\.id)
+        m.selectedPageID = ids[0]
+        m.beginTrim(allPages: true)
+        #expect(m.trimSelection.isEmpty)
+        m.chooseForTrim(ids[1], .plain, order: ids)
+        #expect(m.trimSelection == [ids[1]])
+        m.chooseForTrim(ids[3], .range, order: ids)                      // Shift-click: 1 to 3
+        #expect(m.trimSelection == Set(ids[1...3]))
+        m.chooseForTrim(ids[2], .toggle, order: ids)                     // ⌘-click: 2 out of the selection
+        #expect(m.trimSelection == [ids[1], ids[3]])
+        m.chooseForTrim(ids[5], .toggle, order: ids)                     // ⌘-click: 5 in
+        #expect(m.trimSelection == [ids[1], ids[3], ids[5]])
+        m.leaveOutOfTrim(true)
+        #expect(m.trimExcluded == [ids[1], ids[3], ids[5]])
+        m.chooseForTrim(ids[3], .plain, order: ids)
+        m.leaveOutOfTrim(false)
+        #expect(m.trimExcluded == [ids[1], ids[5]])
+        #expect(m.selectedPageID == ids[0] && m.trimmingPage == ids[0])  // the page drawn on stays
+        m.trimDraft = Scan.book
+        undoable(undo) { m.finishTrim() }
+        #expect(m.pages.filter { $0.trim == Scan.book }.map(\.id) == [ids[0], ids[2], ids[3], ids[4]])
+    }
+
     @Test("Trim All Pages starts with pages of another scan size left out (John, 2026-10-26)")
     func otherSizesLeftOut() async throws {
         let doc = try #require(PDFDocument(url: Scan().write(count: 2)))

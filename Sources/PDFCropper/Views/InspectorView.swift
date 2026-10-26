@@ -301,30 +301,23 @@ private struct TrimSection: View {
         }
     }
 
-    /// Trim All Pages: which pages it trims (all, to begin with).
+    /// Trim All Pages: which pages it trims (ticked in the side panel), chosen there.
     @ViewBuilder
     private var pagesToTrim: some View {
         let count = model.pages.count - model.trimExcluded.count
-        Text("Pages to trim (\(count) of \(model.pages.count))")
+        Text("Pages to trim: \(count) of \(model.pages.count)")
+        Text("Choose pages in the side panel.").font(.caption).foregroundStyle(.secondary)
+        HStack {
+            Button("Leave Out Selected") { model.leaveOutOfTrim(true) }
+            Button("Include Selected") { model.leaveOutOfTrim(false) }
+        }
+        .disabled(model.trimSelection.isEmpty)
         HStack {
             Button("All") { model.trimExcluded = [] }
                 .disabled(model.trimExcluded.isEmpty)
             Button("None") { model.trimExcluded = Set(model.pages.map(\.id)) }
                 .disabled(count == 0)
-            Spacer()
         }
-        // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 4) {
-                ForEach(model.pages) { page in
-                    Toggle("p. \(page.sourceIndex + 1)", isOn: Binding(
-                        get: { !model.trimExcluded.contains(page.id) },
-                        set: { if $0 { model.trimExcluded.remove(page.id) } else { model.trimExcluded.insert(page.id) } }))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(height: min(180, Double(model.pages.count) * 24 + 4))
     }
 }
 
@@ -454,17 +447,15 @@ private struct ExportSections: View {
     }
 }
 
-/// Whole page: the book's page size, as measured or as typed in ("6 × 9"; empty
-/// goes back to the measured size).
+/// Whole page: the book's page size: measured (or the largest that fits every page)
+/// with Use on All Pages, and Width and Height to set it by hand with Apply (both
+/// empty goes back to the measured size).
 private struct PageSizeRow: View {
     @EnvironmentObject var model: AppModel
     let size: AppModel.PageSizeSummary
     // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
-    private let entryState = State(initialValue: "")
-    private var entry: String {
-        get { entryState.wrappedValue }
-        nonmutating set { entryState.wrappedValue = newValue }
-    }
+    private let widthState = State(initialValue: "")
+    private let heightState = State(initialValue: "")
     private let problemState = State<String?>(initialValue: nil)
     private var problem: String? {
         get { problemState.wrappedValue }
@@ -472,21 +463,25 @@ private struct PageSizeRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(shown.0 == nil && shown.1 == nil ? "Page size" : "Page size: \(Self.describe(shown)) in")
             Text(note).font(.caption).foregroundStyle(.secondary)
             if let disagreement = size.disagreement {
                 Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
             }
-            HStack {
-                Text("Size (in)")
-                TextField("Page size", text: entryState.projectedValue, prompt: Text("e.g. 6 × 9"))
-                    .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(commit)
-                    .disabled(model.isBusy)
-                    .help("Type the book's page size, e.g. 6 × 9, to place every page analysis set at that size. Leave it empty to use the measured size.")
+            if let suggested = size.suggested, suggested != size.override {
+                HStack {
+                    Text("\(size.width != nil && size.height != nil ? "Measured" : "Fits every page"): \(Self.describe(suggested)) in")
+                        .font(.caption)
+                    Spacer()
+                    Button("Use on All Pages") { problem = nil; model.setPageSize(suggested) }
+                        .disabled(model.isBusy)
+                }
             }
+            field("Width", widthState.projectedValue)
+            field("Height", heightState.projectedValue)
+            Button("Apply", action: apply)
+                .disabled(model.isBusy)
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
@@ -497,8 +492,27 @@ private struct PageSizeRow: View {
             }
         }
         .help(size.details.joined(separator: "\n"))
-        .onAppear { entry = size.override.map(Self.describe) ?? "" }
-        .onChange(of: size.override) { _, new in entry = new.map(Self.describe) ?? "" }
+        .onAppear(perform: fill)
+        .onChange(of: size.override) { _, _ in fill() }
+    }
+
+    private func field(_ name: String, _ text: Binding<String>) -> some View {
+        HStack {
+            Text(name).frame(width: 48, alignment: .leading)
+            TextField(name, text: text)
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 70)
+                .onSubmit(apply)
+                .disabled(model.isBusy)
+            Text("in")
+        }
+    }
+
+    /// The fields show the size set by hand, or are empty.
+    private func fill() {
+        widthState.wrappedValue = size.override.map { String(format: "%.2f", $0.width) } ?? ""
+        heightState.wrappedValue = size.override.map { String(format: "%.2f", $0.height) } ?? ""
     }
 
     private var shown: (Double?, Double?) {
@@ -507,17 +521,27 @@ private struct PageSizeRow: View {
     }
 
     private var note: String {
-        if size.override != nil { return "Set by you. Clear the field to use the measured size." }
+        if size.override != nil { return "Set by you. Empty both fields and Apply to use the measured size." }
         if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
-        return "Measured on \(size.measured) of \(size.total) pages. Type a size to override it."
+        return "Measured on \(size.measured) of \(size.total) pages."
     }
 
-    private func commit() {
-        let text = entry.trimmingCharacters(in: .whitespaces)
-        if text.isEmpty { problem = nil; model.setPageSize(nil); return }
-        guard let typed = PageSize(parsing: text) else {
-            problem = "“\(text)” isn't a page size. Type width × height in inches, each between "
-                + "\(Int(PageSize.sensible.lowerBound)) and \(Int(PageSize.sensible.upperBound)), like 6 × 9."
+    private func apply() {
+        func number(_ s: String) -> Double? {
+            Double(s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "in", with: "")
+                .replacingOccurrences(of: "\"", with: "").trimmingCharacters(in: .whitespaces))
+        }
+        let w = widthState.wrappedValue.trimmingCharacters(in: .whitespaces)
+        let h = heightState.wrappedValue.trimmingCharacters(in: .whitespaces)
+        if w.isEmpty && h.isEmpty { problem = nil; model.setPageSize(nil); return }
+        let range = "\(Int(PageSize.sensible.lowerBound)) and \(Int(PageSize.sensible.upperBound))"
+        guard let width = number(w), let height = number(h) else {
+            problem = "Type a width and a height in inches, like 6 and 9."
+            return
+        }
+        let typed = PageSize(width: width, height: height)
+        guard typed.isSensible else {
+            problem = "Each must be between \(range) inches."
             return
         }
         problem = nil
