@@ -143,7 +143,7 @@ struct PageSizeTests {
         }
     }
 
-    @Test("A page edited by hand takes a typed page size too, its boxes against the split (John, 2026-10-24), one top and bottom for both about their middles (2026-10-26)")
+    @Test("A page edited by hand takes a typed page size too, its boxes against the split (John, 2026-10-24), one top and bottom for both, each kept (2026-10-26)")
     func handEditSized() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))
         let edited = CropRect(x: 0.05, y: 0.2, width: 0.4, height: 0.6)          // room for 5.8 × 8.5 in
@@ -151,12 +151,16 @@ struct PageSizeTests {
         let before = m.pages
         undoable(undo) { m.setPageSize(PageSize(width: 5.8, height: 8.5)) }
         let c = points(m.pages[2].leftCrop)
-        #expect(abs(c.x1 - c.x0 - 5.8 * 72) < 0.5 && abs(c.y1 - c.y0 - 8.5 * 72) < 0.5, "\(c)")
+        #expect(abs(c.x1 - c.x0 - 5.8 * 72) < 0.5 && c.y1 - c.y0 >= 8.5 * 72 - 0.5, "\(c)")
         #expect(abs(m.pages[2].leftCrop.maxX - m.pages[2].splitX) < 1e-9)                   // against the split
         #expect(abs(m.pages[2].rightCrop.minX - m.pages[2].splitX) < 1e-9)
-        let middle = (edited.y + edited.height / 2 + before[2].rightCrop.y + before[2].rightCrop.height / 2) / 2   // the two's middle
-        #expect(abs(m.pages[2].leftCrop.y + m.pages[2].leftCrop.height / 2 - middle) < 1e-9)
-        #expect(m.pages[2].leftCrop.y == m.pages[2].rightCrop.y && m.pages[2].leftCrop.height == m.pages[2].rightCrop.height)
+        // One top and bottom for both, taking in each box at the size about its own middle.
+        let l = m.pages[2].leftCrop, h = 8.5 * 72 / Book.media.height
+        #expect(l.y == m.pages[2].rightCrop.y && l.height == m.pages[2].rightCrop.height)
+        for own in [edited, before[2].rightCrop] {
+            let mid = own.y + own.height / 2
+            #expect(l.minY <= mid - h / 2 + 1e-9 && l.maxY >= mid + h / 2 - 1e-9, "\(l), own middle \(mid)")
+        }
         undo.undo()
         #expect(m.pages == before)
     }
@@ -271,6 +275,20 @@ struct PageSizeTests {
         undoable(undo) { m.perform("Adjust Crop") { m.pages[2].rightCrop.y += 0.03 } }
         undoable(undo) { m.setPageSize(PageSize(width: 5.6, height: 8.6)) }
         aligned()
+    }
+
+    @Test("A typed size on a spread edited by hand, its boxes at different heights, cuts neither page's (Codex review)")
+    func editedOffsetBoxesKeepPrint() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        let s = m.pages[2].splitX
+        undoable(undo) { m.perform("Adjust Crop") {
+            m.pages[2].leftCrop = CropRect(x: s - 0.39, y: 0.1, width: 0.39, height: 0.6)
+            m.pages[2].rightCrop = CropRect(x: s, y: 0.3, width: 0.39, height: 0.6)
+        } }
+        undoable(undo) { m.setPageSize(PageSize(width: 5.5, height: 6)) }          // 6 in: 0.6 of the scan
+        let l = m.pages[2].leftCrop, r = m.pages[2].rightCrop
+        #expect(l.y == r.y && l.height == r.height, "\(l) \(r)")
+        #expect(l.minY <= 0.1 + 1e-9 && l.maxY >= 0.9 - 1e-9, "both boxes' own spans kept: \(l)")
     }
 
     @Test("The size Use on All Pages gives: the measured one, or the largest that fits every page (John, 2026-10-26)")
@@ -428,6 +446,18 @@ struct PageSizeTests {
         ("6,5 x 9", nil), ("", nil)] as [(String, PageSize?)])
     func parseSize(_ input: String, _ expected: PageSize?) {
         #expect(PageSize(parsing: input) == expected, "\(input)")
+    }
+
+    @Test("A width or height typed alone: inches, with or without the unit", arguments: [
+        ("6", 6.0), (" 5.45 ", 5.45), (".5", 0.5), ("6 in", 6), ("6IN", 6), ("6 In", 6), ("6\"", 6), ("6″", 6),
+    ] as [(String, Double)])
+    func oneLength(text: String, inches: Double) {
+        #expect(PageSize.inches(text) == inches)
+    }
+
+    @Test("Not a length in inches", arguments: ["", "abc", "6 cm", "6 x", "-1", "6..5"])
+    func notALength(text: String) {
+        #expect(PageSize.inches(text) == nil)
     }
 
     @Test("A size that can't be saved is refused")
@@ -734,10 +764,15 @@ struct UndoDuringAnalysisTests {
         let right = m.pages[1].rightCrop
         undoable(undo) { m.setPageSize(PageSize(width: 5, height: 7)) }
         // A hand edit: sized against the split (analysis's pages are placed where
-        // their sheet is instead), about the middle of its two boxes, which share it.
+        // their sheet is instead), the size about its own middle kept in the
+        // top and bottom its two boxes share.
         #expect(abs(m.pages[1].leftCrop.maxX - m.pages[1].splitX) < 1e-9, "\(m.pages[1].leftCrop)")
-        let middle = (mark.y + mark.height / 2 + right.y + right.height / 2) / 2
-        #expect(abs(m.pages[1].leftCrop.y + m.pages[1].leftCrop.height / 2 - middle) < 1e-9)
+        let l = m.pages[1].leftCrop, h = 7 * 72 / (m.displaySize(of: m.pages[1])?.height ?? 1)
+        #expect(l.y == m.pages[1].rightCrop.y && l.height == m.pages[1].rightCrop.height)
+        for own in [mark, right] {
+            let mid = own.y + own.height / 2
+            #expect(l.minY <= mid - h / 2 + 1e-9 && l.maxY >= mid + h / 2 - 1e-9, "\(l), own middle \(mid)")
+        }
     }
 
     /// Every page of `m` as a fresh pass over a copy of `url` with `target` leaves it.

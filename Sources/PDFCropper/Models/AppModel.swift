@@ -1063,11 +1063,14 @@ final class AppModel: ObservableObject {
             if pages[i].classification == .spread {
                 // Against the split, each on its own side, cut at the scan's edge.
                 let split = pages[i].splitX, l = pages[i].leftCrop.normalized(), r = pages[i].rightCrop.normalized()
-                // One top and bottom for both (John, 2026-10-26), about their middles.
-                let down = span((l.minY + r.minY) / 2, (l.maxY + r.maxY) / 2, length: h, keep: nil, vertical: true)
+                // One top and bottom for both (John, 2026-10-26): each the size about its
+                // own middle, as before, and the two together, so neither page's is cut.
+                let ld = span(l.minY, l.maxY, length: h, keep: nil, vertical: true)
+                let rd = span(r.minY, r.maxY, length: h, keep: nil, vertical: true)
+                let top = min(ld.0, rd.0), bottom = max(ld.1, rd.1)
                 let lx = max(b.minX, split - w), rx = min(b.maxX, split + w)
-                pages[i].leftCrop = CropRect(x: lx, y: down.0, width: split - lx, height: down.1 - down.0)
-                pages[i].rightCrop = CropRect(x: split, y: down.0, width: rx - split, height: down.1 - down.0)
+                pages[i].leftCrop = CropRect(x: lx, y: top, width: split - lx, height: bottom - top)
+                pages[i].rightCrop = CropRect(x: split, y: top, width: rx - split, height: bottom - top)
                 pages[i].handOffSplit = nil
             } else {
                 pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
@@ -1313,6 +1316,12 @@ final class AppModel: ObservableObject {
 
     func selectAdjacentPage(_ offset: Int) {
         guard !pages.isEmpty else { return }
+        // Choosing pages for Trim All Pages: ↑ and ↓ move the choice, the trim stays open.
+        if trimmingPage != nil && trimmingAllPages {
+            let from = trimAnchor.flatMap { id in pages.firstIndex { $0.id == id } } ?? selectedIndex ?? 0
+            let i = max(0, min(pages.count - 1, from + offset))
+            return chooseForTrim(pages[i].id, .plain, order: pages.map(\.id))
+        }
         let i = max(0, min(pages.count - 1, (selectedIndex ?? 0) + offset))
         selectedPageID = pages[i].id
     }

@@ -527,10 +527,7 @@ private struct PageSizeRow: View {
     }
 
     private func apply() {
-        func number(_ s: String) -> Double? {
-            Double(s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "in", with: "")
-                .replacingOccurrences(of: "\"", with: "").trimmingCharacters(in: .whitespaces))
-        }
+        let number = PageSize.inches
         let w = widthState.wrappedValue.trimmingCharacters(in: .whitespaces)
         let h = heightState.wrappedValue.trimmingCharacters(in: .whitespaces)
         if w.isEmpty && h.isEmpty { problem = nil; model.setPageSize(nil); return }

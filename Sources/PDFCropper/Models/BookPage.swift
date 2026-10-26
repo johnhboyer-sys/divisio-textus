@@ -167,6 +167,15 @@ extension PageSize {
 
     /// A size as typed: two numbers in inches, such as "6 × 9", "6 x 9 in",
     /// "5.5 by 8.5" or 6" × 9". Nil for anything else, or a size outside `sensible`.
+    /// One length as typed in a Width or Height field: inches, as "6", "5.45 in" or 6".
+    static func inches(_ text: String) -> Double? {
+        let pattern = #"^\s*(\d+(?:\.\d+)?|\.\d+)\s*(?:in|"|″)?\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let r = Range(match.range(at: 1), in: text) else { return nil }
+        return Double(text[r])
+    }
+
     init?(parsing text: String) {
         let number = #"(\d+(?:\.\d+)?|\.\d+)"#, unit = #"\s*(?:in|"|″)?\s*"#
         let pattern = "^\\s*" + number + unit + "(?:×|x|by)" + "\\s*" + number + unit + "$"

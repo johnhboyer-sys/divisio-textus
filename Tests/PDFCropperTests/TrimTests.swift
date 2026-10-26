@@ -223,6 +223,23 @@ struct TrimTests {
         #expect(m.pages.filter { $0.trim == Scan.book }.map(\.id) == [ids[0], ids[2], ids[3], ids[4]])
     }
 
+    @Test("While pages are chosen for Trim All Pages, ↑ and ↓ move the choice and keep the trim open (Codex review)")
+    func arrowsWhileChoosing() async throws {
+        let (m, _) = await load(Scan(white: true), count: 3)
+        let ids = m.pages.map(\.id)
+        m.selectedPageID = ids[0]
+        m.beginTrim(allPages: true)
+        m.selectAdjacentPage(1)
+        #expect(m.trimmingPage == ids[0] && m.selectedPageID == ids[0] && m.trimSelection == [ids[1]])
+        m.selectAdjacentPage(1)
+        #expect(m.trimSelection == [ids[2]])
+        m.selectAdjacentPage(-1)
+        #expect(m.trimSelection == [ids[1]])
+        m.cancelTrim()
+        m.selectAdjacentPage(1)
+        #expect(m.selectedPageID == ids[1])                            // as ever once the trim is closed
+    }
+
     @Test("Trim All Pages starts with pages of another scan size left out (John, 2026-10-26)")
     func otherSizesLeftOut() async throws {
         let doc = try #require(PDFDocument(url: Scan().write(count: 2)))
