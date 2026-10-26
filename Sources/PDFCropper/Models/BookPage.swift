@@ -110,10 +110,11 @@ struct BookPage: Identifiable, Codable, Equatable {
         case .skip:
             return []
         case .single:
-            return [leftCrop.normalized()]
+            return [leftCrop.normalized().kept(in: bounds)]
         case .spread:
-            let l = leftCrop.normalized()
-            let r = rightCrop.normalized()
+            // Inside the trim even where normalizing grew a tiny box past it.
+            let l = leftCrop.normalized().kept(in: bounds)
+            let r = rightCrop.normalized().kept(in: bounds)
             switch omittedSide {
             case .left:  return [r]
             case .right: return [l]

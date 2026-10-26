@@ -147,15 +147,15 @@ struct TrimTests {
         #expect(near(m.pages[0].trim, Scan.book) && m.pages[0].trimByHand == nil)
     }
 
-    @Test("Trim All Pages Like This: every page takes the trim, its boxes and split inside it")
+    @Test("Trim All Pages (Book tab): every page takes the trim drawn, its boxes and split inside it; Remove All Trims")
     func trimAll() async throws {
         let (m, undo) = await load(Scan(white: true))
         let before = m.pages
-        m.selectedPageID = m.pages[0].id
-        m.beginTrim()
+        m.selectedPageID = m.pages[1].id
+        m.beginTrim(allPages: true)
         m.trimDraft = Scan.book
         undoable(undo) { m.finishTrim() }
-        undoable(undo) { m.trimAllPagesLikeThis() }
+        #expect(m.trimmingPage == nil)
         for p in m.pages {
             #expect(p.trim == Scan.book && p.trimByHand == true)
             #expect(p.splitX > Scan.book.minX && p.splitX < Scan.book.maxX)
@@ -169,6 +169,8 @@ struct TrimTests {
         for p in m.pages {
             #expect(p.trim == Scan.book && abs(p.splitX - Scan.fold / Scan.media.width) < 0.01, "page \(p.sourceIndex): \(p.splitX)")
         }
+        undoable(undo) { m.removeAllTrims() }
+        #expect(m.pages.allSatisfy { $0.trim == nil && $0.trimByHand == true })
         undo.undo(); undo.undo(); undo.undo()
         #expect(m.pages == before)
     }
@@ -194,6 +196,89 @@ struct TrimTests {
         #expect(m.pages[0].rightCrop.maxX <= b.maxX + 1e-9 && m.pages[0].leftCrop.minX >= b.minX - 1e-9)
         undoable(undo) { m.matchCropSizes(of: m.pages[0].id, rightMatchesLeft: true) }
         #expect(m.pages[0].rightCrop.maxX <= b.maxX + 1e-9 && m.pages[0].leftCrop.minX >= b.minX - 1e-9)
+    }
+
+    @Test("A split given outside a page's trim (the book's usual one) is kept inside it, not a crash (Codex review)")
+    func givenSplitInsideTrim() throws {
+        let doc = try #require(PDFDocument(url: Scan().write(count: 1)))
+        let cg = try #require(PDFRenderer.renderCGImage(page: doc.page(at: 0)!, dpi: 50))
+        let a = AppModel.analyzePage(cg, deskew: false, as: .spread, target: .page, split: 0.3, trim: Scan.book)
+        #expect(a.result.splitX > Scan.book.minX && a.result.splitX < Scan.book.maxX, "split \(a.result.splitX)")
+    }
+
+    @Test("Boxes wholly above or below a trim are moved inside it, not left out (Codex review)")
+    func boxesMovedInside() {
+        let trim = CropRect(x: 0.2, y: 0.6, width: 0.6, height: 0.3)
+        let l = SpreadLayout(splitX: 0.5, leftCrop: CropRect(x: 0.25, y: 0.1, width: 0.2, height: 0.3),
+                             rightCrop: CropRect(x: 0.55, y: 0.1, width: 0.2, height: 0.3), bounds: trim).clamped
+        for c in [l.leftCrop, l.rightCrop] {
+            #expect(c.minY >= trim.minY - 1e-9 && c.maxY <= trim.maxY + 1e-9 && c.height > 0.02, "\(c)")
+        }
+        var page = BookPage(sourceIndex: 0, classification: .single)
+        page.trim = CropRect(x: 0.1, y: 0.1, width: 0.8, height: 0.4)
+        let member = PageStack.Member(page: page, side: .single)
+        #expect(member.regionWidth == 1 && member.regionMinX == 0 && member.limits == page.trim!)   // drawn as the whole scan
+        let c = member.clampedCrop(CropRect(x: 0.3, y: 0.7, width: 0.3, height: 0.2))
+        #expect(c.minY >= 0.1 - 1e-9 && c.maxY <= 0.5 + 1e-9 && c.minX >= 0.1 - 1e-9 && c.maxX <= 0.9 + 1e-9, "\(c)")
+        // and in the export, a tiny box at the trim's edge that normalizing would grow past it
+        page.leftCrop = CropRect(x: 0.888, y: 0.2, width: 0.012, height: 0.2)
+        let out = page.outputCrops(direction: .leftToRight)[0]
+        #expect(out.maxX <= 0.9 + 1e-9, "\(out)")
+    }
+
+    @Test("The stack's picture is redrawn when a trim changes (Codex review)")
+    func stackGeometryHasTrim() {
+        var page = BookPage(sourceIndex: 0)
+        let before = PageStack(id: .left, members: [PageStack.Member(page: page, side: .left)]).geometry
+        page.trim = CropRect(x: 0.2, y: 0, width: 0.8, height: 1)
+        let after = PageStack(id: .left, members: [PageStack.Member(page: page, side: .left)]).geometry
+        #expect(before != after)
+    }
+
+    @Test("Every box stays inside its page's trim, trimmed and untrimmed pages mixed, in both crop modes (Codex review)",
+          arguments: [CropTarget.page, .text])
+    func mixedTrimsStayInside(target: CropTarget) async throws {
+        let doc = try #require(PDFDocument(url: Scan().write(count: 3)))
+        let white = try #require(PDFDocument(url: Scan(white: true).write(count: 2)))
+        for i in 0..<2 { doc.insert(white.page(at: i)!, at: doc.pageCount) }
+        let url = Fixtures.url("mixed-\(UUID().uuidString).pdf")
+        #expect(doc.write(to: url))
+        let m = testModel()
+        m.setCropTarget(target)
+        m.load(url: url)
+        await waitUntilIdle(m)
+        #expect(m.pages.filter { $0.trim != nil }.count == 3)
+        for p in m.pages {
+            for c in p.isSpread ? [p.leftCrop, p.rightCrop] : [p.leftCrop] {
+                #expect(c.minX >= p.bounds.minX - 1e-9 && c.maxX <= p.bounds.maxX + 1e-9
+                        && c.minY >= p.bounds.minY - 1e-9 && c.maxY <= p.bounds.maxY + 1e-9, "page \(p.sourceIndex): \(c) in \(p.bounds)")
+            }
+        }
+    }
+
+    @Test("A single page's crop applied to all single pages stays inside each one's trim (Codex review)")
+    func singleApplyInsideTrims() async throws {
+        let media = CGRect(x: 0, y: 0, width: 576, height: 720)
+        let url = Fixtures.writePDF("singles-\(UUID().uuidString).pdf", media: media, pages: Array(repeating: { c in
+            c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 100.0, to: 600, by: 14) { c.fill(CGRect(x: 90, y: y, width: 396, height: 6)) }
+        }, count: 2))
+        let m = testModel(), undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.load(url: url)
+        await waitUntilIdle(m)
+        let trim = CropRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5)
+        m.selectedPageID = m.pages[0].id
+        m.beginTrim()
+        m.trimDraft = trim
+        undoable(undo) { m.finishTrim() }
+        m.selectedPageID = m.pages[1].id
+        undoable(undo) { m.perform("Adjust Crop") { m.pages[1].leftCrop = CropRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9) } }
+        undoable(undo) { m.applySingleCrop(alternate: false) }
+        let c = m.pages[0].leftCrop
+        #expect(c.minX >= trim.minX - 1e-9 && c.maxX <= trim.maxX + 1e-9 && c.minY >= trim.minY - 1e-9 && c.maxY <= trim.maxY + 1e-9, "\(c)")
     }
 
     @Test("A box in the trim's terms and back is the same box")

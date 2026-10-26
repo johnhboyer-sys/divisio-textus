@@ -82,9 +82,11 @@ final class AppModel: ObservableObject {
     /// Editor magnification; 1 fits the whole page in the window.
     @Published var zoom: Double = 1
 
-    /// Trim: the page whose trim is being drawn, and the trim as drawn so far.
+    /// Trim: the page whose trim is being drawn, the trim as drawn so far, and
+    /// whether it is for every page (Book tab) or that one (Page tab).
     @Published private(set) var trimmingPage: BookPage.ID?
     @Published var trimDraft: CropRect = .full
+    @Published private(set) var trimmingAllPages = false
 
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
@@ -442,6 +444,8 @@ final class AppModel: ObservableObject {
                                         trim: CropRect? = nil, findTrim: Bool = false) -> Analysis {
         let region = findTrim ? PageAnalyzer.findBook(cg) : trim
         let cg = region.map { bedOutside(cg, $0) } ?? cg
+        // A split given (the book's usual one, say) inside the trim, as a split drag keeps it.
+        let split = split.map { s in region.map { max($0.minX + 0.05 * $0.width, min(s, $0.maxX - 0.05 * $0.width)) } ?? s }
         let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced, split: split, region: region ?? .full)
         let spread = r0.classification == .spread
         let skews = deskew ? detectSkews(cg, splitX: r0.splitX, isSpread: spread) : (left: 0.0, right: 0.0)
@@ -453,8 +457,8 @@ final class AppModel: ObservableObject {
                                       target: target, turns: skews, region: region ?? .full)
         // Straightening tilts the trim's painted edge a little: the crops stay inside it.
         if let region {
-            r1.leftCrop = r1.leftCrop.clamped(to: region)
-            r1.rightCrop = r1.rightCrop.clamped(to: region)
+            r1.leftCrop = r1.leftCrop.kept(in: region)
+            r1.rightCrop = r1.rightCrop.kept(in: region)
         }
         return Analysis(leftSkew: skews.left, rightSkew: skews.right, result: r1, trim: region)
     }
@@ -647,6 +651,8 @@ final class AppModel: ObservableObject {
                 pages[i].leftCrop = blank(i, left: true) ? u : u.union(pages[i].leftCrop)
             }
         }
+        // The usual crop is the book's: each page's stays inside its own trim.
+        for i in pages.indices where sides[pages[i].id] != nil && pages[i].trim != nil { fitInsideTrim(i) }
     }
 
     /// Re-run auto-detection on one page, optionally forcing its type.
@@ -769,7 +775,7 @@ final class AppModel: ObservableObject {
         guard let selPos = singles.firstIndex(where: { pages[$0].id == sel.id }) else { return }
         perform(alternate ? "Apply Crop to Alternate Pages" : "Apply Crop to All Single Pages") {
             for (pos, i) in singles.enumerated() where !alternate || pos % 2 == selPos % 2 {
-                pages[i].leftCrop = sel.leftCrop
+                pages[i].leftCrop = sel.leftCrop.kept(in: pages[i].bounds)
             }
         }
         statusText = alternate
@@ -1169,7 +1175,7 @@ final class AppModel: ObservableObject {
                     a = max(a, region.0); b = min(b, region.1)
                     return (a, max(a, b))
                 }
-                let region = (side.member.regionMinX, side.member.regionMinX + side.member.regionWidth)
+                let region = (side.member.limits.minX, side.member.limits.maxX)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
                     let s = span((x / w, (x + W) / w), side.text.map { ($0.minX, $0.maxX) }, within: region)
@@ -1339,10 +1345,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Trim
 
-    /// Trim: show the whole page with its trim to draw.
-    func beginTrim() {
-        guard let p = selectedPage, p.classification != .skip, !isBusy else { return }
+    /// Trim This Page, or (`allPages`) Trim All Pages: show the selected page whole,
+    /// its trim to draw.
+    func beginTrim(allPages: Bool = false) {
+        guard let p = selectedPage, allPages || p.classification != .skip, !isBusy else { return }
         trimDraft = p.trim ?? .full
+        trimmingAllPages = allPages
         trimmingPage = p.id
     }
 
@@ -1350,13 +1358,25 @@ final class AppModel: ObservableObject {
 
     /// Done: the page takes the trim drawn, as one undo step. A page as analysis
     /// left it is detected again inside it; one edited by hand keeps its boxes,
-    /// cut to the trim.
+    /// cut to the trim. For all pages, every page takes it, its split and boxes
+    /// cut to it; Auto-detect all pages then finds the pages inside.
     func finishTrim() {
         guard let id = trimmingPage else { return }
         trimmingPage = nil
-        guard let i = pages.firstIndex(where: { $0.id == id }) else { return }
         let t = trimDraft.normalized()
         let trim: CropRect? = t.width >= 0.999 && t.height >= 0.999 ? nil : t
+        if trimmingAllPages {
+            perform("Trim All Pages") {
+                for i in pages.indices {
+                    pages[i].trim = trim
+                    pages[i].trimByHand = true
+                    fitInsideTrim(i)
+                }
+            }
+            statusText = "Trimmed all \(pages.count) pages. Auto-detect all pages to place the boxes inside the trim."
+            return
+        }
+        guard let i = pages.firstIndex(where: { $0.id == id }) else { return }
         guard trim != pages[i].trim || pages[i].trimByHand != true else { return }
         let placedByAnalysis = setByAnalysis[id] != nil
         perform("Trim") {
@@ -1375,18 +1395,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Trim All Pages Like This: every page takes this page's trim, its split
-    /// and boxes cut to it. Auto-detect all pages then finds the pages inside.
-    func trimAllPagesLikeThis() {
-        guard let sel = selectedPage, let t = sel.trim else { return }
-        perform("Trim All Pages Like This") {
+    /// Remove All Trims: every page whole again, which Auto-detect then leaves so.
+    func removeAllTrims() {
+        guard pages.contains(where: { $0.trim != nil }) else { return }
+        perform("Remove All Trims") {
             for i in pages.indices {
-                pages[i].trim = t
+                pages[i].trim = nil
                 pages[i].trimByHand = true
-                fitInsideTrim(i)
             }
         }
-        statusText = "Trimmed all \(pages.count) pages like page \(sel.sourceIndex + 1). Auto-detect all pages to fit the boxes to the trim."
     }
 
     /// A page's split and boxes cut to its trim.
@@ -1397,7 +1414,7 @@ final class AppModel: ObservableObject {
                                  bounds: b).clamped
             (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
         } else {
-            pages[i].leftCrop = pages[i].leftCrop.clamped(to: b)
+            pages[i].leftCrop = pages[i].leftCrop.kept(in: b)
         }
     }
 

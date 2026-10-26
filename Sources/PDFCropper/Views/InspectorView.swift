@@ -69,28 +69,7 @@ private struct PageSections: View {
             }
 
             if page.classification != .skip {
-                Section("Trim") {
-                    if model.trimmingPage == page.id {
-                        HStack {
-                            Button("Done") { model.finishTrim() }
-                                .keyboardShortcut(.defaultAction)
-                            Button("Cancel") { model.cancelTrim() }
-                                .keyboardShortcut(.cancelAction)
-                        }
-                    } else {
-                        Button {
-                            model.beginTrim()
-                        } label: {
-                            Label("Trim", systemImage: "crop")
-                        }
-                        .help("Draw the part of the page to keep")
-                        .disabled(model.isBusy)
-                        Button("Remove Trim") { model.removeTrim() }
-                            .disabled(page.trim == nil || model.isBusy)
-                        Button("Trim All Pages Like This") { model.trimAllPagesLikeThis() }
-                            .disabled(page.trim == nil || model.isBusy)
-                    }
-                }
+                TrimSection(allPages: false)
 
                 Section("Straighten") {
                     if page.classification == .spread {
@@ -284,6 +263,44 @@ private struct StackSections: View {
 }
 
 /// Work on every page at once, and the settings that steer detection.
+/// Trim: this page's (Page tab) or every page's (Book tab). While a trim is drawn,
+/// Done and Cancel.
+private struct TrimSection: View {
+    @EnvironmentObject var model: AppModel
+    let allPages: Bool
+
+    var body: some View {
+        Section("Trim") {
+            if model.trimmingPage != nil {
+                HStack {
+                    Button("Done") { model.finishTrim() }
+                        .keyboardShortcut(.defaultAction)
+                    Button("Cancel") { model.cancelTrim() }
+                        .keyboardShortcut(.cancelAction)
+                }
+            } else if allPages {
+                Button {
+                    model.beginTrim(allPages: true)
+                } label: {
+                    Label("Trim All Pages", systemImage: "crop")
+                }
+                .disabled(model.selectedPage == nil || model.isBusy)
+                Button("Remove All Trims") { model.removeAllTrims() }
+                    .disabled(!model.pages.contains { $0.trim != nil } || model.isBusy)
+            } else {
+                Button {
+                    model.beginTrim()
+                } label: {
+                    Label("Trim This Page", systemImage: "crop")
+                }
+                .disabled(model.isBusy)
+                Button("Remove Trim") { model.removeTrim() }
+                    .disabled(model.selectedPage?.trim == nil || model.isBusy)
+            }
+        }
+    }
+}
+
 private struct BookSections: View {
     @EnvironmentObject var model: AppModel
 
@@ -317,6 +334,8 @@ private struct BookSections: View {
             }
         }
         .disabled(model.isBusy)
+
+        TrimSection(allPages: true)
 
         Section("Detection") {
             CropTargetPicker()

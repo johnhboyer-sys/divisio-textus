@@ -24,13 +24,23 @@ struct PageStack: Identifiable {
         /// drawn at true size against it, lined up at the fold (see PageStack.init).
         var span: Double = 1
         var id: BookPage.ID { page.id }
-        /// The side's part of the page: its half of the trim, or of the scan.
-        var regionMinX: Double { side == .right ? page.splitX : page.bounds.minX }
+        /// The side's part of the page as the stack draws it: a spread's half of its
+        /// trim; a single page or whole spread, the whole scan.
+        var regionMinX: Double { side == .right ? page.splitX : side == .left ? page.bounds.minX : 0 }
         var regionWidth: Double {
             switch side {
             case .left: return page.splitX - page.bounds.minX
             case .right: return page.bounds.maxX - page.splitX
-            case .single, .whole: return page.bounds.width
+            case .single, .whole: return 1
+            }
+        }
+        /// Where the side's crop may go: its part of the page's trim.
+        var limits: CropRect {
+            let b = page.bounds
+            switch side {
+            case .left: return CropRect(x: b.minX, y: b.minY, width: page.splitX - b.minX, height: b.height)
+            case .right: return CropRect(x: page.splitX, y: b.minY, width: b.maxX - page.splitX, height: b.height)
+            case .single, .whole: return b
             }
         }
         var crop: CropRect { localCrop(side == .right ? page.rightCrop : page.leftCrop) }
@@ -72,14 +82,12 @@ struct PageStack: Identifiable {
             // (as a draft does once a wider half is left out) is shown cut there.
             let x0 = max(0, crop.minX), x1 = min(1, crop.maxX), y0 = max(0, crop.minY), y1 = min(1, crop.maxY)
             let shown = pageCrop(CropRect(x: x0, y: y0, width: max(0, x1 - x0), height: max(0, y1 - y0)).normalized())
-            let end = regionMinX + regionWidth
-            let lo = max(regionMinX, shown.minX), hi = min(end, shown.maxX)
+            let lim = limits, end = lim.maxX
+            let lo = max(lim.minX, shown.minX), hi = min(end, shown.maxX)
             var c = CropRect(x: lo, y: shown.y, width: max(0, hi - lo), height: shown.height).normalized()
-            c.width = min(c.width, regionWidth)
-            c.x = max(regionMinX, min(c.x, end - c.width))
-            let top = max(c.minY, page.bounds.minY), bottom = min(c.maxY, page.bounds.maxY)        // and the trim's
-            c.y = top; c.height = max(0.02, bottom - top)
-            return c
+            c.width = min(c.width, lim.width)
+            c.x = max(lim.minX, min(c.x, end - c.width))
+            return c.kept(in: lim)                              // and the trim's top and bottom
         }
     }
 
@@ -221,10 +229,12 @@ struct PageStack: Identifiable {
         let index: Int
         let classification: PageClassification
         let split, leftSkew, rightSkew: Double
+        let trim: CropRect?
     }
     var geometry: [Geometry] {
         members.map { Geometry(id: $0.id, index: $0.page.sourceIndex, classification: $0.page.classification,
-                               split: $0.page.splitX, leftSkew: $0.page.leftSkew, rightSkew: $0.page.rightSkew) }
+                               split: $0.page.splitX, leftSkew: $0.page.leftSkew, rightSkew: $0.page.rightSkew,
+                               trim: $0.page.trim) }
     }
 }
 
@@ -325,8 +335,8 @@ struct SpreadLayout: Equatable {
             if c.maxX > hi { c.width = hi - c.x }
             let least = min(0.02, hi - lo)
             if c.width < least { c.width = least; c.x = min(c.x, hi - least) }
-            let top = max(c.minY, bounds.minY), bottom = min(c.maxY, bounds.maxY)
-            if bottom - top >= 0.02 { c.y = top; c.height = bottom - top }
+            let down = c.kept(in: bounds)                       // the trim's top and bottom
+            c.y = down.y; c.height = down.height
             return c
         }
         return SpreadLayout(splitX: s, leftCrop: clamp(leftCrop, bounds.minX, s),
