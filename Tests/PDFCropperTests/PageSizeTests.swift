@@ -180,6 +180,100 @@ struct PageSizeTests {
         #expect(m.pageSize?.tooBig == 0)
     }
 
+    @Test("A typed size too big for some pages gives the largest size that fits every page (John, 2026-10-26)")
+    func largestThatFits() async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        undoable(undo) { m.setPageSize(PageSize(width: 8, height: 9)) }
+        let fits = try #require(m.pageSize?.fitsAll)
+        let narrowest = m.pages.map { min($0.splitX, 1 - $0.splitX) * Book.media.width / 72 }.min()!
+        #expect(fits.width <= narrowest && fits.width > narrowest - 0.01, "\(fits), narrowest half \(narrowest)")
+        #expect(abs(fits.height - Book.media.height / 72) < 0.01, "\(fits)")
+        undoable(undo) { m.setPageSize(fits) }
+        #expect(m.pageSize?.tooBig == 0)
+        undoable(undo) { m.setPageSize(PageSize(width: narrowest + 0.003, height: 9)) }      // cut by 0.003 in: too large
+        #expect((m.pageSize?.tooBig ?? 0) > 0)
+    }
+
+    @Test("The largest size that fits is the least room on any page, a shorter single scan's too, and every box takes it (Codex review)")
+    func largestThatFitsMixed() async throws {
+        // The book, then a single page on a shorter scan: 7 × 9.5 in, a 6 × 8.5 in sheet with text.
+        let short = CGRect(x: 0, y: 0, width: 504, height: 684)
+        let extra = Fixtures.writePDF("short-\(UUID().uuidString).pdf", media: short, pages: [{ c in
+            c.setFillColor(CGColor(gray: 0.04, alpha: 1)); c.fill(short)
+            c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(CGRect(x: 36, y: 36, width: 432, height: 612))
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 100.0, to: 580, by: 14) { c.fill(CGRect(x: 90, y: y, width: 324, height: 6)) }
+        }])
+        let doc = try #require(PDFDocument(url: Book(count: 12, strips: true).write()))
+        doc.insert(try #require(PDFDocument(url: extra)?.page(at: 0)), at: doc.pageCount)
+        let url = Fixtures.url("mixed-\(UUID().uuidString).pdf")
+        #expect(doc.write(to: url))
+        let m = testModel(), undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(.page)
+        m.load(url: url)
+        await waitUntilIdle(m)
+        #expect(m.pages.last?.classification == .single)
+        undoable(undo) { m.setPageSize(PageSize(width: 8, height: 10)) }
+        let fits = try #require(m.pageSize?.fitsAll)
+        #expect(abs(fits.height - 9.5) < 0.011, "\(fits)")                 // the short scan's height
+        undoable(undo) { m.setPageSize(fits) }
+        #expect(m.pageSize?.tooBig == 0)
+        for p in m.pages {
+            let d = try #require(m.displaySize(of: p))
+            for crop in p.isSpread ? [p.leftCrop, p.rightCrop] : [p.leftCrop] {
+                #expect(abs(crop.width * d.width / 72 - fits.width) < 0.01 && abs(crop.height * d.height / 72 - fits.height) < 0.01,
+                        "page \(p.sourceIndex): \(crop.width * d.width / 72) × \(crop.height * d.height / 72) in")
+            }
+        }
+    }
+
+    @Test("Blank single pages, with no edge or text to go by, still take the typed size (Codex review)")
+    func blankSinglesSized() async throws {
+        let media = CGRect(x: 0, y: 0, width: 576, height: 720)          // 8 × 10 in, paper to the scan's edges
+        let url = Fixtures.writePDF("blank-\(UUID().uuidString).pdf", media: media, pages: Array(repeating: { c in
+            c.setFillColor(CGColor(gray: 1, alpha: 1)); c.fill(media)
+        }, count: 4))
+        let m = testModel(), undo = UndoManager()
+        undo.groupsByEvent = false
+        m.undoManager = undo
+        m.setCropTarget(.page)
+        m.load(url: url)
+        await waitUntilIdle(m)
+        undoable(undo) { m.setPageSize(PageSize(width: 6, height: 9)) }
+        for p in m.pages {
+            #expect(p.classification == .single)
+            let c = p.leftCrop
+            #expect(abs(c.width * 8 - 6) < 0.01 && abs(c.height * 10 - 9) < 0.01, "page \(p.sourceIndex): \(c)")
+        }
+    }
+
+    @Test("A size rounded down to the hundredth stays put when it is one already (Codex review)")
+    func roundedDown() {
+        #expect(PageSize.roundedDown(295.2 / 72) == 4.1)      // 409.99999999999994 hundredths
+        #expect(PageSize.roundedDown(5.279) == 5.27)
+    }
+
+    @Test("Every spread's boxes meet at the split, at the page size (John, 2026-10-26)", arguments: [
+        PageSize(width: 5.5, height: 8.5),        // smaller than the paper
+        PageSize(width: 6.5, height: 9.5),        // larger: takes in some bed, cut only at the scan's edge
+    ])
+    func boxesMeetAtSplit(size: PageSize) async throws {
+        let (m, undo, _) = await load(Book(count: 12, strips: true))
+        undoable(undo) { m.setPageSize(size) }
+        #expect(m.pageSize?.tooBig == 0)
+        for (i, p) in m.pages.enumerated() {
+            #expect(abs(p.leftCrop.maxX - p.splitX) < 1e-9 && abs(p.rightCrop.minX - p.splitX) < 1e-9,
+                    "spread \(i): split \(p.splitX), left \(p.leftCrop), right \(p.rightCrop)")
+            for (side, crop) in [("left", p.leftCrop), ("right", p.rightCrop)] {
+                let c = points(crop)
+                #expect(abs(c.x1 - c.x0 - size.width * 72) < 0.5 && abs(c.y1 - c.y0 - size.height * 72) < 0.5,
+                        "spread \(i) \(side): \(c.x1 - c.x0) × \(c.y1 - c.y0) pt")
+            }
+        }
+    }
+
     @Test("Leaving a side out of the export is no crop edit: the spread still gets the page size (Codex review)")
     func omittedSideKeepsSize() async throws {
         let (m, undo, _) = await load(Book(count: 12, strips: true))

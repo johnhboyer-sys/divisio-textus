@@ -148,6 +148,10 @@ extension PageSize {
 
     var isSensible: Bool { Self.sensible.contains(width) && Self.sensible.contains(height) }
 
+    /// Inches rounded down to the hundredth, so the size fits as typed; one that is
+    /// a hundredth already but for floating-point error stays put.
+    static func roundedDown(_ v: Double) -> Double { (v * 100 + 1e-6).rounded(.down) / 100 }
+
     /// A size as typed: two numbers in inches, such as "6 × 9", "6 x 9 in",
     /// "5.5 by 8.5" or 6" × 9". Nil for anything else, or a size outside `sensible`.
     init?(parsing text: String) {

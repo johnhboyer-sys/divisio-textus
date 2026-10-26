@@ -421,10 +421,9 @@ private struct PageSizeRow: View {
             if let problem {
                 Text(problem).font(.caption).foregroundStyle(.red)
             }
-            if size.override != nil, size.tooBig > 0, let room = size.room {
-                Text("Larger than the scan's pages on \(size.tooBig) page\(size.tooBig == 1 ? "" : "s") "
-                     + "(about \(Self.describe(room)) in there), so those crops are cut to the page. "
-                     + "A scan's PDF often measures smaller than the printed book: type the size the rulers show.")
+            if size.override != nil, size.tooBig > 0 {
+                Text("This page size is too large for \(size.tooBig) page\(size.tooBig == 1 ? "" : "s")."
+                     + (size.fitsAll.map { " The largest size that fits every page is \(Self.describe($0)) in." } ?? ""))
                     .font(.caption).foregroundStyle(.orange)
             }
         }

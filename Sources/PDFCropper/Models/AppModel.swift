@@ -889,9 +889,10 @@ final class AppModel: ObservableObject {
         /// Each stack's own measurement, for a tooltip.
         var details: [String] = []
         /// Book pages the typed size doesn't fit (wider or taller than their page or
-        /// half of the scan), and the usual size there is, in inches.
+        /// half of the scan), and the largest size that fits every page, in inches,
+        /// rounded down so it fits as typed.
         var tooBig = 0
-        var room: PageSize?
+        var fitsAll: PageSize?
     }
 
     /// nil outside Whole page mode.
@@ -919,10 +920,13 @@ final class AppModel: ObservableObject {
                 let W = d.width / 72, H = d.height / 72
                 rooms += p.classification == .spread ? [(p.splitX * W, H), ((1 - p.splitX) * W, H)] : [(W, H)]
             }
-            let small = rooms.filter { typed.width > $0.w + 0.005 || typed.height > $0.h + 0.005 }
+            let small = rooms.filter { typed.width > $0.w + 1e-6 || typed.height > $0.h + 1e-6 }   // cut at all: as placeSheets cuts
             summary.tooBig = small.count
-            if !small.isEmpty {        // the room on the pages it doesn't fit
-                summary.room = PageSize(width: PageStack.median(small.map(\.w)), height: PageStack.median(small.map(\.h)))
+            if !small.isEmpty {        // nil when no size the field takes fits
+                let hi = PageSize.sensible.upperBound
+                let fits = PageSize(width: min(hi, PageSize.roundedDown(rooms.map(\.w).min()!)),
+                                    height: min(hi, PageSize.roundedDown(rooms.map(\.h).min()!)))
+                summary.fitsAll = fits.isSensible ? fits : nil
             }
         }
         let own = plans.filter { $0.value.ownSize }
@@ -1081,9 +1085,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Whole page: put a box of the book's page size on each page analysis set
-    /// (or only those in `only`), where its sheet is, and crop to that box (within
-    /// the paper analysis found, or at a spread's gutter its half) and the text
-    /// block, so print is never cut. An axis with no
+    /// (or only those in `only`), where its sheet is (a spread's against the
+    /// split), and crop to that box, cut only at the scan's edge (a spread's at
+    /// its half), and the text block, so print is never cut. An axis with no
     /// size (not measured, none typed in) keeps the crop analysis found.
     private func placeSheets(only: Set<BookPage.ID>? = nil) {
         guard cropTarget == .page else { return }
@@ -1103,18 +1107,16 @@ final class AppModel: ObservableObject {
             let vertical = H.map { axis(plan, size: $0, vertical: true) }
             for side in plan.sides where only?.contains(side.member.id) ?? true {
                 guard let i = pages.firstIndex(where: { $0.id == side.member.id }), var crop = side.found else { continue }
-                // The box, on the paper analysis found and inside the sheet's
-                // trusted edges (a box overhanging them would take in scanner
-                // background or the neighbouring leaves; at a spread's gutter,
-                // its half instead), and the text block, so
-                // print is never cut.
-                // All of it inside the page's half: the text was found before
-                // analysis may have moved the split (see evenOutNearlyEmptyPages).
-                func span(_ box: (Double, Double), _ paper: (Double, Double), _ text: (Double, Double)?,
+                // The box, whole wherever the scan holds it, even past the paper
+                // (one size on every page, John 2026-10-26), and the text block,
+                // so print is never cut. All of it inside the page's half: the
+                // text was found before analysis may have moved the split (see
+                // evenOutNearlyEmptyPages).
+                func span(_ box: (Double, Double), _ text: (Double, Double)?,
                           within region: (Double, Double)) -> (Double, Double) {
-                    // Slid onto the paper, if it fits there; cut to it, if not.
+                    // Slid onto the scan (a spread's half), if it fits there; cut to it, if not.
                     let length = box.1 - box.0
-                    var a = max(paper.0, min(box.0, paper.1 - length)), b = min(paper.1, a + length)
+                    var a = max(region.0, min(box.0, region.1 - length)), b = min(region.1, a + length)
                     if let text { a = min(a, text.0); b = max(b, text.1) }
                     a = max(a, region.0); b = min(b, region.1)
                     return (a, max(a, b))
@@ -1122,19 +1124,12 @@ final class AppModel: ObservableObject {
                 let region = (side.member.regionMinX, side.member.regionMinX + side.member.regionWidth)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
-                    var paper = (max(crop.minX, side.sheet?.minX ?? 0), min(crop.maxX, side.sheet?.maxX ?? 1))
-                    // A spread's page runs on into the fold: an edge found at its
-                    // gutter (the paper's or the sheet's) is where the binding's
-                    // shade, a crease or the fold's dark line begins. Its half ends it.
-                    if side.member.side == .left { paper.1 = region.1 }
-                    if side.member.side == .right { paper.0 = region.0 }
-                    let s = span((x / w, (x + W) / w), paper, side.text.map { ($0.minX, $0.maxX) }, within: region)
+                    let s = span((x / w, (x + W) / w), side.text.map { ($0.minX, $0.maxX) }, within: region)
                     crop.x = s.0; crop.width = s.1 - s.0
                 }
                 if let vertical, let H, let y = vertical(side) {
                     let h = side.inches.height
-                    let paper = (max(crop.minY, side.sheet?.minY ?? 0), min(crop.maxY, side.sheet?.maxY ?? 1))
-                    let s = span((y / h, (y + H) / h), paper, side.text.map { ($0.minY, $0.maxY) }, within: (0, 1))
+                    let s = span((y / h, (y + H) / h), side.text.map { ($0.minY, $0.maxY) }, within: (0, 1))
                     crop.y = s.0; crop.height = s.1 - s.0
                 }
                 if side.isLeft { pages[i].leftCrop = crop } else { pages[i].rightCrop = crop }
@@ -1144,8 +1139,7 @@ final class AppModel: ObservableObject {
 
     /// Where a box `size` inches long starts on each side, along one axis, in
     /// inches from the page's left or top (nil: leave the side's crop alone).
-    /// A spread's box runs from its outer edge, if trusted, else that far out
-    /// from the text as the usual outer margin, else from the split. Otherwise it
+    /// A spread's box runs out from the split. Otherwise it
     /// sits on the sheet's trusted edges; failing those, it is set off the text by the usual margins,
     /// from the text's start or its end, whichever puts it nearer the stack's
     /// usual place: a chapter's opening page starts low, its last page stops short.
@@ -1185,20 +1179,21 @@ final class AppModel: ObservableObject {
         func fromText(_ side: SheetSide) -> (Double, Double)? {
             text(side).map { ($0.0 - before!, $0.1 + after! - S) }
         }
+        // Nothing to go by on the whole stack (blank pages, paper to the scan's
+        // edges): centred where analysis put the crop.
+        func fromFound(_ side: SheetSide) -> Double? {
+            side.found.map { (vertical ? $0.y + $0.height / 2 : $0.x + $0.width / 2) * length(side) - S / 2 }
+        }
         // The usual place: where trusted edges put the box, else the text's start.
         let anchored = plan.sides.compactMap(fromEdges)
         let usual = !anchored.isEmpty ? PageStack.median(anchored)
             : plan.sides.compactMap(fromText).isEmpty ? nil : PageStack.median(plan.sides.compactMap(fromText).map(\.0))
         return { side in
             if !vertical && side.member.side != .single {
-                let left = side.member.side == .left, (a, b) = edges(side)
-                if left, let a { return a }
-                if !left, let b { return b - S }
-                if let t = text(side), let m = left ? measured.0 : measured.1 { return left ? t.0 - m : t.1 + m - S }
-                return left ? side.split * side.inches.width - S : side.split * side.inches.width
+                return side.member.side == .left ? side.split * side.inches.width - S : side.split * side.inches.width
             }
             if let e = fromEdges(side) { return e }
-            guard let (a, b) = fromText(side) else { return usual }
+            guard let (a, b) = fromText(side) else { return usual ?? fromFound(side) }
             if abs(a - b) <= 0.02 * S { return (a + b) / 2 }
             guard let usual else { return a }
             return abs(a - usual) <= abs(b - usual) ? a : b
