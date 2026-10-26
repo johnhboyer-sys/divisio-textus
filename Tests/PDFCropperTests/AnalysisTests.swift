@@ -196,16 +196,19 @@ struct AnalysisTests {
     }
 
     @Test("Printed rules or a curved frame's side between matching margins are not the fold (Codex review)",
-          arguments: ["thick rule", "two rules", "curved frame"])
+          arguments: ["thick rule", "two rules", "curved frame", "frame to the bottom"])
     func notAFoldBand(kind: String) {
         // At analysis size: the left page's text ends at 350, the right page's
         // starts at 478 (490 beside the frame); between them, short of the page's
         // top and bottom, a printed thing whose margins either side are alike.
-        let right = kind == "curved frame" ? 490 : (kind == "two rules" ? 476 : 478)
+        // "frame to the bottom" runs off the page's foot, so only its corner at
+        // the top tells it from a fold.
+        let framed = kind.contains("frame")
+        let right = framed ? 490 : (kind == "two rules" ? 476 : 478)
         let image = Fixtures.image(800, 560) { c in
             c.setFillColor(CGColor(gray: 0.1, alpha: 1))
             for y in stride(from: 40, to: 520, by: 12) {
-                c.fill(CGRect(x: kind == "curved frame" ? 160 : 40, y: y, width: 350 - (kind == "curved frame" ? 160 : 40), height: 5))
+                c.fill(CGRect(x: framed ? 160 : 40, y: y, width: 350 - (framed ? 160 : 40), height: 5))
                 c.fill(CGRect(x: right, y: y, width: 760 - right, height: 5))
             }
             switch kind {
@@ -214,6 +217,13 @@ struct AnalysisTests {
             case "two rules":
                 c.fill(CGRect(x: 390, y: 100, width: 2, height: 360))
                 c.fill(CGRect(x: 394, y: 100, width: 2, height: 360))
+            case "frame to the bottom":                                    // y up: its top is at 459
+                c.fill(CGRect(x: 150, y: 0, width: 2, height: 460))
+                c.fill(CGRect(x: 150, y: 459, width: 242, height: 1))
+                for y in 0..<460 {
+                    let x = 390 + 19 * sin(Double.pi * Double(y) / 920)
+                    c.fill(CGRect(x: x, y: Double(y), width: 2, height: 1))
+                }
             default:                                                       // a frame bowed by the page's curl
                 c.fill(CGRect(x: 150, y: 100, width: 2, height: 360))
                 c.fill(CGRect(x: 150, y: 100, width: 242, height: 1))
@@ -225,7 +235,7 @@ struct AnalysisTests {
             }
         }
         let r = PageAnalyzer.analyze(cgImage: image)
-        let lo = kind == "curved frame" ? 412.0 : 399.0
+        let lo = framed ? 412.0 : 399.0
         #expect(r.splitX * 800 > lo && r.splitX * 800 < Double(right) - 2, "split \(r.splitX * 800) px")
     }
 
