@@ -160,6 +160,28 @@ struct ModelTests {
         #expect(m.pages[i].leftCrop == before.leftCrop && m.pages[i].rightCrop == before.rightCrop)
     }
 
+    @Test("Skip on a skipped page brings back the type it had, crops kept; one undo step (John, 2026-10-26)")
+    func skipAgainUnskips() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, before = m.pages[i]
+        undoable(undo) { m.toggleSkip(for: before.id) }
+        #expect(m.pages[i].classification == .skip)
+        undoable(undo) { m.toggleSkip(for: before.id) }
+        #expect(m.pages[i].classification == .spread && m.pages[i].leftCrop == before.leftCrop
+                && m.pages[i].rightCrop == before.rightCrop && m.pages[i].splitX == before.splitX)
+        undo.undo()
+        #expect(m.pages[i].classification == .skip)
+    }
+
+    @Test("Skip on a skipped page from an older save, its type unknown, detects the page again")
+    func skipAgainUnknownType() async {
+        let (m, undo, _) = await loadedSample()
+        let i = firstSpread, id = m.pages[i].id
+        undoable(undo) { m.perform("Old Save") { m.pages[i].classification = .skip; m.pages[i].typeBeforeSkip = nil } }
+        undoable(undo) { m.toggleSkip(for: id) }
+        #expect(m.pages[i].classification == .spread)
+    }
+
     @Test("A drag is one undo step and leaves other pages' changes alone")
     func dragUndo() async {
         let (m, undo, _) = await loadedSample()

@@ -52,12 +52,14 @@ struct ThumbnailRail: View {
         .frame(minWidth: 170)
     }
 
+    /// The page's type, ticked. Skip again on a skipped page brings back the type it had.
     @ViewBuilder
     private func classificationMenu(for page: BookPage) -> some View {
         ForEach(PageClassification.allCases) { c in
-            Button {
-                model.setClassification(c, for: page.id)
-            } label: {
+            Toggle(isOn: Binding(
+                get: { page.classification == c },
+                set: { _ in c == .skip ? model.toggleSkip(for: page.id) : model.setClassification(c, for: page.id) })
+            ) {
                 Label(c.label, systemImage: c.symbol)
             }
         }

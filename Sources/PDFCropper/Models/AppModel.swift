@@ -830,6 +830,19 @@ final class AppModel: ObservableObject {
         statusText = "Applied this layout to \(count) spread\(count == 1 ? "" : "s")."
     }
 
+    /// The side panel's Skip: skips the page, or, on one already skipped, brings back
+    /// the type it had, with its crops (detected again where an older save didn't
+    /// record the type).
+    func toggleSkip(for id: BookPage.ID) {
+        guard let i = pages.firstIndex(where: { $0.id == id }) else { return }
+        guard pages[i].classification == .skip else { return setClassification(.skip, for: id) }
+        if let type = pages[i].typeBeforeSkip { return setClassification(type, for: id) }
+        perform("Change Page Type") {
+            reanalyze(i)
+            pages[i].omittedSide = nil
+        }
+    }
+
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification != c else { return }
         let old = pages[i].classification
