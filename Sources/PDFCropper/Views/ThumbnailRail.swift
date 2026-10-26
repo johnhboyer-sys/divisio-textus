@@ -70,11 +70,19 @@ private struct ThumbnailRow: View {
     let isSelected: Bool
     let flaggedSides: [PageStack.Member.Side]
 
+    /// What shows of the page: its trim, or all of it.
+    private func trimmed(_ img: NSImage, to trim: CropRect?) -> NSImage {
+        guard let trim, let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let part = cg.cropping(to: trim.pixelRect(in: CGSize(width: cg.width, height: cg.height)).integral)
+        else { return img }
+        return NSImage(cgImage: part, size: NSSize(width: part.width, height: part.height))
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
                 if let img = model.thumbnail(for: page) {
-                    Image(nsImage: img)
+                    Image(nsImage: trimmed(img, to: page.trim))
                         .resizable().scaledToFit()
                         .frame(maxHeight: 120)
                         .opacity(page.classification == .skip ? 0.4 : 1)

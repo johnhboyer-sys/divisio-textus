@@ -35,16 +35,36 @@ struct CropRect: Equatable, Codable {
 
     /// This box at `reference`'s size (Match Sizes): the edge at the fold stays (a left
     /// page's right edge, a right page's left edge), the outer edge moves, and the top
-    /// and bottom become the reference's. Kept within the page.
-    func matched(to reference: CropRect, foldOnRight: Bool) -> CropRect {
+    /// and bottom become the reference's. Kept within the page, or its trim `bounds`.
+    func matched(to reference: CropRect, foldOnRight: Bool, within bounds: CropRect = .full) -> CropRect {
         var c = CropRect(x: x, y: reference.y, width: reference.width, height: reference.height)
         if foldOnRight {
-            c.x = max(0, maxX - reference.width)
+            c.x = max(bounds.minX, maxX - reference.width)
             c.width = maxX - c.x
         } else {
-            c.width = min(reference.width, 1 - x)
+            c.width = min(reference.width, bounds.maxX - x)
         }
         return c
+    }
+
+    /// This rect in `area`'s own coordinates (0…1 across it), as a view of just
+    /// that part of the page shows it; `absolute(in:)` turns it back.
+    func relative(to area: CropRect) -> CropRect {
+        CropRect(x: (x - area.x) / area.width, y: (y - area.y) / area.height,
+                 width: width / area.width, height: height / area.height)
+    }
+
+    func absolute(in area: CropRect) -> CropRect {
+        CropRect(x: area.x + x * area.width, y: area.y + y * area.height,
+                 width: width * area.width, height: height * area.height)
+    }
+
+    /// This rect cut to `bounds`; all of `bounds` if hardly any of it is inside.
+    func clamped(to bounds: CropRect) -> CropRect {
+        let x0 = max(minX, bounds.minX), x1 = min(maxX, bounds.maxX)
+        let y0 = max(minY, bounds.minY), y1 = min(maxY, bounds.maxY)
+        guard x1 - x0 >= 0.02, y1 - y0 >= 0.02 else { return bounds }
+        return CropRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
     }
 
     /// The smallest rect containing both.

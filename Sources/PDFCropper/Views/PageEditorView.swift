@@ -20,10 +20,16 @@ struct PageEditorView: View {
     @ViewBuilder
     private func editor(for idx: Int) -> some View {
         let page = model.pages[idx]
+        // Trimmed, only the trim shows (boxes, split and rulers in its terms);
+        // while the trim is drawn, the whole page.
+        let trimming = model.trimmingPage == page.id
+        let area = trimming ? CropRect.full : page.bounds
         RulerFrame {
             GeometryReader { geo in
-                let image = model.previewImage(for: page, zoom: model.zoom)
-                let fit = imageFrame(image: image, in: geo.size)
+                // A trim is shown larger: rendered as finely as that zoom would be.
+                let image = model.previewImage(for: page, zoom: model.zoom / min(area.width, area.height))
+                let fit = imageFrame(size: image.map { CGSize(width: $0.size.width * area.width, height: $0.size.height * area.height) },
+                                     in: geo.size)
                 let zoom = min(8, max(1, CGFloat(model.zoom) * pinch))
                 // Zoomed, the page grows inside a scroll view; the canvas is at least the
                 // window's size so a small page stays centered.
@@ -38,19 +44,29 @@ struct PageEditorView: View {
                         Color(nsColor: .underPageBackgroundColor)
 
                         if let image {
+                            // The whole scan at the trim's scale, cut to the trim.
+                            let whole = CGSize(width: frame.width / area.width, height: frame.height / area.height)
                             Image(nsImage: image)
                                 .resizable()
+                                .frame(width: whole.width, height: whole.height)
+                                .offset(x: -area.x * whole.width - (frame.width - whole.width) / 2,
+                                        y: -area.y * whole.height - (frame.height - whole.height) / 2)
                                 .frame(width: frame.width, height: frame.height)
-                                .rulerPage(size: model.displaySize(of: page) ?? .zero, marks: rulerMarks(page))
+                                .clipped()
+                                .rulerPage(size: model.displaySize(of: page).map { CGSize(width: $0.width * area.width,
+                                                                                        height: $0.height * area.height) } ?? .zero,
+                                           marks: rulerMarks(page, area))
                                 .position(x: frame.midX, y: frame.midY)
                         } else {
                             ProgressView()
                         }
 
-                        if page.classification == .skip {
+                        if trimming {
+                            trimOverlay(frame: frame)
+                        } else if page.classification == .skip {
                             skipOverlay(frame: frame)
                         } else if frame.width > 0 {
-                            overlays(for: idx, frame: frame)
+                            overlays(for: idx, frame: frame, area: area)
                         }
                     }
                     .frame(width: canvas.width, height: canvas.height)
@@ -78,22 +94,36 @@ struct PageEditorView: View {
                                in: size, unit: RulerUnit())
     }
 
-    /// Where the crops start and end, for the rulers.
-    private func rulerMarks(_ page: BookPage) -> [RulerMark] {
+    /// Where the crops start and end, for the rulers (which measure what shows).
+    private func rulerMarks(_ page: BookPage, _ area: CropRect) -> [RulerMark] {
         switch page.classification {
         case .skip: return []
-        case .single: return [RulerMark(crop: page.leftCrop, color: .blue)]
-        case .spread: return [RulerMark(crop: page.leftCrop, color: .blue), RulerMark(crop: page.rightCrop, color: .green)]
+        case .single: return [RulerMark(crop: page.leftCrop.relative(to: area), color: .blue)]
+        case .spread: return [RulerMark(crop: page.leftCrop.relative(to: area), color: .blue),
+                              RulerMark(crop: page.rightCrop.relative(to: area), color: .green)]
         }
     }
 
+    /// Trim: the trim's box over the whole page, the rest dimmed.
     @ViewBuilder
-    private func overlays(for idx: Int, frame: CGRect) -> some View {
+    private func trimOverlay(frame: CGRect) -> some View {
+        let t = model.trimDraft
+        let shown = CGRect(x: frame.minX + t.x * frame.width, y: frame.minY + t.y * frame.height,
+                           width: t.width * frame.width, height: t.height * frame.height)
+        Path { p in p.addRect(frame); p.addRect(shown) }
+            .fill(.black.opacity(0.4), style: FillStyle(eoFill: true))
+            .allowsHitTesting(false)
+        CropBoxView(crop: Binding(get: { model.trimDraft }, set: { model.trimDraft = $0 }),
+                    imageFrame: frame, color: .pink, label: "Trim", tracksPageEdits: false)
+    }
+
+    @ViewBuilder
+    private func overlays(for idx: Int, frame: CGRect, area: CropRect) -> some View {
         let page = model.pages[idx]
 
         // Left / single crop.
         let leftOut = page.isSpread && page.omittedSide == .left
-        CropBoxView(crop: leftBinding(idx),
+        CropBoxView(crop: leftBinding(idx, area),
                     imageFrame: frame,
                     color: leftOut ? .gray : .blue,
                     label: page.classification == .single ? "Page" : leftOut ? "Left · not exported" : "Left",
@@ -101,17 +131,17 @@ struct PageEditorView: View {
 
         if page.classification == .spread {
             let rightOut = page.omittedSide == .right
-            CropBoxView(crop: rightBinding(idx),
+            CropBoxView(crop: rightBinding(idx, area),
                         imageFrame: frame,
                         color: rightOut ? .gray : .green,
                         label: rightOut ? "Right · not exported" : "Right",
                         labelEdge: .trailing,
                         dimmed: rightOut)
-            SplitLine(splitX: splitBinding(idx), imageFrame: frame)
+            SplitLine(splitX: splitBinding(idx, area), imageFrame: frame)
             // Shared top/bottom margin guides: drag once to move BOTH pages'
             // top (or bottom) crop edge together.
-            HGuide(y: topBinding(idx), imageFrame: frame, edge: .top)
-            HGuide(y: bottomBinding(idx), imageFrame: frame, edge: .bottom)
+            HGuide(y: topBinding(idx, area), imageFrame: frame, edge: .top)
+            HGuide(y: bottomBinding(idx, area), imageFrame: frame, edge: .bottom)
         }
     }
 
@@ -128,32 +158,35 @@ struct PageEditorView: View {
 
     // MARK: - Bindings into the pages array
 
+    // Each in the terms of `area`, what shows of the page (its trim): a box kept in
+    // the view stays inside the trim.
+
     // A box drag sets the crop here; with Lock sizes on, a spread's other box follows it.
-    private func leftBinding(_ idx: Int) -> Binding<CropRect> {
-        Binding(get: { model.pages[idx].leftCrop },
-                set: { model.setSpreadCrop($0, on: .left, at: idx, locked: locksSizes) })
+    private func leftBinding(_ idx: Int, _ area: CropRect) -> Binding<CropRect> {
+        Binding(get: { model.pages[idx].leftCrop.relative(to: area) },
+                set: { model.setSpreadCrop($0.absolute(in: area), on: .left, at: idx, locked: locksSizes) })
     }
-    private func rightBinding(_ idx: Int) -> Binding<CropRect> {
-        Binding(get: { model.pages[idx].rightCrop },
-                set: { model.setSpreadCrop($0, on: .right, at: idx, locked: locksSizes) })
+    private func rightBinding(_ idx: Int, _ area: CropRect) -> Binding<CropRect> {
+        Binding(get: { model.pages[idx].rightCrop.relative(to: area) },
+                set: { model.setSpreadCrop($0.absolute(in: area), on: .right, at: idx, locked: locksSizes) })
     }
-    private func splitBinding(_ idx: Int) -> Binding<Double> {
+    private func splitBinding(_ idx: Int, _ area: CropRect) -> Binding<Double> {
         Binding(
-            get: { model.pages[idx].splitX },
-            set: { model.moveSplit(at: idx, to: $0, locked: locksSizes) }
+            get: { (model.pages[idx].splitX - area.x) / area.width },
+            set: { model.moveSplit(at: idx, to: area.x + $0 * area.width, locked: locksSizes) }
         )
     }
 
     /// Shared TOP edge of both crops. Reading position is the average of the
     /// two current tops; setting it moves both tops together (bottoms fixed).
-    private func topBinding(_ idx: Int) -> Binding<Double> {
+    private func topBinding(_ idx: Int, _ area: CropRect) -> Binding<Double> {
         Binding(
             get: {
                 let l = model.pages[idx].leftCrop, r = model.pages[idx].rightCrop
-                return (l.minY + r.minY) / 2
+                return ((l.minY + r.minY) / 2 - area.y) / area.height
             },
             set: { newTop in
-                let t = max(0, min(newTop, 1))
+                let t = area.y + max(0, min(newTop, 1)) * area.height
                 var l = model.pages[idx].leftCrop
                 var r = model.pages[idx].rightCrop
                 let lBottom = l.maxY, rBottom = r.maxY
@@ -169,14 +202,14 @@ struct PageEditorView: View {
     }
 
     /// Shared BOTTOM edge of both crops; setting it moves both bottoms together.
-    private func bottomBinding(_ idx: Int) -> Binding<Double> {
+    private func bottomBinding(_ idx: Int, _ area: CropRect) -> Binding<Double> {
         Binding(
             get: {
                 let l = model.pages[idx].leftCrop, r = model.pages[idx].rightCrop
-                return (l.maxY + r.maxY) / 2
+                return ((l.maxY + r.maxY) / 2 - area.y) / area.height
             },
             set: { newBottom in
-                let b = max(0, min(newBottom, 1))
+                let b = area.y + max(0, min(newBottom, 1)) * area.height
                 var l = model.pages[idx].leftCrop
                 var r = model.pages[idx].rightCrop
                 let lTop = l.minY, rTop = r.minY
@@ -193,16 +226,17 @@ struct PageEditorView: View {
 
     // MARK: - Layout
 
-    private func imageFrame(image: NSImage?, in container: CGSize) -> CGRect {
-        guard let image, image.size.width > 0, image.size.height > 0 else {
+    /// Where a picture of `size` (what shows of the page) fits in the container.
+    private func imageFrame(size: CGSize?, in container: CGSize) -> CGRect {
+        guard let size, size.width > 0, size.height > 0 else {
             return .zero
         }
         let inset: CGFloat = 24
         let avail = CGSize(width: max(1, container.width - inset * 2),
                            height: max(1, container.height - inset * 2))
-        let scale = min(avail.width / image.size.width, avail.height / image.size.height)
-        let w = image.size.width * scale
-        let h = image.size.height * scale
+        let scale = min(avail.width / size.width, avail.height / size.height)
+        let w = size.width * scale
+        let h = size.height * scale
         return CGRect(x: (container.width - w) / 2,
                       y: (container.height - h) / 2,
                       width: w, height: h)

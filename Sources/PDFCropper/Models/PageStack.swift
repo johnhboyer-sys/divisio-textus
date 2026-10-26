@@ -24,12 +24,13 @@ struct PageStack: Identifiable {
         /// drawn at true size against it, lined up at the fold (see PageStack.init).
         var span: Double = 1
         var id: BookPage.ID { page.id }
-        var regionMinX: Double { side == .right ? page.splitX : 0 }
+        /// The side's part of the page: its half of the trim, or of the scan.
+        var regionMinX: Double { side == .right ? page.splitX : page.bounds.minX }
         var regionWidth: Double {
             switch side {
-            case .left: return page.splitX
-            case .right: return 1 - page.splitX
-            case .single, .whole: return 1
+            case .left: return page.splitX - page.bounds.minX
+            case .right: return page.bounds.maxX - page.splitX
+            case .single, .whole: return page.bounds.width
             }
         }
         var crop: CropRect { localCrop(side == .right ? page.rightCrop : page.leftCrop) }
@@ -76,6 +77,8 @@ struct PageStack: Identifiable {
             var c = CropRect(x: lo, y: shown.y, width: max(0, hi - lo), height: shown.height).normalized()
             c.width = min(c.width, regionWidth)
             c.x = max(regionMinX, min(c.x, end - c.width))
+            let top = max(c.minY, page.bounds.minY), bottom = min(c.maxY, page.bounds.maxY)        // and the trim's
+            c.y = top; c.height = max(0.02, bottom - top)
             return c
         }
     }
@@ -231,11 +234,18 @@ struct SpreadLayout: Equatable {
     var splitX: Double
     var leftCrop: CropRect
     var rightCrop: CropRect
+    /// The page's trim (the whole page by default): the crops and split keep inside it.
+    var bounds: CropRect = .full
+
+    /// How far the split may go: 5% of the trim in from its sides.
+    private var splitRange: (lo: Double, hi: Double) {
+        (bounds.minX + 0.05 * bounds.width, bounds.maxX - 0.05 * bounds.width)
+    }
 
     /// Moves the split and the crops' inner edges with it, as Page view does. A
     /// box whose outer edge the split passes shrinks on its own side of the line.
     mutating func moveSplit(to x: Double) {
-        splitX = max(0.05, min(x, 0.95))
+        splitX = max(splitRange.lo, min(x, splitRange.hi))
         let left = min(leftCrop.minX, splitX - 0.02)
         leftCrop.x = left; leftCrop.width = splitX - left
         let right = max(rightCrop.maxX, splitX + 0.02)
@@ -247,9 +257,9 @@ struct SpreadLayout: Equatable {
     /// crop set off the split by hand (`keep…Gap`) keeps its gap instead. The split
     /// stops where a crop would leave the scan, so dragging back loses nothing.
     mutating func slideSplit(to x: Double, keepLeftGap: Bool = false, keepRightGap: Bool = false) {
-        let s = splitX, lw = leftCrop.width, rw = rightCrop.width
-        let lo = max(0.05, keepLeftGap ? s - leftCrop.minX : lw)
-        let hi = min(0.95, keepRightGap ? s + 1 - rightCrop.maxX : 1 - rw)
+        let s = splitX, lw = leftCrop.width, rw = rightCrop.width, b0 = bounds.minX, b1 = bounds.maxX
+        let lo = max(splitRange.lo, keepLeftGap ? s - leftCrop.minX + b0 : b0 + lw)
+        let hi = min(splitRange.hi, keepRightGap ? s + b1 - rightCrop.maxX : b1 - rw)
         guard lo <= hi else { return }                  // two crops wider than the scan
         let t = max(lo, min(x, hi)), d = t - s
         leftCrop.x = keepLeftGap ? leftCrop.x + d : t - lw
@@ -262,17 +272,18 @@ struct SpreadLayout: Equatable {
     /// it) by the shortfall, as far as the other crop has room on its outer side.
     mutating func matchSizesMovingSplit(rightMatchesLeft: Bool) {
         self = clamped                                  // each on its own side first, as Apply cuts them
+        let b0 = bounds.minX, b1 = bounds.maxX
         if rightMatchesLeft {
             let w = leftCrop.width, r0 = rightCrop.minX
-            let d = min(max(0, r0 + w - 1), max(0, leftCrop.minX), max(0, splitX - 0.05))
+            let d = min(max(0, r0 + w - b1), max(0, leftCrop.minX - b0), max(0, splitX - splitRange.lo))
             splitX -= d; leftCrop.x -= d
             let x = r0 - d
-            rightCrop = CropRect(x: x, y: leftCrop.y, width: min(w, 1 - x), height: leftCrop.height)
+            rightCrop = CropRect(x: x, y: leftCrop.y, width: min(w, b1 - x), height: leftCrop.height)
         } else {
             let w = rightCrop.width, l1 = leftCrop.maxX
-            let d = min(max(0, w - l1), max(0, 1 - rightCrop.maxX), max(0, 0.95 - splitX))
+            let d = min(max(0, w - (l1 - b0)), max(0, b1 - rightCrop.maxX), max(0, splitRange.hi - splitX))
             splitX += d; rightCrop.x += d
-            let end = l1 + d, x = max(0, end - w)
+            let end = l1 + d, x = max(b0, end - w)
             leftCrop = CropRect(x: x, y: rightCrop.y, width: end - x, height: rightCrop.height)
         }
     }
@@ -298,23 +309,27 @@ struct SpreadLayout: Equatable {
     /// Match Sizes: the right crop takes the left's size, or the left takes the right's.
     mutating func matchSizes(rightMatchesLeft: Bool) {
         if rightMatchesLeft {
-            rightCrop = rightCrop.matched(to: leftCrop, foldOnRight: false)
+            rightCrop = rightCrop.matched(to: leftCrop, foldOnRight: false, within: bounds)
         } else {
-            leftCrop = leftCrop.matched(to: rightCrop, foldOnRight: true)
+            leftCrop = leftCrop.matched(to: rightCrop, foldOnRight: true, within: bounds)
         }
     }
 
-    /// The crops cut back to their own side of the split.
+    /// The crops cut back to their own side of the split, and the split and crops
+    /// to the trim.
     var clamped: SpreadLayout {
+        let s = max(splitRange.lo, min(splitX, splitRange.hi))
         func clamp(_ crop: CropRect, _ lo: Double, _ hi: Double) -> CropRect {
             var c = crop.normalized()
             if c.minX < lo { c.width -= lo - c.minX; c.x = lo }
             if c.maxX > hi { c.width = hi - c.x }
             let least = min(0.02, hi - lo)
             if c.width < least { c.width = least; c.x = min(c.x, hi - least) }
+            let top = max(c.minY, bounds.minY), bottom = min(c.maxY, bounds.maxY)
+            if bottom - top >= 0.02 { c.y = top; c.height = bottom - top }
             return c
         }
-        return SpreadLayout(splitX: splitX, leftCrop: clamp(leftCrop, 0, splitX),
-                            rightCrop: clamp(rightCrop, splitX, 1))
+        return SpreadLayout(splitX: s, leftCrop: clamp(leftCrop, bounds.minX, s),
+                            rightCrop: clamp(rightCrop, s, bounds.maxX), bounds: bounds)
     }
 }

@@ -23,10 +23,12 @@ enum PageAnalyzer {
     /// gutter already found instead of looking for it again. `target` says what
     /// the crops take in; for whole pages, `turns` are the angles each side of
     /// `cgImage` was straightened by, so the crops keep clear of the corners
-    /// the turn left empty.
+    /// the turn left empty. `region` is the page's trim: the type, split and
+    /// crops are found inside it (the caller paints the rest as scanner bed).
     static func analyze(cgImage: CGImage, as forced: PageClassification? = nil, split: Double? = nil,
-                        target: CropTarget = .text, turns: (left: Double, right: Double) = (0, 0)) -> Result {
-        var r = analyzeText(cgImage: cgImage, as: forced, split: split)
+                        target: CropTarget = .text, turns: (left: Double, right: Double) = (0, 0),
+                        region: CropRect = .full) -> Result {
+        var r = analyzeText(cgImage: cgImage, as: forced, split: split, region: region)
         guard target == .page, let g = GrayBuffer(cgImage: cgImage) else { return r }
         // Never less than the text block: on a tight scan turned a long way, the
         // corners left empty can reach into the printed text, and text beats a
@@ -38,19 +40,21 @@ enum PageAnalyzer {
         // The sheet's edges are looked for in finer detail: a page size is
         // measured to the percent.
         let fine = GrayBuffer(cgImage: cgImage, maxDim: 1600) ?? g
+        let lo = region.minX, hi = region.maxX
         if r.classification == .spread {
-            r.leftSheet = sheet(fine, xRange: 0..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
-            r.rightSheet = sheet(fine, xRange: r.splitX..<1, turned: turns.right, text: r.rightBlank ? nil : r.rightCrop)
-            r.leftCrop = page(0..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
-            r.rightCrop = page(r.splitX..<1, turns.right, r.rightCrop, r.rightBlank)
+            r.leftSheet = sheet(fine, xRange: lo..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
+            r.rightSheet = sheet(fine, xRange: r.splitX..<hi, turned: turns.right, text: r.rightBlank ? nil : r.rightCrop)
+            r.leftCrop = page(lo..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
+            r.rightCrop = page(r.splitX..<hi, turns.right, r.rightCrop, r.rightBlank)
         } else {
-            r.leftSheet = sheet(fine, xRange: 0..<1, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
-            r.leftCrop = page(0..<1, turns.left, r.leftCrop, r.leftBlank)
+            r.leftSheet = sheet(fine, xRange: lo..<hi, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
+            r.leftCrop = page(lo..<hi, turns.left, r.leftCrop, r.leftBlank)
         }
         return r
     }
 
-    private static func analyzeText(cgImage: CGImage, as forced: PageClassification?, split: Double?) -> Result {
+    private static func analyzeText(cgImage: CGImage, as forced: PageClassification?, split: Double?,
+                                    region: CropRect) -> Result {
         guard let gray = GrayBuffer(cgImage: cgImage) else {
             return Result(classification: .spread,
                           splitX: 0.5,
@@ -58,16 +62,16 @@ enum PageAnalyzer {
                           rightCrop: CropRect(x: 0.52, y: 0.02, width: 0.46, height: 0.96))
         }
 
-        let aspect = Double(cgImage.width) / Double(cgImage.height)
+        let aspect = Double(cgImage.width) * region.width / (Double(cgImage.height) * region.height)
         // Landscape-ish pages are almost certainly two-page spreads; tall pages
         // are likely a single page. This is just a starting guess.
         let isSpread = forced.map { $0 == .spread } ?? (aspect >= 1.15)
 
-        let splitX = isSpread ? (split ?? detectGutter(gray)) : 0.5
+        let splitX = isSpread ? (split ?? detectGutter(gray, region: region)) : 0.5
 
         if isSpread {
-            let left = textBounds(gray, xRange: 0.0..<splitX)
-            let right = textBounds(gray, xRange: splitX..<1.0)
+            let left = textBounds(gray, xRange: region.minX..<splitX)
+            let right = textBounds(gray, xRange: splitX..<region.maxX)
             return Result(classification: .spread,
                           splitX: splitX,
                           leftCrop: left.crop,
@@ -75,7 +79,7 @@ enum PageAnalyzer {
                           leftBlank: left.blank,
                           rightBlank: right.blank)
         } else {
-            let whole = textBounds(gray, xRange: 0.0..<1.0)
+            let whole = textBounds(gray, xRange: region.minX..<region.maxX)
             return Result(classification: .single,
                           splitX: 0.5,
                           leftCrop: whole.crop,
@@ -88,21 +92,27 @@ enum PageAnalyzer {
     /// middle: that is the gutter. Others show a clean white gap between the
     /// pages, often off center: then the gutter is the middle of the widest
     /// ink-free run of columns in the central 30–70% of the spread, even a narrow
-    /// one when nothing wider is there.
-    static func detectGutter(_ g: GrayBuffer) -> Double {
-        let lo = Int(Double(g.width) * 0.30)
-        let hi = Int(Double(g.width) * 0.70)
-        guard hi > lo else { return 0.5 }
+    /// one when nothing wider is there. All of it within `region`, the page's trim.
+    static func detectGutter(_ g: GrayBuffer, region: CropRect = .full) -> Double {
+        let W = Double(g.width), H = Double(g.height)
+        // The trim in pixels, and a share of its width from its left edge.
+        let rx0 = max(0, Int(W * region.minX)), rx1 = min(g.width, Int(W * region.maxX))
+        let ry0 = max(0, Int(H * region.minY)), ry1 = min(g.height, Int(H * region.maxY))
+        let rw = rx1 - rx0
+        func across(_ f: Double) -> Int { rx0 + Int(Double(rx1 - rx0) * f) }
+        let lo = across(0.30)
+        let hi = across(0.70)
+        guard hi > lo, ry1 > ry0 else { return region.minX + region.width / 2 }
 
-        let paper = g.paperLevel()
+        let paper = g.paperLevel(columns: rx0..<rx1)
 
         // 1. A binding shadow, deep or soft grey, or just the fold's thin line:
         //    the darkest central column that is inked nearly top to bottom. A
         //    dark picture reaching the middle has paper above and below it,
         //    text never fills a column more than about 40%, and a frame's side
         //    has the frame's top and bottom running off its ends.
-        let shadowLo = Int(Double(g.width) * 0.40), shadowHi = Int(Double(g.width) * 0.60)
-        let rows0 = g.height / 20, rows1 = g.height - g.height / 20
+        let shadowLo = across(0.40), shadowHi = across(0.60)
+        let rows0 = ry0 + (ry1 - ry0) / 20, rows1 = ry1 - (ry1 - ry0) / 20
         func inkedRows(_ x: Int) -> Int { (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.75 }.count }
         // A box's side has rules running off from its ends; a fold has none,
         // and runs on to the scan's edge, where a dark edge line can meet it
@@ -110,7 +120,7 @@ enum PageAnalyzer {
         func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
             let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
             guard let top = inked.first, let bottom = inked.last else { return false }
-            let reach = max(3, g.width * 3 / 100)
+            let reach = max(3, rw * 3 / 100)
             func rule(_ y: Int, _ step: Int) -> Bool {
                 var n = 0, cx = x + 2 * step
                 while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
@@ -130,11 +140,11 @@ enum PageAnalyzer {
         // Midway between the nearest text on either side of x, if there is text
         // on both sides within reach and nothing dark (a picture, say) there.
         func textMiddle(_ x: Int) -> Double? {
-            let reach = g.width * 15 / 100, band = darkShare(x) > 0.45
+            let reach = rw * 15 / 100, band = darkShare(x) > 0.45
             func textEdge(_ step: Int) -> Int? {
                 // Past the fold's own mark: a dark band with its ragged edges,
                 // or a few columns for a thin line.
-                var cx = x + step * max(2, g.width / 200)
+                var cx = x + step * max(2, rw / 200)
                 if band { cx = x; while cx >= 0, cx < g.width, abs(cx - x) <= reach, darkShare(cx) > 0.005 { cx += step } }
                 while cx >= 0, cx < g.width, abs(cx - x) <= reach {
                     let dark = darkShare(cx)
@@ -150,9 +160,9 @@ enum PageAnalyzer {
         }
         func centred(_ x: Int) -> Bool {
             guard let m = textMiddle(x) else { return true }
-            return abs(Double(x) - m) <= max(2, Double(g.width) * 0.02)
+            return abs(Double(x) - m) <= max(2, Double(rw) * 0.02)
         }
-        var darkestX = g.width / 2, darkestMean = Double.greatestFiniteMagnitude
+        var darkestX = across(0.5), darkestMean = Double.greatestFiniteMagnitude
         var shadowX: Int?, shadowMean = Double.greatestFiniteMagnitude
         for x in shadowLo..<shadowHi {
             let m = g.columnMean(x)
@@ -161,9 +171,9 @@ enum PageAnalyzer {
             let full = { (x: Int) in Double(inkedRows(x)) >= 0.85 * Double(rows1 - rows0) }
             guard full(x) else { continue }
             // A thin line with box corners is a frame's side, not the fold.
-            let near = max(2, g.width / 130)
+            let near = max(2, rw / 130)
             let thin = !(x - near >= 0 && full(x - near)) && !(x + near < g.width && full(x + near))
-            if thin && cornered(x, 0..<g.height) { continue }
+            if thin && cornered(x, ry0..<ry1) { continue }
             shadowMean = m; shadowX = x
         }
         if let shadowX { return Double(shadowX) / Double(g.width) }
@@ -185,21 +195,21 @@ enum PageAnalyzer {
             Double((rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.93 }.count) >= 0.85 * Double(rows1 - rows0)
         }
         for x in shadowLo..<shadowHi where shaded(x) {
-            let near = max(2, g.width / 130)                       // a frame's side, as in step 1
+            let near = max(2, rw / 130)                       // a frame's side, as in step 1
             let thin = !(x - near >= 0 && shaded(x - near)) && !(x + near < g.width && shaded(x + near))
-            if thin && cornered(x, 0..<g.height) { continue }
+            if thin && cornered(x, ry0..<ry1) { continue }
             let level = median(x)
             if level < foldLevel { foldLevel = level; foldX = x }
         }
         if let foldX {
-            let reach = max(2, g.width * 8 / 100), lighter = foldLevel + 0.1 * paper
+            let reach = max(2, rw * 8 / 100), lighter = foldLevel + 0.1 * paper
             let left = (max(0, foldX - reach)..<foldX).contains { median($0) >= lighter }
             let right = ((foldX + 1)..<min(g.width, foldX + reach + 1)).contains { median($0) >= lighter }
             func share(_ x: Int, below level: Double) -> Double {
                 Double((rows0..<rows1).filter { Double(g.value(x, $0)) < paper * level }.count) / Double(rows1 - rows0)
             }
             func clear(_ step: Int) -> Bool {
-                var x = foldX + step * max(2, g.width / 200)       // past the fold's own line
+                var x = foldX + step * max(2, rw / 200)       // past the fold's own line
                 while x >= 0, x < g.width {
                     if share(x, below: 0.75) <= 0.005 { return true }   // white paper
                     if share(x, below: 0.5) > 0.005 { return false }    // print, even a line or two: far darker than shadow grain
@@ -216,7 +226,7 @@ enum PageAnalyzer {
         // 2. A white gap: columns with (almost) no ink, ignoring the top and
         //    bottom 5% where scan edges and running heads can stray across.
         let inkLevel = paper * 0.75
-        let y0 = g.height / 20, y1 = g.height - g.height / 20
+        let y0 = rows0, y1 = rows1
         let maxInk = max(1, (y1 - y0) / 200)          // up to 0.5% specks
         func isEmpty(_ x: Int) -> Bool {
             var ink = 0
@@ -248,8 +258,8 @@ enum PageAnalyzer {
             guard !xs.isEmpty else { return nil }
             let share = { (x: Int) in Double((y0..<y1).filter { Double(g.value(x, $0)) < inkLevel }.count) / Double(y1 - y0) }
             guard let x = xs.max(by: { share($0) < share($1) }) else { return nil }
-            if xs.count <= max(2, g.width / 160) && share(x) >= 0.5 { return x }
-            guard xs.count <= max(2, g.width / 32) else { return nil }
+            if xs.count <= max(2, rw / 160) && share(x) >= 0.5 { return x }
+            guard xs.count <= max(2, rw / 32) else { return nil }
             let stroke = max(3, (y1 - y0) / 25)
             let inked = (y0..<y1).map { y in xs.contains { Double(g.value($0, y)) < inkLevel } }
             var long = 0, run = 0
@@ -264,7 +274,7 @@ enum PageAnalyzer {
             return Int((zip(xs, weights).map { Double($0) * $1 }.reduce(0, +) / total).rounded())
         }
         // A white column or two between a band's strokes is part of the band.
-        let sliver = max(2, g.width / 400)
+        let sliver = max(2, rw / 400)
         if runs.contains(where: { $0.length > sliver }) { runs.removeAll { $0.length <= sliver } }
         // Two runs with one such line between them, and no other beside them
         // (each page's frame, say), are one gap whose middle is the fold, if
@@ -284,7 +294,7 @@ enum PageAnalyzer {
             }
         }
         // Widest gap wins; on a tie, the one nearer the middle.
-        let mid = Double(g.width) / 2
+        let mid = Double(across(0.5))
         func center(_ gap: (start: Int, length: Int, fold: Int?)) -> Double { Double(gap.start) + Double(gap.length) / 2 }
         let widest = gaps.max { a, b in
             a.length < b.length || (a.length == b.length && abs(center(a) - mid) > abs(center(b) - mid))
@@ -299,7 +309,7 @@ enum PageAnalyzer {
         func middle(of run: (start: Int, length: Int)) -> Double {
             func clear(_ x: Int) -> Bool {
                 var ink = 0
-                for y in 0..<g.height where Double(g.value(x, y)) < inkLevel {
+                for y in ry0..<ry1 where Double(g.value(x, y)) < inkLevel {
                     ink += 1
                     if ink > maxInk { return false }
                 }
@@ -319,7 +329,7 @@ enum PageAnalyzer {
             let chosen = bestClear.flatMap { 3 * $0.length >= run.length ? $0 : nil } ?? run
             return (Double(chosen.start) + Double(chosen.length) / 2) / Double(g.width)
         }
-        if let best, best.length >= max(2, g.width * 3 / 100) { return middle(of: best) }
+        if let best, best.length >= max(2, rw * 3 / 100) { return middle(of: best) }
 
         // 3. Pages trimmed close at the binding leave only a narrow gap; it still
         //    beats any column of text.
@@ -450,6 +460,21 @@ enum PageAnalyzer {
         let minY = top == 0 ? 0 : Double(top) / Double(g.height)
         let maxY = bottom == g.height ? 1 : Double(bottom) / Double(g.height)
         return (CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY), seen)
+    }
+
+    /// Trim: where the book lies on a scan with a wide band of scanner background
+    /// beside it (a book shot with its cover open on a black ground), or nil. Only
+    /// sides where that band is wide are trimmed: the thin bed strip of an
+    /// ordinary flatbed scan is left to the crops.
+    static func findBook(_ cgImage: CGImage) -> CropRect? {
+        guard let g = GrayBuffer(cgImage: cgImage) else { return nil }
+        let (paper, _) = paperBox(g, xRange: 0..<1, turned: 0)
+        let wide = 0.08
+        let minX = paper.minX >= wide ? paper.minX : 0, maxX = 1 - paper.maxX >= wide ? paper.maxX : 1
+        let minY = paper.minY >= wide ? paper.minY : 0, maxY = 1 - paper.maxY >= wide ? paper.maxY : 1
+        let r = CropRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        guard r.width < 1 || r.height < 1, r.width >= 0.2, r.height >= 0.2 else { return nil }
+        return r
     }
 
     /// What one book page shows of its own sheet, for the book's page size: its

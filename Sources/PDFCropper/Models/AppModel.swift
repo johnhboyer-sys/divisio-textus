@@ -82,6 +82,10 @@ final class AppModel: ObservableObject {
     /// Editor magnification; 1 fits the whole page in the window.
     @Published var zoom: Double = 1
 
+    /// Trim: the page whose trim is being drawn, and the trim as drawn so far.
+    @Published private(set) var trimmingPage: BookPage.ID?
+    @Published var trimDraft: CropRect = .full
+
     /// The window's undo manager (set by ContentView), so Edit ▸ Undo reverts page edits.
     var undoManager: UndoManager?
 
@@ -424,23 +428,51 @@ final class AppModel: ObservableObject {
         let leftSkew: Double
         let rightSkew: Double
         let result: PageAnalyzer.Result
+        /// The trim analysis worked inside (nil: the whole page).
+        var trim: CropRect? = nil
     }
 
     /// Classify a rendered page (or use `forced`), find its gutter and each side's
     /// skew, then find the crops on the straightened image so they line up.
     /// `split` keeps a spread's gutter where it is given instead of finding it.
+    /// All of it inside `trim`; with `findTrim`, inside the book found on the scan
+    /// instead (see PageAnalyzer.findBook). Outside it the scan counts as bed.
     nonisolated static func analyzePage(_ cg: CGImage, deskew: Bool, as forced: PageClassification? = nil,
-                                        target: CropTarget = .text, split: Double? = nil) -> Analysis {
-        let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced, split: split)
+                                        target: CropTarget = .text, split: Double? = nil,
+                                        trim: CropRect? = nil, findTrim: Bool = false) -> Analysis {
+        let region = findTrim ? PageAnalyzer.findBook(cg) : trim
+        let cg = region.map { bedOutside(cg, $0) } ?? cg
+        let r0 = PageAnalyzer.analyze(cgImage: cg, as: forced, split: split, region: region ?? .full)
         let spread = r0.classification == .spread
         let skews = deskew ? detectSkews(cg, splitX: r0.splitX, isSpread: spread) : (left: 0.0, right: 0.0)
         let composite = ImageTransform.deskewedComposite(
             cg, splitX: r0.splitX, leftDegrees: skews.left, rightDegrees: skews.right, isSpread: spread)
         // Keep the gutter found on the scan: the straightened image is cut there,
         // and turning each half tilts a binding shadow so it can't be found again.
-        let r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification, split: r0.splitX,
-                                      target: target, turns: skews)
-        return Analysis(leftSkew: skews.left, rightSkew: skews.right, result: r1)
+        var r1 = PageAnalyzer.analyze(cgImage: composite, as: r0.classification, split: r0.splitX,
+                                      target: target, turns: skews, region: region ?? .full)
+        // Straightening tilts the trim's painted edge a little: the crops stay inside it.
+        if let region {
+            r1.leftCrop = r1.leftCrop.clamped(to: region)
+            r1.rightCrop = r1.rightCrop.clamped(to: region)
+        }
+        return Analysis(leftSkew: skews.left, rightSkew: skews.right, result: r1, trim: region)
+    }
+
+    /// The scan with everything outside `trim` painted black, as scanner bed.
+    nonisolated static func bedOutside(_ cg: CGImage, _ trim: CropRect) -> CGImage {
+        let w = cg.width, h = cg.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return cg }
+        let W = Double(w), H = Double(h)
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: W, height: H))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        let keep = CGRect(x: trim.minX * W, y: (1 - trim.maxY) * H, width: trim.width * W, height: trim.height * H)   // y up
+        ctx.fill([CGRect(x: 0, y: 0, width: W, height: keep.minY), CGRect(x: 0, y: keep.maxY, width: W, height: H - keep.maxY),
+                  CGRect(x: 0, y: keep.minY, width: keep.minX, height: keep.height),
+                  CGRect(x: keep.maxX, y: keep.minY, width: W - keep.maxX, height: keep.height)])
+        return ctx.makeImage() ?? cg
     }
 
     private func apply(_ a: Analysis, to i: Int) {
@@ -451,6 +483,7 @@ final class AppModel: ObservableObject {
         pages[i].leftCrop = a.result.leftCrop
         pages[i].rightCrop = a.result.rightCrop
         pages[i].handOffSplit = nil                          // placed by the app: on the split by default
+        if pages[i].trimByHand != true { pages[i].trim = a.trim }
         pages[i].analyzed = true
     }
 
@@ -458,6 +491,8 @@ final class AppModel: ObservableObject {
     func analyzeAll() {
         guard let current = document, let url = sourceURL else { return }
         let todo = pages.filter { !$0.analyzed }.map(\.sourceIndex)
+        // A trim set by hand is kept and worked inside; otherwise the book is looked for.
+        let handTrims = Dictionary(uniqueKeysWithValues: pages.filter { $0.trimByHand == true }.map { ($0.sourceIndex, $0.trim) })
         guard !todo.isEmpty else { return }
         analysisRun += 1
         let run = analysisRun
@@ -476,7 +511,8 @@ final class AppModel: ObservableObject {
                 let analysis = autoreleasepool { () -> Analysis? in
                     guard let pdfPage = doc?.page(at: index),
                           let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return nil }
-                    return Self.analyzePage(cg, deskew: deskew, target: target)
+                    return Self.analyzePage(cg, deskew: deskew, target: target,
+                                            trim: handTrims[index] ?? nil, findTrim: handTrims[index] == nil)
                 }
                 let stillCurrent = await MainActor.run { () -> Bool in
                     // A different PDF was opened, or a newer pass started: stand down.
@@ -506,7 +542,8 @@ final class AppModel: ObservableObject {
                 autoreleasepool {
                     guard let pdfPage = doc?.page(at: move.index),
                           let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-                    redone[move.id] = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split)
+                    redone[move.id] = Self.analyzePage(cg, deskew: deskew, as: .spread, target: target, split: move.split,
+                                                       trim: start.first { $0.id == move.id }?.trim)
                 }
             }
             let results = redone
@@ -616,7 +653,9 @@ final class AppModel: ObservableObject {
     private func reanalyze(_ idx: Int, as forced: PageClassification? = nil) {
         guard let doc = document, let pdfPage = doc.page(at: pages[idx].sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return }
-        var analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced, target: cropTarget)
+        let byHand = pages[idx].trimByHand == true
+        var analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: forced, target: cropTarget,
+                                        trim: byHand ? pages[idx].trim : nil, findTrim: !byHand)
         apply(analysis, to: idx)
         // The same book-wide treatment the full pass gives a blank or nearly
         // empty page, so re-detecting one page gives what opening the book gave:
@@ -625,7 +664,8 @@ final class AppModel: ObservableObject {
         var claim = AnalysisClaim(analysis.result)
         let found = pages
         if let move = splitMoves([id: claim]).first {
-            analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: .spread, target: cropTarget, split: move.split)
+            analysis = Self.analyzePage(cg, deskew: autoDeskewEnabled, as: .spread, target: cropTarget, split: move.split,
+                                        trim: pages[idx].trim)
             apply(analysis, to: idx)
             claim = AnalysisClaim(analysis.result)
         }
@@ -708,9 +748,12 @@ final class AppModel: ObservableObject {
         guard let sel = selectedPage, sel.classification == .spread else { return }
         perform("Apply Layout to All Spreads") {
             for i in pages.indices where pages[i].classification == .spread {
-                pages[i].splitX = sel.splitX
-                pages[i].leftCrop = sel.leftCrop
-                pages[i].rightCrop = sel.rightCrop
+                // Each page's copy kept inside its own trim.
+                let l = SpreadLayout(splitX: sel.splitX, leftCrop: sel.leftCrop, rightCrop: sel.rightCrop,
+                                     bounds: pages[i].bounds).clamped
+                pages[i].splitX = l.splitX
+                pages[i].leftCrop = l.leftCrop
+                pages[i].rightCrop = l.rightCrop
                 markSplitGap(i, .left); markSplitGap(i, .right)
             }
         }
@@ -757,12 +800,14 @@ final class AppModel: ObservableObject {
     /// on its own side of the split, on each spread given. The angles stay, as when
     /// the split is dragged in Page view.
     func applySpreadLayout(_ layout: SpreadLayout, to members: [PageStack.Member]) {
-        let l = layout.clamped
         var count = 0
         perform("Apply Layout to Spreads") {
             for member in members {
                 guard let i = pages.firstIndex(where: { $0.id == member.id }),
                       pages[i].classification == .spread else { continue }
+                var onPage = layout
+                onPage.bounds = pages[i].bounds
+                let l = onPage.clamped
                 pages[i].splitX = l.splitX
                 pages[i].leftCrop = l.leftCrop
                 pages[i].rightCrop = l.rightCrop
@@ -917,8 +962,8 @@ final class AppModel: ObservableObject {
             var rooms: [(w: Double, h: Double)] = []
             for p in pages where p.classification != .skip {
                 guard let d = displaySize(of: p) else { continue }
-                let W = d.width / 72, H = d.height / 72
-                rooms += p.classification == .spread ? [(p.splitX * W, H), ((1 - p.splitX) * W, H)] : [(W, H)]
+                let W = d.width / 72, b = p.bounds, H = b.height * d.height / 72
+                rooms += p.classification == .spread ? [((p.splitX - b.minX) * W, H), ((b.maxX - p.splitX) * W, H)] : [(b.width * W, H)]
             }
             let small = rooms.filter { typed.width > $0.w + 1e-6 || typed.height > $0.h + 1e-6 }   // cut at all: as placeSheets cuts
             summary.tooBig = small.count
@@ -956,27 +1001,30 @@ final class AppModel: ObservableObject {
     /// go against the split (a single page keeps its middle across), each keeps its
     /// middle down, cut to the page.
     private func sizeEditedPages(_ size: PageSize) {
-        func span(_ lo: Double, _ hi: Double, length: Double, keep: Double?) -> (Double, Double) {
-            guard let keep else {                               // about the middle, kept on the page
-                let l = min(length, 1), a = min(max(0, (lo + hi) / 2 - l / 2), 1 - l)
-                return (a, a + l)
-            }
-            return keep == hi ? (max(0, hi - length), hi) : (lo, min(1, lo + length))
-        }
         for i in pages.indices where setByAnalysis[pages[i].id] == nil && pages[i].classification != .skip {
             guard let d = displaySize(of: pages[i]), d.width > 0, d.height > 0 else { continue }
+            let b = pages[i].bounds
+            func span(_ lo: Double, _ hi: Double, length: Double, keep: Double?, vertical: Bool) -> (Double, Double) {
+                let (e0, e1) = vertical ? (b.minY, b.maxY) : (b.minX, b.maxX)      // the trim's edges
+                guard let keep else {                               // about the middle, kept on the page
+                    let l = min(length, e1 - e0), a = min(max(e0, (lo + hi) / 2 - l / 2), e1 - l)
+                    return (a, a + l)
+                }
+                return keep == hi ? (max(e0, hi - length), hi) : (lo, min(e1, lo + length))
+            }
             let w = size.width * 72 / d.width, h = size.height * 72 / d.height
             func sized(_ c: CropRect, foldAtRight: Bool?) -> CropRect {
                 let c = c.normalized()
-                let across = span(c.minX, c.maxX, length: w, keep: foldAtRight.map { $0 ? c.maxX : c.minX })
-                let down = span(c.minY, c.maxY, length: h, keep: nil)
+                let across = span(c.minX, c.maxX, length: w, keep: foldAtRight.map { $0 ? c.maxX : c.minX }, vertical: false)
+                let down = span(c.minY, c.maxY, length: h, keep: nil, vertical: true)
                 return CropRect(x: across.0, y: down.0, width: across.1 - across.0, height: down.1 - down.0)
             }
             if pages[i].classification == .spread {
                 // Against the split, each on its own side, cut at the scan's edge.
                 let split = pages[i].splitX, l = pages[i].leftCrop.normalized(), r = pages[i].rightCrop.normalized()
-                let ld = span(l.minY, l.maxY, length: h, keep: nil), rd = span(r.minY, r.maxY, length: h, keep: nil)
-                let lx = max(0, split - w), rx = min(1, split + w)
+                let ld = span(l.minY, l.maxY, length: h, keep: nil, vertical: true)
+                let rd = span(r.minY, r.maxY, length: h, keep: nil, vertical: true)
+                let lx = max(b.minX, split - w), rx = min(b.maxX, split + w)
                 pages[i].leftCrop = CropRect(x: lx, y: ld.0, width: split - lx, height: ld.1 - ld.0)
                 pages[i].rightCrop = CropRect(x: split, y: rd.0, width: rx - split, height: rd.1 - rd.0)
                 pages[i].handOffSplit = nil
@@ -1129,7 +1177,8 @@ final class AppModel: ObservableObject {
                 }
                 if let vertical, let H, let y = vertical(side) {
                     let h = side.inches.height
-                    let s = span((y / h, (y + H) / h), side.text.map { ($0.minY, $0.maxY) }, within: (0, 1))
+                    let b = side.member.page.bounds
+                    let s = span((y / h, (y + H) / h), side.text.map { ($0.minY, $0.maxY) }, within: (b.minY, b.maxY))
                     crop.y = s.0; crop.height = s.1 - s.0
                 }
                 if side.isLeft { pages[i].leftCrop = crop } else { pages[i].rightCrop = crop }
@@ -1215,7 +1264,7 @@ final class AppModel: ObservableObject {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].isSpread else { return }
         perform(rightMatchesLeft ? "Make Right Match Left" : "Make Left Match Right") {
             let page = pages[i]
-            var l = SpreadLayout(splitX: page.splitX, leftCrop: page.leftCrop, rightCrop: page.rightCrop)
+            var l = SpreadLayout(splitX: page.splitX, leftCrop: page.leftCrop, rightCrop: page.rightCrop, bounds: page.bounds)
             l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
             (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
         }
@@ -1238,9 +1287,9 @@ final class AppModel: ObservableObject {
         if pages[index].isSpread && abs(inner - before) > 1e-9 { markSplitGap(index, side) }
         if locked && pages[index].isSpread {
             if side == .left {
-                pages[index].rightCrop = pages[index].rightCrop.matched(to: crop, foldOnRight: false)
+                pages[index].rightCrop = pages[index].rightCrop.matched(to: crop, foldOnRight: false, within: pages[index].bounds)
             } else {
-                pages[index].leftCrop = pages[index].leftCrop.matched(to: crop, foldOnRight: true)
+                pages[index].leftCrop = pages[index].leftCrop.matched(to: crop, foldOnRight: true, within: pages[index].bounds)
             }
         }
     }
@@ -1265,27 +1314,91 @@ final class AppModel: ObservableObject {
         var p = pages[index]
         let off = p.handOffSplit ?? []
         if locked {
-            var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop)
+            var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop, bounds: p.bounds)
             l.slideSplit(to: x, keepLeftGap: off.contains(.left), keepRightGap: off.contains(.right))
             (p.splitX, p.leftCrop, p.rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
         } else {
-            let s = max(0.05, min(x, 0.95))
+            let b = p.bounds, s = max(b.minX + 0.05 * b.width, min(x, b.maxX - 0.05 * b.width))
             p.splitX = s
             // An inner edge that follows the split, or that the split runs into, sits on
             // it; a box the split pushes against its outer edge keeps 2% (and its side).
             var l = p.leftCrop
             if !off.contains(.left) || l.maxX > s {
-                let x0 = max(0, min(l.minX, s - 0.02))
+                let x0 = max(b.minX, min(l.minX, s - 0.02))
                 l = CropRect(x: x0, y: l.y, width: max(0, s - x0), height: l.height)
             }
             var r = p.rightCrop
             if !off.contains(.right) || r.minX < s {
-                let x1 = min(1, max(r.maxX, s + 0.02))
+                let x1 = min(b.maxX, max(r.maxX, s + 0.02))
                 r = CropRect(x: s, y: r.y, width: max(0, x1 - s), height: r.height)
             }
             (p.leftCrop, p.rightCrop) = (l, r)
         }
         pages[index] = p
+    }
+
+    // MARK: - Trim
+
+    /// Trim: show the whole page with its trim to draw.
+    func beginTrim() {
+        guard let p = selectedPage, p.classification != .skip, !isBusy else { return }
+        trimDraft = p.trim ?? .full
+        trimmingPage = p.id
+    }
+
+    func cancelTrim() { trimmingPage = nil }
+
+    /// Done: the page takes the trim drawn, as one undo step. A page as analysis
+    /// left it is detected again inside it; one edited by hand keeps its boxes,
+    /// cut to the trim.
+    func finishTrim() {
+        guard let id = trimmingPage else { return }
+        trimmingPage = nil
+        guard let i = pages.firstIndex(where: { $0.id == id }) else { return }
+        let t = trimDraft.normalized()
+        let trim: CropRect? = t.width >= 0.999 && t.height >= 0.999 ? nil : t
+        guard trim != pages[i].trim || pages[i].trimByHand != true else { return }
+        let placedByAnalysis = setByAnalysis[id] != nil
+        perform("Trim") {
+            pages[i].trim = trim
+            pages[i].trimByHand = true
+            if placedByAnalysis { reanalyze(i) } else { fitInsideTrim(i) }
+        }
+    }
+
+    /// Remove Trim: the whole page again, which Auto-detect then leaves untrimmed.
+    func removeTrim() {
+        guard let i = selectedIndex, pages[i].trim != nil else { return }
+        perform("Remove Trim") {
+            pages[i].trim = nil
+            pages[i].trimByHand = true
+        }
+    }
+
+    /// Trim All Pages Like This: every page takes this page's trim, its split
+    /// and boxes cut to it. Auto-detect all pages then finds the pages inside.
+    func trimAllPagesLikeThis() {
+        guard let sel = selectedPage, let t = sel.trim else { return }
+        perform("Trim All Pages Like This") {
+            for i in pages.indices {
+                pages[i].trim = t
+                pages[i].trimByHand = true
+                fitInsideTrim(i)
+            }
+        }
+        statusText = "Trimmed all \(pages.count) pages like page \(sel.sourceIndex + 1). Auto-detect all pages to fit the boxes to the trim."
+    }
+
+    /// A page's split and boxes cut to its trim.
+    private func fitInsideTrim(_ i: Int) {
+        let b = pages[i].bounds
+        if pages[i].classification == .spread {
+            let l = SpreadLayout(splitX: pages[i].splitX, leftCrop: pages[i].leftCrop, rightCrop: pages[i].rightCrop,
+                                 bounds: b).clamped
+            (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
+        } else {
+            pages[i].leftCrop = pages[i].leftCrop.clamped(to: b)
+        }
     }
 
     // MARK: - Undo

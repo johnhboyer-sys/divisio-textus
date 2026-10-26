@@ -65,6 +65,18 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// offSplit, marked by a rule that also caught outer-edge drags; those are dropped.)
     var handOffSplit: Set<Side>?
 
+    /// Trim: the part of the scan the book is on. The rest is hidden, and the
+    /// split, boxes and analysis stay inside it. Nil: the whole page. Absent in
+    /// older saves.
+    var trim: CropRect?
+
+    /// The trim was set by hand (Trim, Remove Trim, Trim All Pages Like This), so
+    /// Auto-detect keeps it, a removed one too. Absent in older saves.
+    var trimByHand: Bool?
+
+    /// The trim, or the whole page.
+    var bounds: CropRect { trim ?? .full }
+
     enum Side: String, Codable, CaseIterable, Identifiable {
         case left, right
         var id: String { rawValue }

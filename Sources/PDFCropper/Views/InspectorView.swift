@@ -69,6 +69,29 @@ private struct PageSections: View {
             }
 
             if page.classification != .skip {
+                Section("Trim") {
+                    if model.trimmingPage == page.id {
+                        HStack {
+                            Button("Done") { model.finishTrim() }
+                                .keyboardShortcut(.defaultAction)
+                            Button("Cancel") { model.cancelTrim() }
+                                .keyboardShortcut(.cancelAction)
+                        }
+                    } else {
+                        Button {
+                            model.beginTrim()
+                        } label: {
+                            Label("Trim", systemImage: "crop")
+                        }
+                        .help("Draw the part of the page to keep")
+                        .disabled(model.isBusy)
+                        Button("Remove Trim") { model.removeTrim() }
+                            .disabled(page.trim == nil || model.isBusy)
+                        Button("Trim All Pages Like This") { model.trimAllPagesLikeThis() }
+                            .disabled(page.trim == nil || model.isBusy)
+                    }
+                }
+
                 Section("Straighten") {
                     if page.classification == .spread {
                         skewControl("Left", leftSkewBinding(idx))
