@@ -9,22 +9,25 @@ struct ThumbnailRail: View {
 
     var body: some View {
         let flagged = model.flaggedSides
-        let shown = onlyFlaggedState.wrappedValue ? model.pages.filter { flagged[$0.id] != nil } : model.pages
+        // Trim All Pages: the pages are chosen here, as on a Mac, to leave out; all of them shown.
+        let choosing = model.trimmingPage != nil && model.trimmingAllPages
+        let shown = onlyFlaggedState.wrappedValue && !choosing ? model.pages.filter { flagged[$0.id] != nil } : model.pages
         VStack(spacing: 0) {
-            Picker("Show", selection: onlyFlaggedState.projectedValue) {
+            // While choosing for Trim All Pages: All, greyed out; the choice comes back after.
+            Picker("Show", selection: Binding(get: { onlyFlaggedState.wrappedValue && !choosing },
+                                              set: { onlyFlaggedState.wrappedValue = $0 })) {
                 Text("All").tag(false)
                 Text(flagged.isEmpty ? "Needs a look" : "Needs a look (\(flagged.count))").tag(true)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .disabled(choosing)
             .padding(.horizontal, 8).padding(.vertical, 6)
             .help("Needs a look: pages whose crop is a different size from the rest of its stack (Go ▸ Next Page Needing a Look)")
 
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        // Trim All Pages: the pages are chosen here, as on a Mac, to leave out.
-                        let choosing = model.trimmingPage != nil && model.trimmingAllPages
                         ForEach(shown) { page in
                             ThumbnailRow(page: page,
                                          isSelected: choosing ? model.trimSelection.contains(page.id) : page.id == model.selectedPageID,
@@ -56,6 +59,11 @@ struct ThumbnailRail: View {
                 .onChange(of: model.selectedPageID) { _, id in
                     guard let id else { return }
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
+                }
+                // And the page chosen for Trim All Pages, as ↑/↓ move it.
+                .onChange(of: model.trimSelection) { _, chosen in
+                    guard chosen.count == 1, let id = chosen.first else { return }
+                    withAnimation { proxy.scrollTo(id) }
                 }
             }
         }
