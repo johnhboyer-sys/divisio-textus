@@ -195,6 +195,40 @@ struct AnalysisTests {
         #expect(abs(r.splitX - Double(f) / 800) < 0.01, "split \(r.splitX * 800) px, fold \(f) px")
     }
 
+    @Test("Printed rules or a curved frame's side between matching margins are not the fold (Codex review)",
+          arguments: ["thick rule", "two rules", "curved frame"])
+    func notAFoldBand(kind: String) {
+        // At analysis size: the left page's text ends at 350, the right page's
+        // starts at 478 (490 beside the frame); between them, short of the page's
+        // top and bottom, a printed thing whose margins either side are alike.
+        let right = kind == "curved frame" ? 490 : (kind == "two rules" ? 476 : 478)
+        let image = Fixtures.image(800, 560) { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 40, to: 520, by: 12) {
+                c.fill(CGRect(x: kind == "curved frame" ? 160 : 40, y: y, width: 350 - (kind == "curved frame" ? 160 : 40), height: 5))
+                c.fill(CGRect(x: right, y: y, width: 760 - right, height: 5))
+            }
+            switch kind {
+            case "thick rule":
+                c.fill(CGRect(x: 390, y: 100, width: 8, height: 360))
+            case "two rules":
+                c.fill(CGRect(x: 390, y: 100, width: 2, height: 360))
+                c.fill(CGRect(x: 394, y: 100, width: 2, height: 360))
+            default:                                                       // a frame bowed by the page's curl
+                c.fill(CGRect(x: 150, y: 100, width: 2, height: 360))
+                c.fill(CGRect(x: 150, y: 100, width: 242, height: 1))
+                c.fill(CGRect(x: 150, y: 459, width: 242, height: 1))
+                for y in 100..<460 {
+                    let x = 390 + 19 * sin(Double.pi * Double(y - 100) / 360)
+                    c.fill(CGRect(x: x, y: Double(y), width: 2, height: 1))
+                }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        let lo = kind == "curved frame" ? 412.0 : 399.0
+        #expect(r.splitX * 800 > lo && r.splitX * 800 < Double(right) - 2, "split \(r.splitX * 800) px")
+    }
+
     /// Frames two thirds of the page tall: thin lines with white on both sides, yet not the fold.
     @Test("Two framed pages: the split is the middle of the gap between the frames, on neither frame")
     func framedPages() {
