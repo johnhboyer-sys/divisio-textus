@@ -257,6 +257,25 @@ struct SpreadLayout: Equatable {
         splitX = t
     }
 
+    /// The Match Sizes buttons: one crop takes the other's size, its edge at the fold
+    /// kept. Where it would pass the scan's edge, the split moves (the other crop with
+    /// it) by the shortfall, as far as the other crop has room on its outer side.
+    mutating func matchSizesMovingSplit(rightMatchesLeft: Bool) {
+        if rightMatchesLeft {
+            let w = leftCrop.width, r0 = rightCrop.minX
+            let d = min(max(0, r0 + w - 1), max(0, leftCrop.minX), max(0, splitX - 0.05))
+            splitX -= d; leftCrop.x -= d
+            let x = r0 - d
+            rightCrop = CropRect(x: x, y: leftCrop.y, width: min(w, 1 - x), height: leftCrop.height)
+        } else {
+            let w = rightCrop.width, l1 = leftCrop.maxX
+            let d = min(max(0, w - l1), max(0, 1 - rightCrop.maxX), max(0, 0.95 - splitX))
+            splitX += d; rightCrop.x += d
+            let end = l1 + d, x = max(0, end - w)
+            leftCrop = CropRect(x: x, y: rightCrop.y, width: end - x, height: rightCrop.height)
+        }
+    }
+
     /// Sets one crop; with `locked`, the other becomes the same size (CropRect.matched).
     /// Locked, both are cut back to their own side first, as Apply cuts them, so the
     /// sizes the draft shows are the sizes Apply gives.

@@ -173,7 +173,7 @@ private struct StackSections: View {
                         readout: CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit()),
                         match: { rightMatchesLeft in
                             var l = model.spreadLayout(for: stack)
-                            l.matchSizes(rightMatchesLeft: rightMatchesLeft)
+                            l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
                             model.spreadLayout = l
                         })
                 }

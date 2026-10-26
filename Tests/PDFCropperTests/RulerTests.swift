@@ -385,6 +385,29 @@ struct SplitSnapTests {
         #expect(m.pages[1].handOffSplit == [.left])
     }
 
+    @Test("Match Sizes moves the split when the box would pass the scan's edge (John, 2026-10-26)")
+    func matchMovesSplit() {
+        var l = SpreadLayout(splitX: 0.55, leftCrop: CropRect(x: 0.07, y: 0.1, width: 0.48, height: 0.8),
+                             rightCrop: CropRect(x: 0.55, y: 0.12, width: 0.45, height: 0.78))   // at the edge
+        l.matchSizesMovingSplit(rightMatchesLeft: true)
+        #expect(abs(l.splitX - 0.52) < 1e-12)
+        #expect(abs(l.leftCrop.x - 0.04) < 1e-12 && abs(l.leftCrop.width - 0.48) < 1e-12)
+        #expect(abs(l.rightCrop.x - 0.52) < 1e-12 && abs(l.rightCrop.width - 0.48) < 1e-12)
+        #expect(l.rightCrop.y == 0.1 && l.rightCrop.height == 0.8)
+
+        var m = SpreadLayout(splitX: 0.45, leftCrop: CropRect(x: 0, y: 0.1, width: 0.45, height: 0.8),
+                             rightCrop: CropRect(x: 0.45, y: 0.1, width: 0.5, height: 0.8))
+        m.matchSizesMovingSplit(rightMatchesLeft: false)
+        #expect(abs(m.splitX - 0.5) < 1e-12 && abs(m.rightCrop.x - 0.5) < 1e-12 && abs(m.rightCrop.maxX - 1) < 1e-12)
+        #expect(abs(m.leftCrop.x) < 1e-12 && abs(m.leftCrop.width - 0.5) < 1e-12)
+
+        var n = SpreadLayout(splitX: 0.55, leftCrop: CropRect(x: 0.01, y: 0.1, width: 0.54, height: 0.8),
+                             rightCrop: CropRect(x: 0.55, y: 0.1, width: 0.45, height: 0.8))   // too little room
+        n.matchSizesMovingSplit(rightMatchesLeft: true)
+        #expect(abs(n.splitX - 0.54) < 1e-12 && abs(n.leftCrop.x) < 1e-12)                  // as far as it goes
+        #expect(n.rightCrop.maxX <= 1 + 1e-12 && n.leftCrop.maxX <= n.splitX + 1e-12)
+    }
+
     @Test("The mark is saved with the edits; older saves load without it")
     func markSaved() {
         var p = spread(left: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),

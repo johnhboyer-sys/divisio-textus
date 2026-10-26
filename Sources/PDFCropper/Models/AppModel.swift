@@ -1220,17 +1220,16 @@ final class AppModel: ObservableObject {
         guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].isSpread else { return }
         perform(rightMatchesLeft ? "Make Right Match Left" : "Make Left Match Right") {
             let page = pages[i]
-            if rightMatchesLeft {
-                pages[i].rightCrop = page.rightCrop.matched(to: page.leftCrop, foldOnRight: false)
-            } else {
-                pages[i].leftCrop = page.leftCrop.matched(to: page.rightCrop, foldOnRight: true)
-            }
+            var l = SpreadLayout(splitX: page.splitX, leftCrop: page.leftCrop, rightCrop: page.rightCrop)
+            l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
+            (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
         }
-        // A box stops at the scan's edge: say so rather than seem to do nothing.
+        // Moving the split wasn't enough: say so rather than seem to do nothing.
         let p = pages[i], (moved, other) = rightMatchesLeft ? (p.rightCrop, p.leftCrop) : (p.leftCrop, p.rightCrop)
         if other.width - moved.width > 1e-6 {
-            statusText = "The \(rightMatchesLeft ? "right" : "left") box reaches the edge of the scan, so it can't be as wide as the \(rightMatchesLeft ? "left" : "right"). "
-                + "Use \(rightMatchesLeft ? "Make Left Match Right" : "Make Right Match Left") instead, or move the split."
+            statusText = "The \(rightMatchesLeft ? "right" : "left") box can't be as wide as the \(rightMatchesLeft ? "left" : "right"): "
+                + "the scan has no more room on that side, even with the split moved. "
+                + "Use \(rightMatchesLeft ? "Make Left Match Right" : "Make Right Match Left") instead."
         }
     }
 
