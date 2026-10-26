@@ -62,6 +62,8 @@ struct CropRect: Equatable, Codable {
     /// This rect cut to `bounds`. Along an axis where hardly any of it is inside, it
     /// is moved inside instead, at its own length or the bounds' if shorter.
     func kept(in bounds: CropRect) -> CropRect {
+        // Already inside: exactly as it is (no rounding from rebuilding it).
+        if minX >= bounds.minX, maxX <= bounds.maxX, minY >= bounds.minY, maxY <= bounds.maxY { return self }
         func axis(_ lo: Double, _ hi: Double, _ b0: Double, _ b1: Double) -> (Double, Double) {
             let a = max(lo, b0), z = min(hi, b1)
             if z - a >= min(0.02, b1 - b0) { return (a, z) }

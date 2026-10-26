@@ -10,7 +10,9 @@ final class AppModel: ObservableObject {
     @Published var document: PDFDocument?
     @Published var sourceURL: URL?
     @Published var pages: [BookPage] = []
-    @Published var selectedPageID: BookPage.ID?
+    @Published var selectedPageID: BookPage.ID? {
+        didSet { if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil } }   // a trim drawn is that page's
+    }
     @Published var showsStack = false
     /// The stack on show and each stack's draft crop, kept here so a visit to a
     /// flagged page comes back to the same stack and box.
@@ -195,6 +197,7 @@ final class AppModel: ObservableObject {
     }
 
     func load(url: URL) {
+        trimmingPage = nil                                      // a trim being drawn was for the old PDF
         guard let doc = PDFDocument(url: url) else {
             statusText = "Could not open \(url.lastPathComponent)."
             return
@@ -1351,6 +1354,7 @@ final class AppModel: ObservableObject {
         guard let p = selectedPage, allPages || p.classification != .skip, !isBusy else { return }
         trimDraft = p.trim ?? .full
         trimmingAllPages = allPages
+        showsStack = false                                      // the trim is drawn on the page
         trimmingPage = p.id
     }
 
@@ -1363,6 +1367,7 @@ final class AppModel: ObservableObject {
     func finishTrim() {
         guard let id = trimmingPage else { return }
         trimmingPage = nil
+        guard pages.contains(where: { $0.id == id }) else { return }
         let t = trimDraft.normalized()
         let trim: CropRect? = t.width >= 0.999 && t.height >= 0.999 ? nil : t
         if trimmingAllPages {
@@ -1406,10 +1411,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// A page's split and boxes cut to its trim.
+    /// A page's split and boxes cut to its trim (a skipped page's as the type it
+    /// had, which it keeps for un-skipping).
     private func fitInsideTrim(_ i: Int) {
         let b = pages[i].bounds
-        if pages[i].classification == .spread {
+        let type = pages[i].classification == .skip ? pages[i].typeBeforeSkip : pages[i].classification
+        if type == .spread {
             let l = SpreadLayout(splitX: pages[i].splitX, leftCrop: pages[i].leftCrop, rightCrop: pages[i].rightCrop,
                                  bounds: b).clamped
             (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)

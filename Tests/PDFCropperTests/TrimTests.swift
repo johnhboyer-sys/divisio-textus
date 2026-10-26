@@ -175,6 +175,42 @@ struct TrimTests {
         #expect(m.pages == before)
     }
 
+    @Test("A trim being drawn ends with another page or PDF, and Trim All Pages leaves Stack view (Codex review)")
+    func trimSessionEnds() async throws {
+        let (m, _) = await load(Scan(white: true), count: 2)
+        m.selectedPageID = m.pages[0].id
+        m.showsStack = true
+        m.beginTrim(allPages: true)
+        #expect(m.trimmingPage == m.pages[0].id && !m.showsStack)
+        m.selectedPageID = m.pages[1].id
+        #expect(m.trimmingPage == nil)
+        m.selectedPageID = m.pages[0].id
+        m.beginTrim()
+        m.load(url: Scan().write(count: 1))
+        await waitUntilIdle(m)
+        #expect(m.trimmingPage == nil)
+        let before = m.pages
+        m.finishTrim()
+        #expect(m.pages == before)
+    }
+
+    @Test("A skipped spread is fit to Trim All Pages as the spread it was, and comes back inside the trim (Codex review)")
+    func skippedSpreadFits() async throws {
+        let (m, undo) = await load(Scan(white: true), count: 2)
+        let id = m.pages[0].id
+        undoable(undo) { m.setClassification(.skip, for: id) }
+        m.selectedPageID = m.pages[1].id
+        m.beginTrim(allPages: true)
+        m.trimDraft = Scan.book
+        undoable(undo) { m.finishTrim() }
+        undoable(undo) { m.setClassification(.spread, for: id) }
+        let p = m.pages[0]
+        #expect(p.splitX > Scan.book.minX && p.splitX < Scan.book.maxX, "split \(p.splitX)")
+        for c in [p.leftCrop, p.rightCrop] {
+            #expect(c.minX >= Scan.book.minX - 1e-9 && c.maxX <= Scan.book.maxX + 1e-9, "\(c)")
+        }
+    }
+
     @Test("Inside a trim, the split, Match Sizes and the size warning stop at the trim's edges")
     func limitsAtTheTrim() async throws {
         let (m, undo) = await load(Scan(), count: 1)
@@ -224,6 +260,13 @@ struct TrimTests {
         page.leftCrop = CropRect(x: 0.888, y: 0.2, width: 0.012, height: 0.2)
         let out = page.outputCrops(direction: .leftToRight)[0]
         #expect(out.maxX <= 0.9 + 1e-9, "\(out)")
+        let px = out.normalized().pixelRect(in: CGSize(width: 3000, height: 3000)).integral     // as PDFRenderer.crop cuts it
+        #expect(px.maxX <= 2700, "\(px)")
+        // An untrimmed page's crops come out exactly as they are.
+        var plain = BookPage(sourceIndex: 0)
+        plain.leftCrop = CropRect(x: 0.03, y: 0.1, width: 0.04, height: 0.5)
+        plain.rightCrop = CropRect(x: 0.53, y: 0.1, width: 0.4, height: 0.5)
+        #expect(plain.outputCrops(direction: .leftToRight) == [plain.leftCrop, plain.rightCrop])
     }
 
     @Test("The stack's picture is redrawn when a trim changes (Codex review)")
