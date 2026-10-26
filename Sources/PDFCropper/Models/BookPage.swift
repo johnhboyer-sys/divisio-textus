@@ -61,8 +61,9 @@ struct BookPage: Identifiable, Codable, Equatable {
     var omittedSide: Side?
 
     /// The sides whose box was set off the split by hand, which the split then leaves
-    /// where it is. Absent in older saves (none).
-    var offSplit: Set<Side>?
+    /// where it is. Absent in older saves (none). (Saves from 2026-10-24 named it
+    /// offSplit, marked by a rule that also caught outer-edge drags; those are dropped.)
+    var handOffSplit: Set<Side>?
 
     enum Side: String, Codable, CaseIterable, Identifiable {
         case left, right

@@ -450,7 +450,7 @@ final class AppModel: ObservableObject {
         pages[i].splitX = a.result.splitX
         pages[i].leftCrop = a.result.leftCrop
         pages[i].rightCrop = a.result.rightCrop
-        pages[i].offSplit = nil                          // placed by the app: on the split by default
+        pages[i].handOffSplit = nil                          // placed by the app: on the split by default
         pages[i].analyzed = true
     }
 
@@ -975,7 +975,7 @@ final class AppModel: ObservableObject {
                 let lx = max(0, split - w), rx = min(1, split + w)
                 pages[i].leftCrop = CropRect(x: lx, y: ld.0, width: split - lx, height: ld.1 - ld.0)
                 pages[i].rightCrop = CropRect(x: split, y: rd.0, width: rx - split, height: rd.1 - rd.0)
-                pages[i].offSplit = nil
+                pages[i].handOffSplit = nil
             } else {
                 pages[i].leftCrop = sized(pages[i].leftCrop, foldAtRight: nil)
             }
@@ -1226,14 +1226,24 @@ final class AppModel: ObservableObject {
                 pages[i].leftCrop = page.leftCrop.matched(to: page.rightCrop, foldOnRight: true)
             }
         }
+        // A box stops at the scan's edge: say so rather than seem to do nothing.
+        let p = pages[i], (moved, other) = rightMatchesLeft ? (p.rightCrop, p.leftCrop) : (p.leftCrop, p.rightCrop)
+        if other.width - moved.width > 1e-6 {
+            statusText = "The \(rightMatchesLeft ? "right" : "left") box reaches the edge of the scan, so it can't be as wide as the \(rightMatchesLeft ? "left" : "right"). "
+                + "Use \(rightMatchesLeft ? "Make Left Match Right" : "Make Right Match Left") instead, or move the split."
+        }
     }
 
     /// A drag of one of a spread's crops. With `locked`, the other crop takes its size.
     /// The drag's begin/endEdit make both one undo step.
     func setSpreadCrop(_ crop: CropRect, on side: BookPage.Side, at index: Int, locked: Bool) {
         guard pages.indices.contains(index) else { return }
+        let before = side == .left ? pages[index].leftCrop.maxX : pages[index].rightCrop.minX
         if side == .left { pages[index].leftCrop = crop } else { pages[index].rightCrop = crop }
-        if pages[index].isSpread { markSplitGap(index, side) }  // set off the split by hand, or back on it
+        // Set off the split by hand, or back on it: only when the edge facing the split
+        // moves (the box itself, or that edge), not its outer edge.
+        let inner = side == .left ? crop.maxX : crop.minX
+        if pages[index].isSpread && abs(inner - before) > 1e-9 { markSplitGap(index, side) }
         if locked && pages[index].isSpread {
             if side == .left {
                 pages[index].rightCrop = pages[index].rightCrop.matched(to: crop, foldOnRight: false)
@@ -1249,9 +1259,9 @@ final class AppModel: ObservableObject {
     /// Records whether a spread's box on `side` sits off the split, as the user placed it.
     private func markSplitGap(_ i: Int, _ side: BookPage.Side) {
         let inner = side == .left ? pages[i].leftCrop.maxX : pages[i].rightCrop.minX
-        var off = pages[i].offSplit ?? []
+        var off = pages[i].handOffSplit ?? []
         if abs(inner - pages[i].splitX) > Self.onSplit { off.insert(side) } else { off.remove(side) }
-        pages[i].offSplit = off.isEmpty ? nil : off
+        pages[i].handOffSplit = off.isEmpty ? nil : off
     }
 
     /// Page view's split drag. Boxes are on the split by default: with the lock, they
@@ -1261,7 +1271,7 @@ final class AppModel: ObservableObject {
     func moveSplit(at index: Int, to x: Double, locked: Bool) {
         guard pages.indices.contains(index) else { return }
         var p = pages[index]
-        let off = p.offSplit ?? []
+        let off = p.handOffSplit ?? []
         if locked {
             var l = SpreadLayout(splitX: p.splitX, leftCrop: p.leftCrop, rightCrop: p.rightCrop)
             l.slideSplit(to: x, keepLeftGap: off.contains(.left), keepRightGap: off.contains(.right))

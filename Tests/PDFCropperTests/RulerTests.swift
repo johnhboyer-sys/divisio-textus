@@ -318,9 +318,21 @@ struct SplitSnapTests {
         m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.4, height: 0.8),
                           right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))]
         m.setSpreadCrop(CropRect(x: 0.1, y: 0.1, width: 0.35, height: 0.8), on: .left, at: 0, locked: false)
-        #expect(m.pages[0].offSplit == [.left])
+        #expect(m.pages[0].handOffSplit == [.left])
         m.setSpreadCrop(CropRect(x: 0.1, y: 0.1, width: 0.4, height: 0.8), on: .left, at: 0, locked: false)
-        #expect((m.pages[0].offSplit ?? []).isEmpty)
+        #expect((m.pages[0].handOffSplit ?? []).isEmpty)
+    }
+
+    @Test("Resizing a box's outer edge doesn't mark a gap the app left (John, 2026-10-26)")
+    func outerEdgeDragDoesNotMark() {
+        let m = testModel()
+        m.pages = [spread(left: CropRect(x: 0.1, y: 0.1, width: 0.36, height: 0.8),     // a gap the app left
+                          right: CropRect(x: 0.53, y: 0.1, width: 0.36, height: 0.8))]
+        m.setSpreadCrop(CropRect(x: 0.05, y: 0.1, width: 0.41, height: 0.8), on: .left, at: 0, locked: true)
+        m.setSpreadCrop(CropRect(x: 0.53, y: 0.1, width: 0.4, height: 0.8), on: .right, at: 0, locked: false)
+        #expect(m.pages[0].handOffSplit == nil)
+        m.moveSplit(at: 0, to: 0.5, locked: false)                 // so the split's first move takes both
+        #expect(abs(m.pages[0].leftCrop.maxX - 0.5) < 1e-12 && abs(m.pages[0].rightCrop.minX - 0.5) < 1e-12)
     }
 
     @Test("Lock off: the split's first move takes app-placed boxes with it, but leaves one set off by hand")
@@ -353,7 +365,7 @@ struct SplitSnapTests {
         let m = testModel()
         var p = spread(left: CropRect(x: 0.3, y: 0.1, width: 0.1, height: 0.8),
                        right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))
-        p.offSplit = [.left]
+        p.handOffSplit = [.left]
         m.pages = [p]
         for x in [0.35, 0.31, 0.25, 0.1] {
             m.moveSplit(at: 0, to: x, locked: false)
@@ -370,16 +382,16 @@ struct SplitSnapTests {
                    BookPage(sourceIndex: 1, classification: .spread, analyzed: true)]
         m.selectedPageID = m.pages[0].id
         m.applyLayoutToAllSpreads()
-        #expect(m.pages[1].offSplit == [.left])
+        #expect(m.pages[1].handOffSplit == [.left])
     }
 
     @Test("The mark is saved with the edits; older saves load without it")
     func markSaved() {
         var p = spread(left: CropRect(x: 0.1, y: 0.1, width: 0.3, height: 0.8),
                        right: CropRect(x: 0.5, y: 0.1, width: 0.4, height: 0.8))
-        p.offSplit = [.left]
+        p.handOffSplit = [.left]
         let data = try? JSONEncoder().encode(p)
         let back = data.flatMap { try? JSONDecoder().decode(BookPage.self, from: $0) }
-        #expect(back?.offSplit == [.left])                          // saved with the edits
+        #expect(back?.handOffSplit == [.left])                          // saved with the edits
     }
 }
