@@ -238,12 +238,29 @@ enum PageAnalyzer {
         }
         // A fold drawn as a thin line, too broken (or tilted) for step 1, cuts
         // the gap in two: the gap is both halves, and the fold is the line.
+        // So does one that wanders or breaks across a narrow band (Wallace
+        // 1957), inked down at least half the page in long strokes: text in so
+        // narrow a strip is cut short by the space between its lines. The fold
+        // is then the middle of the band's ink.
         func line(_ xs: Range<Int>) -> Int? {
-            guard !xs.isEmpty, xs.count <= max(2, g.width / 160) else { return nil }
+            guard !xs.isEmpty else { return nil }
             let share = { (x: Int) in Double((y0..<y1).filter { Double(g.value(x, $0)) < inkLevel }.count) / Double(y1 - y0) }
-            guard let x = xs.max(by: { share($0) < share($1) }), share(x) >= 0.5 else { return nil }
-            return x
+            guard let x = xs.max(by: { share($0) < share($1) }) else { return nil }
+            if xs.count <= max(2, g.width / 160) && share(x) >= 0.5 { return x }
+            guard xs.count <= max(2, g.width / 32) else { return nil }
+            let stroke = max(3, (y1 - y0) / 25)
+            var long = 0, run = 0
+            for y in y0...y1 {
+                if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
+                else { if run >= stroke { long += run }; run = 0 }
+            }
+            guard 2 * long >= y1 - y0 else { return nil }
+            let weights = xs.map(share), total = weights.reduce(0, +)
+            return Int((zip(xs, weights).map { Double($0) * $1 }.reduce(0, +) / total).rounded())
         }
+        // A white column or two between a band's strokes is part of the band.
+        let sliver = max(2, g.width / 400)
+        if runs.contains(where: { $0.length > sliver }) { runs.removeAll { $0.length <= sliver } }
         // Two runs with one such line between them, and no other beside them
         // (each page's frame, say), are one gap whose middle is the fold, if
         // the two pages' inner margins either side of it are much alike (one

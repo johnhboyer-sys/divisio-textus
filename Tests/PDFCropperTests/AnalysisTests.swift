@@ -169,6 +169,32 @@ struct AnalysisTests {
         #expect(abs(r.splitX - fold) < 0.004, "split \(r.splitX), fold \(fold)")
     }
 
+    @Test("A broken fold line wandering across a band in a white gutter is the split (Wallace 1957)",
+          arguments: [(384, false), (400, false), (416, false), (400, true)])
+    func foldBand(fold f: Int, sliver: Bool) {
+        // At analysis size, as on Wallace 1957 pp. 96-97: the fold drifts 12 px
+        // across the page, broken here and there, so no one column is inked on
+        // half its rows; a white margin of much the same width on each side.
+        // With `sliver`, a dashed strand beside it leaves a white column or two
+        // inside the band.
+        let image = Fixtures.image(800, 560) { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 40, to: 520, by: 12) {
+                c.fill(CGRect(x: 40, y: y, width: f - 28 - 40, height: 5))
+                c.fill(CGRect(x: f + 26, y: y, width: 760 - f - 26, height: 5))
+            }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for y in 0..<560 where (y / 60) % 5 != 4 {
+                c.fill(CGRect(x: f - 6 + y * 12 / 560, y: y, width: 2, height: 1))
+            }
+            if sliver {
+                for y in stride(from: 0, to: 560, by: 20) { c.fill(CGRect(x: f + 9, y: y, width: 2, height: 6)) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX - Double(f) / 800) < 0.01, "split \(r.splitX * 800) px, fold \(f) px")
+    }
+
     /// Frames two thirds of the page tall: thin lines with white on both sides, yet not the fold.
     @Test("Two framed pages: the split is the middle of the gap between the frames, on neither frame")
     func framedPages() {
