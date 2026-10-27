@@ -224,9 +224,16 @@ enum PageAnalyzer {
         }
 
         // 2. A white gap: columns with (almost) no ink, ignoring the top and
-        //    bottom 5% where scan edges and running heads can stray across.
+        //    bottom 5% where scan edges and running heads can stray across,
+        //    and scanner bed showing above or below the book: rows dark across
+        //    nearly all the middle of the spread, as no line of print is, nor
+        //    a picture on one page.
         let inkLevel = paper * 0.75
-        let y0 = rows0, y1 = rows1
+        func bed(_ y: Int) -> Bool { 10 * (lo..<hi).filter { Double(g.value($0, y)) < paper * 0.5 }.count >= 9 * (hi - lo) }
+        var top = rows0, bottom = rows1
+        while top < bottom, bed(top) { top += 1 }
+        while bottom > top, bed(bottom - 1) { bottom -= 1 }
+        let (y0, y1) = top < bottom ? (top, bottom) : (rows0, rows1)
         let maxInk = max(1, (y1 - y0) / 200)          // up to 0.5% specks
         func isEmpty(_ x: Int) -> Bool {
             var ink = 0
@@ -305,11 +312,13 @@ enum PageAnalyzer {
         // gap in a table or between columns of one page.
         // A gap's middle can land on a running head or folio that the test above
         // ignored up in the top or bottom strip; within the gap, prefer the
-        // widest part that is clear over the full height.
+        // widest part that is clear over the full height. The outermost 1% of
+        // rows is the scan's or trim's edge, where the fold can show as well.
         func middle(of run: (start: Int, length: Int)) -> Double {
+            let edge = max(1, (ry1 - ry0) / 100)
             func clear(_ x: Int) -> Bool {
                 var ink = 0
-                for y in ry0..<ry1 where Double(g.value(x, y)) < inkLevel {
+                for y in (ry0 + edge)..<max(ry0 + edge, ry1 - edge) where Double(g.value(x, y)) < inkLevel {
                     ink += 1
                     if ink > maxInk { return false }
                 }
