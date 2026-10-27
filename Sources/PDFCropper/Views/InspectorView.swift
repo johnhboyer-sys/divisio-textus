@@ -465,7 +465,7 @@ private struct PageSizeRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(shown.0 == nil && shown.1 == nil ? "Page size" : "Page size: \(Self.describe(shown)) in")
-            Text(note).font(.caption).foregroundStyle(.secondary)
+            if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
             if let disagreement = size.disagreement {
                 Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
             }
@@ -520,8 +520,9 @@ private struct PageSizeRow: View {
         return (size.width, size.height)
     }
 
-    private var note: String {
-        if size.override != nil { return "Set by you. Empty both fields and Apply to use the measured size." }
+    /// None for a typed size: a note says only what is wrong (John, 2026-10-27).
+    private var note: String? {
+        if size.override != nil { return nil }
         if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
         return "Measured on \(size.measured) of \(size.total) pages."
     }
