@@ -39,36 +39,98 @@ enum OCRService {
         }
 
         let imgW = CGFloat(cgImage.width), imgH = CGFloat(cgImage.height)
+        // Block rects are normalized TOP-LEFT; CGImage.cropping is top-left too.
+        let rects = blocks.map {
+            CGRect(x: $0.minX * imgW, y: $0.minY * imgH, width: $0.width * imgW, height: $0.height * imgH)
+        }
+        let margin = (0.025 * imgW).rounded()
         var result: [Line] = []
         var failedBlocks = 0
-        for block in blocks {
-            // Block rects are normalized TOP-LEFT; CGImage.cropping is top-left too.
-            let px = CGRect(x: block.minX * imgW, y: block.minY * imgH,
-                            width: block.width * imgW, height: block.height * imgH).integral
-            let clamped = px.intersection(CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+        for (i, px) in rects.enumerated() {
+            let widened = widen(px, by: margin, in: cgImage, apartFrom: rects.enumerated().filter { $0.offset != i }.map(\.element))
+            let clamped = widened.integral.intersection(CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
             guard !clamped.isNull, clamped.width >= 1, clamped.height >= 1,
-                  let sub = cgImage.cropping(to: clamped) else { continue }
+                  let crop = cgImage.cropping(to: clamped),
+                  let sub = padded(crop, by: margin) else { continue }
 
-            // Translate each block-local box (Vision's bottom-left normalized) back
+            // Translate each padded-block box (Vision's bottom-left normalized) back
             // into full-page bottom-left normalized coordinates.
-            let bx = block.minX, bw = block.width
-            let bh = block.height
-            let blockBottom = 1 - (block.minY + block.height)
+            let subW = CGFloat(sub.width), subH = CGFloat(sub.height)
+            let pageBottom = imgH - clamped.maxY       // the crop's bottom edge, in pixels
             guard let lines = recognizeWhole(sub, languages: languages) else {
                 failedBlocks += 1
                 continue
             }
             for line in lines {
-                let fullBox = CGRect(x: bx + line.box.minX * bw,
-                                     y: blockBottom + line.box.minY * bh,
-                                     width: line.box.width * bw,
-                                     height: line.box.height * bh)
+                let fullBox = CGRect(x: (clamped.minX - margin + line.box.minX * subW) / imgW,
+                                     y: (pageBottom - margin + line.box.minY * subH) / imgH,
+                                     width: line.box.width * subW / imgW,
+                                     height: line.box.height * subH / imgH)
                 result.append(Line(text: line.text, box: fullBox))
             }
         }
         // Nothing read at all counts as a failed page; otherwise keep what was read.
         if failedBlocks > 0 && result.isEmpty { return nil }
         return Recognition(lines: result, complete: failedBlocks == 0)
+    }
+
+    /// Blocks are cropped tight to their ink and can cut off a line's last letters
+    /// ("caus" for "cause"); Vision also misreads letters that touch an image's edge
+    /// ("gencrally" for "generally" on Wallace 1957). So each block is widened into
+    /// the page by `margin`, then given a white border of `margin` too. It never
+    /// goes past the whitest column between it and a block beside it (halfway, on a
+    /// table's narrow gutter, can take in the next column's clipped letters), nor
+    /// past halfway to a block above or below (or corner to corner).
+    private static func widen(_ r: CGRect, by margin: CGFloat, in image: CGImage, apartFrom others: [CGRect]) -> CGRect {
+        var x0 = r.minX - margin, x1 = r.maxX + margin, y0 = r.minY - margin, y1 = r.maxY + margin
+        for o in others {
+            let sideBySide = o.minY < r.maxY && o.maxY > r.minY
+            // Within `margin` sideways counts as above or below, so a block set
+            // corner to corner can't be taken in either.
+            let stacked = o.minX < r.maxX + margin && o.maxX > r.minX - margin
+            if sideBySide && o.minX >= r.maxX {
+                x1 = min(x1, whitestColumn(image, between: r.maxX, and: o.minX, rows: r) ?? r.maxX)
+            }
+            if sideBySide && o.maxX <= r.minX {
+                x0 = max(x0, whitestColumn(image, between: o.maxX, and: r.minX, rows: r) ?? r.minX)
+            }
+            if stacked && o.minY >= r.maxY { y1 = min(y1, (r.maxY + o.minY) / 2) }
+            if stacked && o.maxY <= r.minY { y0 = max(y0, (o.maxY + r.minY) / 2) }
+        }
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+    }
+
+    /// The middle of the widest run of columns with the least ink, from `a` to `b`
+    /// within `rows`, at full resolution (the layout's blocks come from a small copy).
+    private static func whitestColumn(_ image: CGImage, between a: CGFloat, and b: CGFloat, rows: CGRect) -> CGFloat? {
+        let strip = CGRect(x: a, y: rows.minY, width: b - a, height: rows.height).integral
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard !strip.isNull, strip.width >= 1, strip.height >= 1, let crop = image.cropping(to: strip),
+              let g = GrayBuffer(cgImage: crop, maxDim: max(crop.width, crop.height)) else { return nil }
+        let ink = (0..<g.width).map { x in (0..<g.height).filter { g.value(x, $0) < 128 }.count }
+        guard let least = ink.min() else { return nil }
+        var best = (start: 0, length: 0), start = -1
+        for x in 0...g.width {
+            if x < g.width && ink[x] == least {
+                if start < 0 { start = x }
+            } else if start >= 0 {
+                if x - start > best.length { best = (start, x - start) }
+                start = -1
+            }
+        }
+        return strip.minX + CGFloat(best.start) + CGFloat(best.length) / 2
+    }
+
+    private static func padded(_ image: CGImage, by margin: CGFloat) -> CGImage? {
+        let m = Int(margin)
+        guard let ctx = CGContext(data: nil, width: image.width + 2 * m, height: image.height + 2 * m,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
+        ctx.draw(image, in: CGRect(x: m, y: m, width: image.width, height: image.height))
+        return ctx.makeImage()
     }
 
     /// Minimum image height (px) before the second, half-scale OCR pass runs. The
