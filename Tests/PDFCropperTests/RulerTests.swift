@@ -83,7 +83,8 @@ struct RulerTests {
         let ticks = scale.ticks(length: 144, origin: -250)
         #expect(ticks.first?.position == -250)
         #expect(ticks.last?.position == -250 + 144 * 1.5)
-        #expect(ticks.first { $0.label == "1" }?.position == -250 + 108)
+        // A Double literal: Swift Testing 6.4's #expect read -250 + 108 as an Int, never equal.
+        #expect(ticks.first { $0.label == "1" }?.position == -250.0 + 108)
     }
 
     @Test("Empty or broken sizes give no ticks, without hanging")
