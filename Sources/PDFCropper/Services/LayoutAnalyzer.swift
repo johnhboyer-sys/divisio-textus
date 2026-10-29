@@ -34,6 +34,7 @@ enum LayoutAnalyzer {
         let W = g.width, H = g.height
         let minGutter = max(2, Int(0.015 * Double(W)))  // vertical gap = real column gutter
         let minColW   = max(4, Int(0.05 * Double(W)))   // discard thin edge slivers
+        let maxJoin   = Int(0.04 * Double(W))           // a sliver this close joins its neighbour
         let minBandH  = max(4, Int(0.025 * Double(H)))  // don't column-split a single line
         let minRowGap = max(2, Int(0.010 * Double(H)))  // white gap that separates bands
         let inkFrac   = 0.01                            // a line this dark counts as "ink"
@@ -72,7 +73,7 @@ enum LayoutAnalyzer {
             return Double(dark) / Double(r.width * r.height)
         }
 
-        // Split a region into columns at white vertical gutters; drop slivers; tighten.
+        // Split a region into columns at white vertical gutters; join or drop slivers; tighten.
         func columnsIn(_ r: PRect) -> [PRect] {
             var gaps: [(Int, Int)] = []
             var s = -1
@@ -94,7 +95,22 @@ enum LayoutAnalyzer {
             }
             if cx < r.x1 { cols.append(PRect(x0: cx, x1: r.x1, y0: r.y0, y1: r.y1)) }
 
-            return cols.filter { $0.width >= minColW }
+            // A column too narrow to stand alone joins the nearer full-width
+            // neighbour when it is close: dropping it lost the item numbers ("3." of
+            // "3. Type D") on Wallace 1957. Farther slivers, and ones that aren't
+            // print, are dropped: dense over the region's height (scanner strip,
+            // shadow) or near solid where they have ink (a short mark, a rule).
+            while let i = cols.firstIndex(where: { $0.width < minColW }) {
+                let c = cols.remove(at: i)
+                guard inkDensity(c) < maxColInk, let ink = tighten(c), inkDensity(ink) < 0.85 else { continue }
+                let left = i > 0 && cols[i - 1].width >= minColW ? c.x0 - cols[i - 1].x1 : Int.max
+                let right = i < cols.count && cols[i].width >= minColW ? cols[i].x0 - c.x1 : Int.max
+                guard min(left, right) <= maxJoin else { continue }
+                let j = left <= right ? i - 1 : i
+                cols[j] = PRect(x0: min(cols[j].x0, c.x0), x1: max(cols[j].x1, c.x1), y0: r.y0, y1: r.y1)
+            }
+
+            return cols
                 .compactMap { tighten($0) }
                 .filter { inkDensity($0) < maxColInk }   // drop solid shadow bands
         }

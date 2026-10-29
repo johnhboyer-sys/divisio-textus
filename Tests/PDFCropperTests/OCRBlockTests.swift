@@ -52,4 +52,52 @@ struct OCRBlockTests {
             }
         }
     }
+
+    @Test("A narrow column of item numbers stays with its text")
+    func itemNumbers() throws {
+        // Wallace 1957 numbers each syllogism ("3. Type D; ..."): the numbers form
+        // a column too narrow to stand alone, and were dropped as a scanner sliver.
+        let w = 1700, h = 2200
+        let font = CTFontCreateWithName("Times-Roman" as CFString, 30, nil)
+        let numberX = 150.0, textX = 215.0
+        let image = Fixtures.image(w, h) { c in
+            func draw(_ text: String, _ x: Double, _ y: Double) {
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+                c.textMatrix = .identity
+                c.textPosition = CGPoint(x: x, y: y)
+                CTLineDraw(line, c)
+            }
+            for i in 0..<6 {
+                let y = 1900 - Double(i) * 44
+                draw("\(i + 2).", numberX, y)
+                draw("Type D explicit", textX, y)
+                draw("in Aristotle", 900, y)
+            }
+        }
+        let blocks = LayoutAnalyzer.columnBlocks(image)
+        #expect(blocks.count > 1)
+        // One block holds the numbers and their text (it doesn't start at textX).
+        #expect(blocks.contains { $0.minX * Double(w) < numberX + 20 && $0.maxX * Double(w) > textX + 100 }, "\(blocks)")
+    }
+
+    @Test("A dark scanner strip or mark beside a column is still left out", arguments: [350.0, 120.0])
+    func scannerStrip(height: Double) {
+        let w = 1700, h = 2200
+        let font = CTFontCreateWithName("Times-Roman" as CFString, 30, nil)
+        let image = Fixtures.image(w, h) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            c.fill(CGRect(x: 100, y: 1950 - height, width: 15, height: height))   // as narrow as a column of numbers
+            for i in 0..<8 {
+                for x in [150.0, 900.0] {
+                    let line = CTLineCreateWithAttributedString(NSAttributedString(string: "the cause of motion", attributes: [.font: font]))
+                    c.textMatrix = .identity
+                    c.textPosition = CGPoint(x: x, y: 1900 - Double(i) * 44)
+                    CTLineDraw(line, c)
+                }
+            }
+        }
+        let blocks = LayoutAnalyzer.columnBlocks(image)
+        #expect(blocks.count > 1)
+        #expect(!blocks.contains { $0.minX * Double(w) < 140 }, "\(blocks)")
+    }
 }
