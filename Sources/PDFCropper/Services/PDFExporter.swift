@@ -262,8 +262,10 @@ enum PDFExporter {
                              height: line.box.height * pageSize.height)
             guard box.width > 1, box.height > 1 else { return nil }
 
+            // No ligatures: a reader gives the fi and fl glyphs no height, or
+            // puts them at the page's bottom edge, splitting "scientific".
             let ctLine = CTLineCreateWithAttributedString(
-                NSAttributedString(string: line.text, attributes: [.font: font]))
+                NSAttributedString(string: line.text, attributes: [.font: font, .ligature: 0]))
             let naturalWidth = CTLineGetTypographicBounds(ctLine, nil, nil, nil)
             var size = max(1, box.height)
             if naturalWidth > 0, naturalWidth * size / baseSize > box.width {

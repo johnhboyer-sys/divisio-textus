@@ -46,6 +46,22 @@ struct TextLayerTests {
         return try #require(PDFDocument(url: out)?.page(at: 0))
     }
 
+    @Test("fi and fl read back in place, inside their words")
+    func noLigatures() throws {
+        // On Wallace 1957 the fi and fl glyphs landed at the page's bottom edge,
+        // so "scientific" read back as "scienti c".
+        let text = "the scientific method reflects first principles"
+        let page = try layerPage([OCRService.Line(text: text, box: CGRect(x: 0.1, y: 0.5, width: 0.8, height: 0.02))])
+        let string = try #require(page.string) as NSString
+        #expect(string as String == text, "\(string)")
+        let line = try wordBox("method", on: page)
+        for k in 0..<string.length where string.character(at: k) != 32 {
+            let box = page.characterBounds(at: k)
+            #expect(box.height > 1 && abs(box.midY - line.midY) < 2,
+                    "\(string.substring(with: NSRange(location: k, length: 1))) at \(k): \(box) vs \(line)")
+        }
+    }
+
     private func wordBox(_ word: String, on page: PDFPage) throws -> CGRect {
         let range = ((page.string ?? "") as NSString).range(of: word)
         try #require(range.location != NSNotFound, "\(word) missing")
