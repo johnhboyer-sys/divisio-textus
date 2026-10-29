@@ -2,6 +2,7 @@ import Foundation
 import Vision
 import CoreGraphics
 import CoreImage
+import AppKit
 
 /// Runs Apple's Vision text recognizer over a page image and returns the
 /// recognized lines with their boxes. Used to build an invisible, searchable
@@ -133,21 +134,125 @@ enum OCRService {
         return ctx.makeImage()
     }
 
-    /// Minimum image height (px) before the second, half-scale OCR pass runs. The
-    /// half-scale pass recovers lines Vision drops after deskew rotation on full-size
-    /// pages, but on a small block (a table/footnote column) it tends to split a
-    /// wrapped term differently and the merge double-adds it. Small blocks get one
-    /// clean pass instead.
+    /// Minimum image height (px) before the second, half-scale pass adds lines. It
+    /// recovers lines Vision drops after deskew rotation on full-size pages, but on a
+    /// small block (a table/footnote column) it tends to split a wrapped term
+    /// differently and the merge double-adds it. On small blocks it only corrects words.
     private static let twoPassMinHeight = 600
 
-    /// OCR over a whole image. Large images get two passes (full + 50% scale) merged
-    /// to recover deskew-dropped lines; small blocks get a single full-resolution pass.
+    /// OCR over a whole image, in two passes (full + 50% scale): the second corrects
+    /// misread words and, on large images, recovers deskew-dropped lines.
     private static func recognizeWhole(_ cgImage: CGImage, languages: [String]) -> [Line]? {
         guard let pass1 = runRequest(on: preprocess(cgImage), languages: languages) else { return nil }
-        guard cgImage.height >= twoPassMinHeight else { return pass1 }
-        // The second pass only recovers lines; if it fails, pass1 alone is still good.
+        // The second pass only recovers lines and words; if it fails, pass1 alone is still good.
         guard let pass2 = runRequest(on: preprocess(halfScale(cgImage)), languages: languages) else { return pass1 }
-        return merge(pass1, pass2)
+        let corrected = correct(pass1, with: pass2, isWord: { spelledRight($0, languages: languages) })
+        guard cgImage.height >= twoPassMinHeight else { return corrected }
+        return merge(corrected, pass2)
+    }
+
+    private static let spellLock = NSLock()
+
+    /// True unless the system spell checker flags `token` (punctuation aside).
+    /// Tokens with digits, and ones in a language the checker lacks, pass.
+    static func spelledRight(_ token: String, languages: [String]) -> Bool {
+        let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        guard w.count > 1, w.rangeOfCharacter(from: .decimalDigits) == nil else { return true }
+        spellLock.lock(); defer { spellLock.unlock() }
+        let checker = NSSpellChecker.shared
+        let available = checker.availableLanguages
+        guard let wanted = languages.first?.replacingOccurrences(of: "-", with: "_"),
+              let language = available.first(where: { $0 == wanted })
+                ?? available.first(where: { $0 == String(wanted.prefix(2)) })
+                ?? available.first(where: { $0.hasPrefix(String(wanted.prefix(2))) })
+        else { return true }
+        return checker.checkSpelling(of: w, startingAt: 0, language: language, wrap: false,
+                                     inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+    }
+
+    /// Words pass1 misread that pass2, at half size, read as real words: "carth" →
+    /// "earth", "specity" → "specify", "ScriptureiLet" → "Scripture "Let". The two
+    /// lines are lined up word by word; a run of words that differs is replaced only
+    /// when pass1's run has a misspelling, all of pass2's are spelled right, and the
+    /// letters differ by at most two, not in accents alone. Runs under three letters
+    /// stay: they are mostly footnote marks and subscripts ("t₂" read "tz" or "t").
+    /// Numbers must agree, and a word broken at the line's end ("elec-") stays.
+    /// Each pass2 line votes only on the nearest pass1 line whose row holds it.
+    static func correct(_ pass1: [Line], with pass2: [Line], isWord: (String) -> Bool) -> [Line] {
+        let voter: [Int?] = pass2.map { p in
+            pass1.indices.filter {
+                abs(pass1[$0].box.midY - p.box.midY) < pass1[$0].box.height / 2
+                    && pass1[$0].box.minX - 0.005 < p.box.midX && p.box.midX < pass1[$0].box.maxX + 0.005
+            }.min { abs(pass1[$0].box.midY - p.box.midY) < abs(pass1[$1].box.midY - p.box.midY) }
+        }
+        func fine(_ w: String) -> Bool { w.hasSuffix("-") || isWord(w) }
+        return pass1.enumerated().map { k, line in
+            let row = pass2.indices.filter { voter[$0] == k }.map { pass2[$0] }.sorted { $0.box.minX < $1.box.minX }
+            guard !row.isEmpty else { return line }
+            let a = line.text.split(separator: " ").map(String.init)
+            let b = row.flatMap { $0.text.split(separator: " ").map(String.init) }
+            guard a != b else { return line }
+            var out: [String] = []
+            var i = 0, j = 0
+            for (ai, bj) in commonWords(a, b) + [(a.count, b.count)] {
+                let ra = Array(a[i..<ai]), rb = Array(b[j..<bj])
+                if !ra.isEmpty, !rb.isEmpty, ra.count <= 3, rb.count <= 3,
+                   !ra.allSatisfy(fine), rb.allSatisfy(fine),
+                   letters(ra).count >= 3, folded(ra) != folded(rb), digits(ra) == digits(rb),
+                   distance(letters(ra), letters(rb)) <= 2 {
+                    out += rb
+                } else {
+                    out += ra
+                }
+                if ai < a.count { out.append(a[ai]) }
+                i = ai + 1; j = bj + 1
+            }
+            return Line(text: out.joined(separator: " "), box: line.box)
+        }
+    }
+
+    /// Accents aside: the half-size pass loses them ("quâ" read as "qua").
+    private static func folded(_ words: [String]) -> [Character] {
+        letters(words.map { $0.folding(options: .diacriticInsensitive, locale: nil) })
+    }
+
+    private static func digits(_ words: [String]) -> [Character] {
+        Array(words.joined().filter(\.isNumber))
+    }
+
+    private static func letters(_ words: [String]) -> [Character] {
+        Array(words.joined().lowercased().filter(\.isLetter))
+    }
+
+    /// Index pairs of a longest common run of equal words.
+    private static func commonWords(_ a: [String], _ b: [String]) -> [(Int, Int)] {
+        var len = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                len[i][j] = a[i] == b[j] ? len[i + 1][j + 1] + 1 : max(len[i + 1][j], len[i][j + 1])
+            }
+        }
+        var pairs: [(Int, Int)] = [], i = 0, j = 0
+        while i < a.count && j < b.count {
+            if a[i] == b[j] { pairs.append((i, j)); i += 1; j += 1 }
+            else if len[i + 1][j] >= len[i][j + 1] { i += 1 } else { j += 1 }
+        }
+        return pairs
+    }
+
+    /// Edit distance: the fewest letters added, dropped or changed to turn a into b.
+    private static func distance(_ a: [Character], _ b: [Character]) -> Int {
+        var row = Array(0...b.count)
+        for ca in a {
+            var diagonal = row[0]
+            row[0] += 1
+            for (j, cb) in b.enumerated() {
+                let above = row[j + 1]
+                row[j + 1] = min(above + 1, row[j] + 1, diagonal + (ca == cb ? 0 : 1))
+                diagonal = above
+            }
+        }
+        return row[b.count]
     }
 
     private static func halfScale(_ image: CGImage) -> CGImage {
