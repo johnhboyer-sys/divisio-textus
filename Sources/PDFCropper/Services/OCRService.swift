@@ -179,9 +179,11 @@ enum OCRService {
     private static func recognizeWhole(_ cgImage: CGImage, languages: [String]) -> [Line]? {
         guard let pass1 = runRequest(on: preprocess(cgImage), languages: languages) else { return nil }
         // The second pass only recovers lines and words; if it fails, pass1 alone is still good.
-        guard let pass2 = runRequest(on: preprocess(halfScale(cgImage)), languages: languages) else { return pass1 }
+        guard let pass2 = runRequest(on: preprocess(scaled(cgImage, by: 0.5)), languages: languages) else { return pass1 }
         let isWord = { spelledRight($0, languages: languages) }
-        let corrected = correct(withoutGhosts(pass1, pass2, isWord: isWord), with: pass2, isWord: isWord)
+        let corrected = correct(withoutGhosts(pass1, pass2, isWord: isWord), with: pass2,
+                                tieBreak: { runRequest(on: preprocess(scaled(cgImage, by: 0.75)), languages: languages) ?? [] },
+                                isWord: isWord)
         guard cgImage.height >= twoPassMinHeight else { return corrected }
         return merge(corrected, pass2)
     }
@@ -212,33 +214,76 @@ enum OCRService {
     /// letters differ by at most two, not in accents alone. Runs under three letters
     /// stay: they are mostly footnote marks and subscripts ("t₂" read "tz" or "t").
     /// Numbers must agree, and a word broken at the line's end ("elec-") stays.
-    /// Each pass2 line votes only on the nearest pass1 line whose row holds it.
-    static func correct(_ pass1: [Line], with pass2: [Line], isWord: (String) -> Bool) -> [Line] {
-        let voter: [Int?] = pass2.map { p in
-            pass1.indices.filter {
-                abs(pass1[$0].box.midY - p.box.midY) < pass1[$0].box.height / 2
-                    && pass1[$0].box.minX - 0.005 < p.box.midX && p.box.midX < pass1[$0].box.maxX + 0.005
-            }.min { abs(pass1[$0].box.midY - p.box.midY) < abs(pass1[$1].box.midY - p.box.midY) }
+    /// Where pass2's run isn't all English (Latin, a name: "Ject." → "lect.",
+    /// "Credk" → "Gredt"), `tieBreak`, a third reading at another size, decides
+    /// instead: pass2's run is taken when its words are letters only, between
+    /// the punctuation at their ends (not "mathematically,°s" for a note mark
+    /// "⁹⁵"), numbers agree (unless pass1's words with numbers lie on pass2's
+    /// lines of other rows: it took in "1953," from "1952)." above), and the
+    /// third has it, word for word (letters and digits) and between the same
+    /// words as pass2 (or the row's start or end), and not pass1's. It is read at
+    /// most once, and only then.
+    /// Each line of the later passes votes only on the pass1 line `merge` gives it to.
+    static func correct(_ pass1: [Line], with pass2: [Line], tieBreak: () -> [Line] = { [] },
+                        isWord: (String) -> Bool) -> [Line] {
+        func rows(_ pass: [Line]) -> [Int: [Line]] {
+            var rows: [Int: [Line]] = [:]
+            for p in pass {
+                if let nearest = holder(of: p, in: pass1) { rows[nearest, default: []].append(p) }
+            }
+            return rows.mapValues { $0.sorted { $0.box.minX < $1.box.minX } }
         }
+        let second = rows(pass2)
+        var third: [Int: [Line]]?
         func fine(_ w: String) -> Bool { w.hasSuffix("-") || isWord(w) }
+        func lettersOnly(_ w: String) -> Bool {
+            w.trimmingCharacters(in: .punctuationCharacters.union(.symbols)).allSatisfy { $0.isLetter || "-'’".contains($0) }
+        }
+        func key(_ words: [String]) -> [String] {
+            words.map { String($0.filter { $0.isLetter || $0.isNumber }) }.filter { !$0.isEmpty }
+        }
+        func has(_ line: [String], _ run: [String]) -> Bool {
+            !run.isEmpty && line.count >= run.count && (0...line.count - run.count).contains { Array(line[$0..<$0 + run.count]) == run }
+        }
+        // True when the third reading of row k has run b, between pass2's nearest
+        // words with letters or digits on either side of it (or the row's start or
+        // end), and not run a there.
+        func thirdSides(_ k: Int, with b: [String], against a: [String], between before: [String], and after: [String]) -> Bool {
+            if third == nil { third = rows(tieBreak()) }
+            let t = ["^"] + key((third?[k] ?? []).flatMap(words).map(\.text)) + ["$"]
+            func around(_ run: [String]) -> [String] {
+                [key(before).last ?? "^"] + key(run) + [key(after).first ?? "$"]
+            }
+            return has(t, around(b)) && !has(t, around(a))
+        }
         // A line's words, boxed where Vision boxed them (.null where not).
         func words(_ line: Line) -> [Word] {
             line.words.isEmpty ? line.text.split(separator: " ").map { Word(text: String($0), box: .null) } : line.words
         }
         return pass1.enumerated().map { k, line in
-            let row = pass2.indices.filter { voter[$0] == k }.map { pass2[$0] }.sorted { $0.box.minX < $1.box.minX }
-            guard !row.isEmpty else { return line }
+            guard let row = second[k] else { return line }
             let aw = words(line), bw = row.flatMap(words)
             let a = aw.map(\.text), b = bw.map(\.text)
             guard a != b else { return line }
+            // A word pass1 read into this line from a line beside it, which pass2 read
+            // apart: the two overlap by half the smaller.
+            func fromBeside(_ w: Word) -> Bool {
+                pass2.contains { p in
+                    let x = w.box.intersection(p.box)
+                    return !row.contains { $0.box == p.box } && !x.isNull
+                        && x.width * x.height >= 0.5 * min(w.box.width * w.box.height, p.box.width * p.box.height)
+                }
+            }
             var out: [Word] = []
             var i = 0, j = 0
             for (ai, bj) in commonWords(a, b) + [(a.count, b.count)] {
                 let ra = Array(a[i..<ai]), rb = Array(b[j..<bj])
-                if !ra.isEmpty, !rb.isEmpty, ra.count <= 3, rb.count <= 3,
-                   !ra.allSatisfy(fine), rb.allSatisfy(fine),
-                   letters(ra).count >= 3, folded(ra) != folded(rb), digits(ra) == digits(rb),
-                   distance(letters(ra), letters(rb)) <= 2 {
+                let doubt = !ra.isEmpty && !rb.isEmpty && ra.count <= 3 && rb.count <= 3
+                    && !ra.allSatisfy(fine) && letters(ra).count >= 3 && folded(ra) != folded(rb)
+                if doubt, rb.allSatisfy(fine), digits(ra) == digits(rb), distance(letters(ra), letters(rb)) <= 2 {
+                    out += bw[j..<bj]
+                } else if doubt, !rb.allSatisfy(fine), rb.allSatisfy(lettersOnly), digits(ra) == digits(rb) || aw[i..<ai].allSatisfy { !$0.text.contains(where: \.isNumber) || fromBeside($0) },
+                          thirdSides(k, with: rb, against: ra, between: Array(b[..<j]), and: Array(b[bj...])) {
                     out += bw[j..<bj]
                 } else {
                     out += aw[i..<ai]
@@ -295,9 +340,9 @@ enum OCRService {
         return row[b.count]
     }
 
-    private static func halfScale(_ image: CGImage) -> CGImage {
-        let w = max(1, image.width / 2)
-        let h = max(1, image.height / 2)
+    private static func scaled(_ image: CGImage, by factor: Double) -> CGImage {
+        let w = max(1, Int(Double(image.width) * factor))
+        let h = max(1, Int(Double(image.height) * factor))
         let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue
         guard let ctx = CGContext(data: nil, width: w, height: h,

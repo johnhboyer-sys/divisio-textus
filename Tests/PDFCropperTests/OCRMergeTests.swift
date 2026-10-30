@@ -175,6 +175,114 @@ struct OCRMergeTests {
         }
     }
 
+    private let notEnglish: Set<String> = ["Credk", "Gredt", "Philosophiac", "Philosophiae", "Aristotelico-Thomistica",
+                                           "Aristotelico-Thomisticae", "Freihung", "Ject", "lect", "Iect",
+                                           "physico-mathematically", "physico-mathematically,°s"]
+    private func isEnglish(_ s: String) -> Bool {
+        isWord(s) && !notEnglish.contains(s.trimmingCharacters(in: .punctuationCharacters.union(.symbols)))
+    }
+
+    @Test("Where the passes disagree on words not in English, a third reading decides")
+    func thirdReadDecides() {
+        // Wallace 1957 footnotes: full size, half size, three-quarter size.
+        let cases = [("• J. Credk, O.S. B., Elementa Philosophiac Aristotelico-Thomistica (Freihung:",
+                      "• J. Gredt, O.S. B., Elementa Philosophiae Aristotelico-Thomisticae (Freiburg:",
+                      "* J. Gredt, O.S. B., Elementa Philosophiae Aristotelico-Thomisticae (Freiburg:",
+                      "• J. Gredt, O.S. B., Elementa Philosophiae Aristotelico-Thomisticae (Freiburg:"),
+                     ("' II Post. Anal., Ject. 9.", "1 II Post. Anal., lect. 9.", "'II Post. Anal., lect. 9.",
+                      "' II Post. Anal., lect. 9."),
+                     ("* I Post. Anal., Ject. 23, n. 7.", "* 1 Post. Anal., lect. 23, n. 7.", "* I Post. Anal., lect. 23, n. 7.",
+                      "* I Post. Anal., lect. 23, n. 7."),
+                     ("carth * Ject.", "earth * lect.", "earth * lect.", "earth * lect.")]       // after a word put right
+        for (first, second, third, read) in cases {
+            #expect(OCRService.correct(row(first), with: row(second), tieBreak: { row(third) }, isWord: isEnglish).map(\.text)
+                    == [read], "\(first)")
+        }
+    }
+
+    @Test("A third reading that agrees with the first, or with neither, changes nothing")
+    func thirdReadKeeps() {
+        let cases = [("Elementa Philosophiae", "Elementa Philosophiac", "Elementa Philosophiae"),   // first already right
+                     ("Anal., Ject. 9.", "Anal., lect. 9.", "Anal., Iect. 9."),                   // no two agree
+                     ("Anal., Ject. 9.", "Anal., lect. 9.", ""),                                  // no third line
+                     ("the earth moves", "the Credk moves", "the Credk moves"),                   // first spelled right
+                     ("lect. 4, Ject. 9.", "lect. 4, lect. 9.", "lect. 4, Iect. 9."),              // agrees elsewhere only
+                     ("quia physico-mathematically, the", "quia physico-mathematically,°s the",    // printed ",⁹⁵"
+                      "quia physico-mathematically,°s the"),
+                     ("Gredt et Credk et", "Credk et Credk et", "Iect et Credk et"),             // agrees at the end only
+                     ("et Credk et Gredt", "et Credk et Credk", "et Credk et Iect"),             // agrees at the start only
+                     ("* Gredt et Credk et", "* Credk et Credk et", "* Iect et Credk et"),       // a mark before it
+                     ("Anal., Ject. 9.", "Anal., lect.", "Anal., lect.")]                         // a number lost
+        for (first, second, third) in cases {
+            let tie = third.isEmpty ? [] : row(third)
+            #expect(OCRService.correct(row(first), with: row(second), tieBreak: { tie }, isWord: isEnglish).map(\.text)
+                    == [first], "\(first)")
+        }
+    }
+
+    @Test("A line read two rows tall is voted on by its own row only")
+    func tallLineOwnRow() {
+        // Wallace 1957 p6: the first pass read "1952)." into the line below it, in a
+        // box two rows tall; the other passes read "1952)." apart, nearer the line above.
+        func line(_ text: String, _ y0: Double, _ y1: Double, _ x0: Double = 0.182, _ x1: Double = 0.92) -> OCRService.Line {
+            OCRService.Line(text: text, box: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+        }
+        let above = "Company, 1933); K. Dougherty, S. A., Cosmology (Peekskill: Graymoor Press,"
+        let words: [(String, Double, Double, Double, Double)] = [
+            ("1953,", 0.179, 0.231, 0.315, 0.345), ("Credk,", 0.235, 0.302, 0.314, 0.344), ("O.S.", 0.305, 0.347, 0.313, 0.343),
+            ("B.,", 0.351, 0.377, 0.312, 0.342), ("Elementa", 0.381, 0.463, 0.310, 0.341), ("Philosophiac", 0.467, 0.585, 0.308, 0.340),
+            ("Aristotelico-Thomistica", 0.589, 0.813, 0.304, 0.337), ("(Freihung:", 0.816, 0.920, 0.302, 0.333)]
+        let tall = OCRService.Line(text: words.map(\.0).joined(separator: " "),
+                                   box: CGRect(x: 0.179, y: 0.302, width: 0.741, height: 0.043),
+                                   words: words.map { OCRService.Word(text: $0.0, box: CGRect(x: $0.1, y: $0.3, width: $0.2 - $0.1, height: $0.4 - $0.3)) })
+        let first = [line(above, 0.342, 0.361), tall]
+        let second = [line(above, 0.343, 0.362), line("1952）.", 0.331, 0.345, 0.182, 0.245),
+                      line("• J. Gredt, O.S. B., Elementa Philosophiae Aristotelico-Thomisticae (Freiburg:", 0.317, 0.331, 0.199, 0.916)]
+        let third = [line(above, 0.343, 0.361), line("1952) .", 0.331, 0.345, 0.179, 0.242),
+                     line("* J. Gredt, O.S. B., Elementa Philosophiae Aristotelico-Thomisticae (Freiburg:", 0.312, 0.331, 0.198, 0.919)]
+        #expect(OCRService.correct(first, with: second, tieBreak: { third }, isWord: isEnglish).map(\.text)
+                == [above, second[2].text])
+    }
+
+    @Test("A number stays unless its word lies on a line of another row")
+    func tallLineKeepsNumber() {
+        let first = [OCRService.Line(text: "Anal., Ject. 9.", box: CGRect(x: 0.1, y: 0.49, width: 0.8, height: 0.04))]
+        #expect(OCRService.correct(first, with: row("Anal., lect."), tieBreak: { row("Anal., lect.") }, isWord: isEnglish)
+                .map(\.text) == ["Anal., Ject. 9."])
+        // Tightly set: the next row's line overlaps this box, but lies mostly outside it.
+        func line(_ text: String, _ y: Double, _ h: Double) -> OCRService.Line {
+            OCRService.Line(text: text, box: CGRect(x: 0.1, y: y, width: 0.8, height: h))
+        }
+        let tight = [line("Anal., Ject. 9.", 0.500, 0.020), line("other row", 0.512, 0.020)]
+        let later = [line("Anal., lect.", 0.500, 0.012), line("other row", 0.512, 0.012)]
+        #expect(OCRService.correct(tight, with: later, tieBreak: { later }, isWord: isEnglish).map(\.text)
+                == ["Anal., Ject. 9.", "other row"])
+        // A drop cap makes the box take in the next row, but "9." lies on its own row.
+        func word(_ text: String, _ x0: Double, _ x1: Double) -> OCRService.Word {
+            OCRService.Word(text: text, box: CGRect(x: x0, y: 0.50, width: x1 - x0, height: 0.02))
+        }
+        let capped = OCRService.Line(text: "Anal., Ject. 9.", box: CGRect(x: 0.1, y: 0.46, width: 0.8, height: 0.06),
+                                     words: [word("Anal.,", 0.1, 0.3), word("Ject.", 0.32, 0.5), word("9.", 0.52, 0.6)])
+        let below = [line("Anal., lect.", 0.500, 0.020), line("next row", 0.470, 0.020)]
+        #expect(OCRService.correct([capped, line("next row", 0.470, 0.020)], with: below, tieBreak: { below }, isWord: isEnglish)
+                .map(\.text) == ["Anal., Ject. 9.", "next row"])
+    }
+
+    @Test("The third reading runs only where a vote is in doubt")
+    func thirdReadOnlyWhenNeeded() {
+        var asked = 0
+        _ = OCRService.correct(row("according to some the carth"), with: row("according to some the earth"),
+                               tieBreak: { asked += 1; return [] }, isWord: isWord)
+        _ = OCRService.correct(row("Anal., Ject. 9."), with: row("Anal., lect. 9."), tieBreak: { asked += 10; return [] },
+                               isWord: isEnglish)
+        // Read once for the page, however many lines are in doubt.
+        let lower = OCRService.Line(text: "Anal., Ject. 9.", box: CGRect(x: 0.1, y: 0.3, width: 0.8, height: 0.02))
+        let lowerAgain = OCRService.Line(text: "Anal., lect. 9.", box: lower.box)
+        _ = OCRService.correct(row("Anal., Ject. 9.") + [lower], with: row("Anal., lect. 9.") + [lowerAgain],
+                               tieBreak: { asked += 100; return [] }, isWord: isEnglish)
+        #expect(asked == 110)
+    }
+
     @Test("Only the line on the same row votes")
     func otherRowIgnored() {
         let below = [OCRService.Line(text: "according to some the earth", box: CGRect(x: 0.1, y: 0.45, width: 0.8, height: 0.02))]
@@ -195,6 +303,8 @@ struct OCRMergeTests {
     func spelling() {
         #expect(!OCRService.spelledRight("specity", languages: ["en-US"]))
         #expect(!OCRService.spelledRight("dav", languages: ["en-US"]))
+        #expect(!OCRService.spelledRight("Gredt,", languages: ["en-US"]))
+        #expect(!OCRService.spelledRight("lect.", languages: ["en-US"]))
         #expect(OCRService.spelledRight("specify,", languages: ["en-US"]))
         #expect(OCRService.spelledRight("1957", languages: ["en-US"]))
     }
