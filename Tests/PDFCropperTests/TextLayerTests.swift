@@ -97,6 +97,86 @@ struct TextLayerTests {
         #expect(abs(end.minX - alone.minX) < 0.5 && abs(end.maxX - alone.maxX) < 0.5, "\(end) vs \(alone)")
     }
 
+    /// A line from Vision's boxes in pixels (top-left origin) on a 1101 × 1668
+    /// page image, drawn on the 400 × 600 test page.
+    private func pixelLine(_ words: [(String, Double, Double, Double, Double)]) -> OCRService.Line {
+        func box(_ x0: Double, _ x1: Double, _ y0: Double, _ y1: Double) -> CGRect {
+            CGRect(x: x0 / 1101, y: 1 - y1 / 1668, width: (x1 - x0) / 1101, height: (y1 - y0) / 1668)
+        }
+        let ws = words.map { OCRService.Word(text: $0.0, box: box($0.1, $0.2, $0.3, $0.4)) }
+        return OCRService.Line(text: ws.map(\.text).joined(separator: " "),
+                               box: ws.map(\.box).reduce(.null) { $0.union($1) }, words: ws)
+    }
+
+    @Test("Each word lands on its own printed word")
+    func wordsOnTheirBoxes() throws {
+        // A table row on Wallace 1957 (export page 18): Helvetica set the line
+        // wider than the print, so "motion" ran into the next cell's "is".
+        let line = pixelLine([("local", 143, 207, 128, 158), ("motion", 210, 311, 128, 158),
+                              ("is", 431, 459, 128, 158), ("Regular", 462, 557, 128, 158)])
+        let page = try layerPage([line])
+        #expect(page.string == line.text, "\(page.string ?? "")")
+        for w in line.words {
+            let got = try wordBox(w.text, on: page), want = w.box.applying(CGAffineTransform(scaleX: 400, y: 600))
+            #expect(abs(got.minX - want.minX) < 0.5 && abs(got.maxX - want.maxX) < 0.5, "\(w.text): \(got) vs \(want)")
+        }
+    }
+
+    @Test("A word narrower than a point still reads back")
+    func narrowWord() throws {
+        // Trimmed to its ink, an "I" at 600 DPI is under a point wide.
+        let line = pixelLine([("I", 200, 202, 226, 256), ("agree", 212, 290, 226, 256)])
+        #expect(try layerPage([line]).string == "I agree")
+    }
+
+    @Test("Table cells side by side read as separate words")
+    func cellsApart() throws {
+        // Wallace 1957, export page 25: two cells of a table row, OCR'd as
+        // separate lines, with the print's gap (a third of the line's height).
+        let left = pixelLine([("The", 200, 248, 226, 256), ("soul", 258, 312, 226, 256), ("is", 400, 420, 226, 256)])
+        let right = pixelLine([("That", 430, 482, 226, 256), ("by", 492, 518, 226, 256)])
+        let text = try #require(try layerPage([left, right]).string)
+        #expect(text.contains("is That"), "\(text)")
+
+        // Export page 19: "over" has no tall letters, so Vision boxed it half as
+        // tall as the word before it, and a reader took it for a superscript.
+        let word = pixelLine([("perpendicularly", 455, 615, 438, 467)]), over = pixelLine([("over", 639, 681, 442, 456)])
+        let row = try #require(try layerPage([word, over]).string)
+        #expect(row.contains("perpendicularly over"), "\(row)")
+    }
+
+    @Test("A drop cap's line stays on its own row")
+    func dropCapLine() throws {
+        // Wallace 1957, export page 4: Vision tilts the opening line to take in
+        // the drop cap "A", so each of its words is boxed nearly two lines tall.
+        let first = pixelLine([("AT", 168, 234, 512, 572), ("PRESENT", 240, 377, 507, 569), ("it", 382, 420, 506, 564),
+                               ("is", 425, 448, 505, 563), ("generally", 453, 569, 501, 562), ("agreed", 574, 662, 497, 557),
+                               ("that", 667, 719, 496, 554), ("modern", 724, 825, 492, 552),
+                               ("science", 831, 925, 488, 549), ("differs", 930, 1019, 485, 546)])
+        let second = pixelLine([("radically", 216, 343, 550, 581), ("from", 346, 416, 550, 579), ("the", 419, 466, 550, 579),
+                                ("science", 470, 564, 549, 579), ("of", 568, 600, 549, 578), ("nature", 604, 695, 548, 578),
+                                ("developed", 698, 832, 547, 577), ("in", 836, 869, 547, 576), ("the", 872, 923, 546, 576),
+                                ("Aristo-", 926, 1016, 546, 576)])
+        let third = pixelLine([("telian-Thomistic", 170, 380, 580, 610), ("tradition.", 384, 514, 579, 609)])
+        let page = try layerPage([first, second, third])
+        let read = try #require(page.selection(for: page.bounds(for: .mediaBox))).selectionsByLine()
+            .map { ($0.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+        #expect(read == [first.text, second.text, third.text], "\(read)")
+
+        // A drop cap read as a line of its own, as tall as the three lines it
+        // sits beside, still reads back.
+        let cap = pixelLine([("A", 150, 230, 500, 610)])
+        let text = try #require(try layerPage([cap, first, second, third]).string)
+        #expect(text.split(whereSeparator: \.isWhitespace).contains("A"), "\(text)")
+
+        // Where a box gives way doesn't depend on the order the lines come in.
+        let tall = pixelLine([("cap", 150, 230, 500, 600)])
+        let upper = pixelLine([("upper", 150, 400, 500, 540)]), lower = pixelLine([("lower", 150, 400, 540, 570)])
+        let one = try wordBox("cap", on: try layerPage([tall, upper, lower]))
+        let other = try wordBox("cap", on: try layerPage([tall, lower, upper]))
+        #expect(abs(one.minY - other.minY) < 0.1 && abs(one.maxY - other.maxY) < 0.1, "\(one) vs \(other)")
+    }
+
     @Test("A line over several pieces of one row shrinks once, not once per piece")
     func lineOverPieces() throws {
         let wide = OCRService.Line(text: "all subsequent demonstrations of the science of nature",

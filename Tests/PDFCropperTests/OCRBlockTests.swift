@@ -53,6 +53,45 @@ struct OCRBlockTests {
         }
     }
 
+    @Test("Each word's box starts and ends at its print")
+    func wordBoxesOnInk() throws {
+        // Vision's word boxes start about a quarter of the line's height left of
+        // the ink. Between two table cells that left too small a gap, and readers
+        // ran the cells' words together ("isThat" on Wallace 1957).
+        let w = 1700, h = 2200, size: CGFloat = 30
+        let font = CTFontCreateWithName("Times-Roman" as CFString, size, nil)
+        let rows = ["the earth moves round the sun", "a body falls to the ground", "the soul is that by which"]
+        var want: [(String, Double, Double)] = []   // word, ink's left and right edge in pixels
+        let image = Fixtures.image(w, h) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            for (i, text) in rows.enumerated() {
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+                c.textMatrix = .identity
+                c.textPosition = CGPoint(x: 200, y: 1900 - Double(i) * 44)
+                CTLineDraw(line, c)
+                c.textPosition = .zero
+                let ns = text as NSString
+                var start = 0
+                for word in text.split(separator: " ") {
+                    let r = ns.range(of: String(word), range: NSRange(location: start, length: ns.length - start))
+                    start = r.location + r.length
+                    let glyphs = CTLineCreateWithAttributedString(NSAttributedString(string: String(word), attributes: [.font: font]))
+                    let ink = CTLineGetImageBounds(glyphs, c)
+                    let x = 200 + CTLineGetOffsetForStringIndex(line, r.location, nil)
+                    want.append((String(word), x + ink.minX, x + ink.maxX))
+                }
+            }
+        }
+        let read = try #require(OCRService.recognizeLines(image))
+        let words = read.lines.flatMap(\.words)
+        #expect(words.count == want.count, "\(read.lines.map(\.text))")
+        for (word, x0, x1) in want {
+            let hit = words.first { $0.text == word && abs($0.box.midX * Double(w) - (x0 + x1) / 2) < 20 }
+            let got = (hit?.box.minX ?? 0) * Double(w), gotEnd = (hit?.box.maxX ?? 0) * Double(w)
+            #expect(abs(got - x0) < 3 && abs(gotEnd - x1) < 3, "\(word): \(got)-\(gotEnd) vs \(x0)-\(x1)")
+        }
+    }
+
     @Test("A narrow column of item numbers stays with its text")
     func itemNumbers() throws {
         // Wallace 1957 numbers each syllogism ("3. Type D; ..."): the numbers form

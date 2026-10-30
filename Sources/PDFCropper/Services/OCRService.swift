@@ -14,6 +14,14 @@ enum OCRService {
     struct Line {
         let text: String
         let box: CGRect
+        /// Each word of `text` (split at spaces) with its own box, in the same
+        /// coordinates as `box`; empty when Vision didn't box every word.
+        var words: [Word] = []
+    }
+
+    struct Word {
+        let text: String
+        let box: CGRect
     }
 
     private static let ciContext = CIContext(options: nil)
@@ -36,7 +44,7 @@ enum OCRService {
         // yields no useful split and runs the whole-image path unchanged.
         let blocks = LayoutAnalyzer.columnBlocks(cgImage)
         guard blocks.count > 1 else {
-            return recognizeWhole(cgImage, languages: languages).map { Recognition(lines: $0, complete: true) }
+            return recognizeWhole(cgImage, languages: languages).map { Recognition(lines: onInk($0, in: cgImage), complete: true) }
         }
 
         let imgW = CGFloat(cgImage.width), imgH = CGFloat(cgImage.height)
@@ -62,17 +70,43 @@ enum OCRService {
                 failedBlocks += 1
                 continue
             }
+            func onPage(_ box: CGRect) -> CGRect {
+                CGRect(x: (clamped.minX - margin + box.minX * subW) / imgW,
+                       y: (pageBottom - margin + box.minY * subH) / imgH,
+                       width: box.width * subW / imgW,
+                       height: box.height * subH / imgH)
+            }
             for line in lines {
-                let fullBox = CGRect(x: (clamped.minX - margin + line.box.minX * subW) / imgW,
-                                     y: (pageBottom - margin + line.box.minY * subH) / imgH,
-                                     width: line.box.width * subW / imgW,
-                                     height: line.box.height * subH / imgH)
-                result.append(Line(text: line.text, box: fullBox))
+                result.append(Line(text: line.text, box: onPage(line.box),
+                                   words: line.words.map { Word(text: $0.text, box: onPage($0.box)) }))
             }
         }
         // Nothing read at all counts as a failed page; otherwise keep what was read.
         if failedBlocks > 0 && result.isEmpty { return nil }
-        return Recognition(lines: result, complete: failedBlocks == 0)
+        return Recognition(lines: onInk(result, in: cgImage), complete: failedBlocks == 0)
+    }
+
+    /// Each word's box trimmed sideways to its ink. Vision's start about a quarter
+    /// of the line's height left of the ink, which left too small a gap between
+    /// two table cells: readers ran their words together ("isThat" on Wallace 1957).
+    private static func onInk(_ lines: [Line], in image: CGImage) -> [Line] {
+        guard lines.contains(where: { !$0.words.isEmpty }),
+              let g = GrayBuffer(cgImage: image, maxDim: max(image.width, image.height)) else { return lines }
+        return lines.map { line in
+            Line(text: line.text, box: line.box,
+                 words: line.words.map { Word(text: $0.text, box: inkColumns(of: $0.box, in: g) ?? $0.box) })
+        }
+    }
+
+    /// `box` (normalized, bottom-left) narrowed to its first and last columns with ink.
+    private static func inkColumns(of box: CGRect, in g: GrayBuffer) -> CGRect? {
+        let w = Double(g.width), h = Double(g.height)
+        let x0 = max(0, Int(box.minX * w)), x1 = min(g.width, Int((box.maxX * w).rounded(.up)))
+        let y0 = max(0, Int((1 - box.maxY) * h)), y1 = min(g.height, Int(((1 - box.minY) * h).rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return nil }
+        func inked(_ x: Int) -> Bool { (y0..<y1).contains { g.value(x, $0) < 128 } }
+        guard let first = (x0..<x1).first(where: inked), let last = (x0..<x1).last(where: inked) else { return nil }
+        return CGRect(x: Double(first) / w, y: box.minY, width: Double(last + 1 - first) / w, height: box.height)
     }
 
     /// Blocks are cropped tight to their ink and can cut off a line's last letters
@@ -186,13 +220,17 @@ enum OCRService {
             }.min { abs(pass1[$0].box.midY - p.box.midY) < abs(pass1[$1].box.midY - p.box.midY) }
         }
         func fine(_ w: String) -> Bool { w.hasSuffix("-") || isWord(w) }
+        // A line's words, boxed where Vision boxed them (.null where not).
+        func words(_ line: Line) -> [Word] {
+            line.words.isEmpty ? line.text.split(separator: " ").map { Word(text: String($0), box: .null) } : line.words
+        }
         return pass1.enumerated().map { k, line in
             let row = pass2.indices.filter { voter[$0] == k }.map { pass2[$0] }.sorted { $0.box.minX < $1.box.minX }
             guard !row.isEmpty else { return line }
-            let a = line.text.split(separator: " ").map(String.init)
-            let b = row.flatMap { $0.text.split(separator: " ").map(String.init) }
+            let aw = words(line), bw = row.flatMap(words)
+            let a = aw.map(\.text), b = bw.map(\.text)
             guard a != b else { return line }
-            var out: [String] = []
+            var out: [Word] = []
             var i = 0, j = 0
             for (ai, bj) in commonWords(a, b) + [(a.count, b.count)] {
                 let ra = Array(a[i..<ai]), rb = Array(b[j..<bj])
@@ -200,14 +238,15 @@ enum OCRService {
                    !ra.allSatisfy(fine), rb.allSatisfy(fine),
                    letters(ra).count >= 3, folded(ra) != folded(rb), digits(ra) == digits(rb),
                    distance(letters(ra), letters(rb)) <= 2 {
-                    out += rb
+                    out += bw[j..<bj]
                 } else {
-                    out += ra
+                    out += aw[i..<ai]
                 }
-                if ai < a.count { out.append(a[ai]) }
+                if ai < a.count { out.append(aw[ai]) }
                 i = ai + 1; j = bj + 1
             }
-            return Line(text: out.joined(separator: " "), box: line.box)
+            return Line(text: out.map(\.text).joined(separator: " "), box: line.box,
+                        words: out.contains { $0.box.isNull } ? [] : out)
         }
     }
 
@@ -297,8 +336,9 @@ enum OCRService {
         } catch {
             return nil
         }
-        return (request.results ?? []).compactMap {
-            makeLine($0.topCandidates(1).first?.string, box: $0.boundingBox)
+        return (request.results ?? []).compactMap { o in
+            let top = o.topCandidates(1).first
+            return makeLine(top?.string, box: o.boundingBox) { try? top?.boundingBox(for: $0)?.boundingBox }
         }
     }
 
@@ -319,8 +359,9 @@ enum OCRService {
             request.automaticallyDetectsLanguage = true
             request.minimumTextHeightFraction = 0    // don't drop small body text
             if let observations = try? await request.perform(on: image) {
-                result.lines = observations.compactMap {
-                    makeLine($0.topCandidates(1).first?.string, box: $0.boundingBox.cgRect)
+                result.lines = observations.compactMap { o in
+                    let top = o.topCandidates(1).first
+                    return makeLine(top?.string, box: o.boundingBox.cgRect) { top?.boundingBox(for: $0)?.boundingBox.cgRect }
                 }
             }
             done.signal()
@@ -329,9 +370,20 @@ enum OCRService {
         return result.lines
     }
 
-    private static func makeLine(_ text: String?, box: CGRect) -> Line? {
+    /// The line, with each word's box when Vision gives a sane one for every
+    /// word: inside the line's row, left to right, overlapping the word before
+    /// by no more than a quarter of its width and ending past it.
+    static func makeLine(_ text: String?, box: CGRect, wordBox: (Range<String.Index>) -> CGRect?) -> Line? {
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return Line(text: text, box: box)
+        let row = box.insetBy(dx: -0.01, dy: -box.height / 2)
+        var words: [Word] = []
+        for w in text.split(separator: " ") {
+            guard let b = wordBox(w.startIndex..<w.endIndex), b.width > 0, b.height > 0, row.contains(b),
+                  b.minX >= words.last.map({ $0.box.maxX - $0.box.width / 4 }) ?? 0,
+                  b.maxX > words.last?.box.maxX ?? 0 else { return Line(text: text, box: box) }
+            words.append(Word(text: String(w), box: b))
+        }
+        return Line(text: words.map(\.text).joined(separator: " "), box: box, words: words)
     }
 
     /// Merge two line arrays, recovering lines that Vision garbles or drops in pass1.

@@ -227,23 +227,30 @@ enum PDFExporter {
         return size > 0 ? size : nil   // 0 = didn't fit in `count` bytes, i.e. no gain
     }
 
-    /// Draw each recognized line as one invisible, selectable run. `CTLineDraw`
+    /// Draw the recognized text as invisible, selectable runs. `CTLineDraw`
     /// positions glyphs individually, so PDF text extraction reconstructs words
     /// from glyph gaps. The rules that keep copied text clean:
-    ///   • never stretch horizontally — stretching spreads glyphs and yields
-    ///     "c a u s e";
-    ///   • size each line by scaling the drawing the same in both directions,
-    ///     shrinking to fit the line's width if needed, which keeps letters
-    ///     tight and the space glyphs intact. (Scale the context, not the text
-    ///     matrix: CTLineDraw places glyphs at the font's own advances and
-    ///     ignores the text matrix for that, which spreads the letters out.)
+    ///   • each word Vision boxed is drawn on its own box, sized to it, with a
+    ///     space glyph filling the gap to the next word. Set as one line,
+    ///     Helvetica's widths drift from the print's, and in a table a word ran
+    ///     into the next cell's ("motionis" on Wallace 1957). A thin space ends
+    ///     the line too: a reader took a short line beside another ("over",
+    ///     boxed only as tall as its letters) for a superscript and joined them;
+    ///   • a line without word boxes is drawn whole, scaled the same in both
+    ///     directions and shrunk to fit its width if needed. Stretching it
+    ///     spreads the glyphs and yields "c a u s e". (Scale the context, not
+    ///     the text matrix: CTLineDraw places glyphs at the font's own advances
+    ///     and ignores the text matrix for that, which spreads the letters out.)
+    ///   • where a box overlaps a shorter one on another line, it ends where the
+    ///     shorter begins. Vision tilts a line to take in a drop cap, boxing its
+    ///     words two lines tall, which put them on the line below;
     ///   • keep a line's glyphs (ascent + descent, as tall as the font size)
     ///     clear of its neighbours'. OCR boxes in tight print, like footnotes,
     ///     can be taller than the gap between baselines; PDFKit then reads the
     ///     two lines as one and runs the last word of one into the first of the
     ///     next. So where neighbours would overlap, only the height shrinks: the
     ///     baseline and the width stay put, so each word still covers its print.
-    /// Every line uses the one `font` object made for the export, so the PDF
+    /// Every run uses the one `font` object made for the export, so the PDF
     /// embeds Helvetica once. (Making a font per line at that line's size usually
     /// got a cached font back, but under memory pressure each line embedded its
     /// own copy: about 1,000 copies and +7 MB on a 26-page book.)
@@ -254,32 +261,75 @@ enum PDFExporter {
         ctx.setTextDrawingMode(.invisible)
         ctx.textMatrix = .identity
 
-        struct Run { let ctLine: CTLine; let x: Double; let baseline: Double; let width: Double; let size: Double; var height: Double }
-        var runs: [Run] = lines.compactMap { line in
-            let box = CGRect(x: line.box.minX * pageSize.width,
-                             y: line.box.minY * pageSize.height,
-                             width: line.box.width * pageSize.width,
-                             height: line.box.height * pageSize.height)
-            guard box.width > 1, box.height > 1 else { return nil }
-
-            // No ligatures: a reader gives the fi and fl glyphs no height, or
-            // puts them at the page's bottom edge, splitting "scientific".
-            let ctLine = CTLineCreateWithAttributedString(
-                NSAttributedString(string: line.text, attributes: [.font: font, .ligature: 0]))
-            let naturalWidth = CTLineGetTypographicBounds(ctLine, nil, nil, nil)
-            var size = max(1, box.height)
-            if naturalWidth > 0, naturalWidth * size / baseSize > box.width {
-                size = max(1, box.width * baseSize / naturalWidth)
+        func onPage(_ r: CGRect) -> CGRect {
+            CGRect(x: r.minX * pageSize.width, y: r.minY * pageSize.height,
+                   width: r.width * pageSize.width, height: r.height * pageSize.height)
+        }
+        // What to draw: each boxed word, or the whole line, with the line it's on.
+        var pieces: [(text: String, box: CGRect, line: Int, wordsFollow: Bool)] = []
+        for (k, line) in lines.enumerated() {
+            if line.words.isEmpty {
+                pieces.append((line.text, onPage(line.box), k, false))
+            } else {
+                for (n, w) in line.words.enumerated() {
+                    pieces.append((w.text, onPage(w.box), k, n < line.words.count - 1))
+                }
             }
-            return Run(ctLine: ctLine, x: box.minX, baseline: box.minY + size * 0.18,
-                       width: naturalWidth * size / baseSize, size: size, height: size)
+        }
+        // Limits come from each box as Vision gave it, so the order the lines
+        // come in doesn't matter.
+        let boxes = pieces.map { p -> CGRect in
+            var bottom = p.box.minY, top = p.box.maxY
+            for o in pieces where o.line != p.line && o.box.height < p.box.height
+                && o.box.minX < p.box.maxX && p.box.minX < o.box.maxX
+                && o.box.minY < p.box.maxY && p.box.minY < o.box.maxY {
+                // The shorter box is below this one's middle: this one ends above
+                // it; above the middle: this one starts below it.
+                if o.box.midY < p.box.midY { bottom = max(bottom, o.box.maxY) } else { top = min(top, o.box.minY) }
+            }
+            // Never clipped away: a box over several lines, like a drop cap read
+            // on its own, keeps its full height.
+            return top - bottom > 1 ? CGRect(x: p.box.minX, y: bottom, width: p.box.width, height: top - bottom) : p.box
         }
 
-        // Where lines that share some x would overlap, shrink both heights by the
+        struct Run { let ctLine: CTLine; let x: Double; let baseline: Double; let width: Double
+                     let xScale: Double; let size: Double; var height: Double }
+        func ctLine(_ text: String) -> CTLine {
+            // No ligatures: a reader gives the fi and fl glyphs no height, or
+            // puts them at the page's bottom edge, splitting "scientific".
+            CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font, .ligature: 0]))
+        }
+        let space = ctLine(" ")
+        let spaceWidth = CTLineGetTypographicBounds(space, nil, nil, nil)
+        var runs: [Run] = []
+        for (i, piece) in pieces.enumerated() {
+            // A word trimmed to its ink can be under a point wide ("I").
+            let box = boxes[i]
+            guard box.width > 0, box.height > 1 else { continue }
+            let line = ctLine(piece.text)
+            let naturalWidth = CTLineGetTypographicBounds(line, nil, nil, nil)
+            guard naturalWidth > 0 else { continue }
+            let size = max(1, box.height)
+            let baseline = box.minY + size * 0.18
+            if lines[piece.line].words.isEmpty {
+                let fit = min(size, box.width * baseSize / naturalWidth)
+                runs.append(Run(ctLine: line, x: box.minX, baseline: box.minY + fit * 0.18,
+                                width: naturalWidth * fit / baseSize, xScale: fit / baseSize, size: fit, height: fit))
+                continue
+            }
+            runs.append(Run(ctLine: line, x: box.minX, baseline: baseline, width: box.width,
+                            xScale: box.width / naturalWidth, size: size, height: size))
+            // The space fills the gap to the next word (thin if they touch, or at the line's end).
+            let gap = piece.wordsFollow ? max(0.05, pieces[i + 1].box.minX - box.maxX) : 0.05
+            runs.append(Run(ctLine: space, x: box.maxX, baseline: baseline, width: gap,
+                            xScale: gap / spaceWidth, size: size, height: size))
+        }
+
+        // Where runs that share some x would overlap, shrink both heights by the
         // factor that makes the upper one's descent meet the lower one's ascent.
-        // Factors come from the full heights and each line keeps its smallest,
+        // Factors come from the full heights and each run keeps its smallest,
         // so a line over several pieces of one row shrinks once, not once per
-        // piece. Lines whose baselines are under half a line apart are the same
+        // piece. Runs whose baselines are under half a line apart are the same
         // row of print (or a duplicate), not neighbours.
         let ascent = CTFontGetAscent(font) / baseSize, descent = CTFontGetDescent(font) / baseSize
         var factor = [Double](repeating: 1, count: runs.count)
@@ -299,7 +349,7 @@ enum PDFExporter {
         for run in runs {
             ctx.saveGState()
             ctx.translateBy(x: run.x, y: run.baseline)
-            ctx.scaleBy(x: run.size / baseSize, y: run.height / baseSize)
+            ctx.scaleBy(x: run.xScale, y: run.height / baseSize)
             ctx.textPosition = .zero
             CTLineDraw(run.ctLine, ctx)
             ctx.restoreGState()

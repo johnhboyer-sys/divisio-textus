@@ -94,4 +94,18 @@ struct OCRMergeTests {
         #expect(OCRService.spelledRight("specify,", languages: ["en-US"]))
         #expect(OCRService.spelledRight("1957", languages: ["en-US"]))
     }
+
+    @Test("A word boxed inside the word before it drops the line's word boxes")
+    func wordInsideWord() throws {
+        let row = CGRect(x: 0.1, y: 0.5, width: 0.3, height: 0.02)
+        func line(_ boxes: [ClosedRange<Double>]) -> OCRService.Line? {
+            let text = "first second", starts = [text.startIndex, text.index(text.startIndex, offsetBy: 6)]
+            return OCRService.makeLine(text, box: row) { r in
+                let k = starts.firstIndex(of: r.lowerBound)!
+                return CGRect(x: boxes[k].lowerBound, y: 0.5, width: boxes[k].upperBound - boxes[k].lowerBound, height: 0.02)
+            }
+        }
+        #expect(line([0.10...0.20, 0.22...0.40])?.words.count == 2)
+        #expect(line([0.10...0.30, 0.26...0.28])?.words.isEmpty == true)
+    }
 }
