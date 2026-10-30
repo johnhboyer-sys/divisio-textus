@@ -180,7 +180,8 @@ enum OCRService {
         guard let pass1 = runRequest(on: preprocess(cgImage), languages: languages) else { return nil }
         // The second pass only recovers lines and words; if it fails, pass1 alone is still good.
         guard let pass2 = runRequest(on: preprocess(halfScale(cgImage)), languages: languages) else { return pass1 }
-        let corrected = correct(pass1, with: pass2, isWord: { spelledRight($0, languages: languages) })
+        let isWord = { spelledRight($0, languages: languages) }
+        let corrected = correct(withoutGhosts(pass1, pass2, isWord: isWord), with: pass2, isWord: isWord)
         guard cgImage.height >= twoPassMinHeight else { return corrected }
         return merge(corrected, pass2)
     }
@@ -397,16 +398,10 @@ enum OCRService {
     ///     replace it (they are individually cleaner at half resolution).
     ///  2. **Outright drop** — a pass2 line that no pass1 box holds is appended.
     static func merge(_ pass1: [Line], _ pass2: [Line]) -> [Line] {
-        let expanded = pass1.map { $0.box.insetBy(dx: -0.005, dy: -0.005) }
-
         var given: [Int: [Line]] = [:]     // pass1 index → its pass2 lines
         var unheld: [Line] = []
         for line in pass2 {
-            let center = CGPoint(x: line.box.midX, y: line.box.midY)
-            let holders = expanded.indices.filter { expanded[$0].contains(center) }
-            guard let nearest = holders.min(by: {
-                abs(pass1[$0].box.midY - center.y) < abs(pass1[$1].box.midY - center.y)
-            }) else {
+            guard let nearest = holder(of: line, in: pass1) else {
                 unheld.append(line)
                 continue
             }
@@ -423,6 +418,79 @@ enum OCRService {
             }
         }
         return result + unheld
+    }
+
+    /// The pass1 line `line` is given to: the nearest whose (slightly enlarged)
+    /// box holds its centre.
+    private static func holder(of line: Line, in pass1: [Line]) -> Int? {
+        let center = CGPoint(x: line.box.midX, y: line.box.midY)
+        return pass1.indices.filter { pass1[$0].box.insetBy(dx: -0.005, dy: -0.005).contains(center) }
+            .min { abs(pass1[$0].box.midY - center.y) < abs(pass1[$1].box.midY - center.y) }
+    }
+
+    /// Lines Vision made up in the first pass (Wallace 1957). Lines are taken in
+    /// turn, those a second-pass line is given to first, then longer before
+    /// shorter, and one goes only by comparison with lines already kept:
+    ///  • a ghost: no second-pass line is given to it, and three quarters of
+    ///    each of its words lies on words of kept lines that have one ("1 Du
+    ///    to the", over three real lines where nothing is printed);
+    ///  • a copy: it shares at least half its words, in order, with a kept
+    ///    line, each shared word lying on its partner, every word lies at
+    ///    least half on that line's words, and the words it doesn't share are
+    ///    misspelled ("is A dav that" over the table row "is A day that occurs
+    ///    is longer and warmer"). Two readings that differ in a real word both
+    ///    stay: there's no telling which is right.
+    /// Lines without word boxes always stay.
+    static func withoutGhosts(_ pass1: [Line], _ pass2: [Line], isWord: (String) -> Bool) -> [Line] {
+        let read = Set(pass2.compactMap { holder(of: $0, in: pass1) })
+        let order = pass1.indices.sorted {
+            (read.contains($0) ? 0 : 1, -pass1[$0].words.count, $0) < (read.contains($1) ? 0 : 1, -pass1[$1].words.count, $1)
+        }
+        func liesOn(_ word: Word, _ under: [Word], _ share: Double) -> Bool {
+            let area = word.box.width * word.box.height
+            return area > 0 && unionArea(under.map { $0.box.intersection(word.box) }) >= share * area
+        }
+        // Where each line's words lie: a word may reach past its line's box.
+        let spans = pass1.map { $0.words.map(\.box).reduce(CGRect.null) { $0.union($1) } }
+        func isCopy(_ i: Int, of j: Int) -> Bool {
+            guard spans[i].intersects(spans[j]) else { return false }
+            let a = pass1[i].words, b = pass1[j].words
+            let pairs = commonWords(a.map(\.text), b.map(\.text))
+            let shared = Set(pairs.map(\.0))
+            return pairs.count * 2 >= a.count
+                && pairs.allSatisfy { liesOn(a[$0.0], [b[$0.1]], 0.5) }
+                && a.allSatisfy { liesOn($0, b, 0.5) }
+                && a.indices.allSatisfy { shared.contains($0) || !isWord(a[$0].text) }
+        }
+        var kept: [Int] = []
+        for i in order {
+            let line = pass1[i]
+            if !line.words.isEmpty {
+                if kept.contains(where: { isCopy(i, of: $0) }) { continue }
+                let confirmed = kept.filter { read.contains($0) }.flatMap { pass1[$0].words }
+                if !read.contains(i) && line.words.allSatisfy({ liesOn($0, confirmed, 0.75) }) { continue }
+            }
+            kept.append(i)
+        }
+        return kept.sorted().map { pass1[$0] }
+    }
+
+    /// The area of the union of `rects` (null and empty ones count for nothing).
+    private static func unionArea(_ rects: [CGRect]) -> Double {
+        let rs = rects.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+        let xs = Set(rs.flatMap { [$0.minX, $0.maxX] }).sorted()
+        var area = 0.0
+        for (x0, x1) in zip(xs, xs.dropFirst()) {
+            // Within this slab, the length of the union of the rects' heights.
+            let spans = rs.filter { $0.minX <= x0 && $0.maxX >= x1 }.map { ($0.minY, $0.maxY) }.sorted { $0.0 < $1.0 }
+            var covered = 0.0, top = -Double.infinity
+            for (lo, hi) in spans where hi > top {
+                covered += hi - max(lo, top)
+                top = hi
+            }
+            area += covered * (x1 - x0)
+        }
+        return area
     }
 
     /// True when some of the lines sit above others (not side by side on one row).
