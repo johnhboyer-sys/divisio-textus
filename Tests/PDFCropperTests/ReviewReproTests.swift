@@ -163,4 +163,15 @@ struct ReviewReproTests {
     // Finding 5 (stack Apply versus the blend) is covered by StackTests.applyMatchesStack
     // and StackTests.trueSizeBlend: John chose a true-size stack (2026-10-22).
 
+    @Test("Scaling a grayscale page for the later OCR readings keeps its pixels")
+    func scaledGrayPageIsNotBlack() throws {
+        let image = ImageEnhancer.apply(Fixtures.scan(400, 400), mode: .grayscale)
+        #expect(image.colorSpace?.model == .monochrome)
+        let half = OCRService.scaled(image, by: 0.5)
+        #expect(half.width == 200)
+        // The scan is white paper with dark marks: mostly bright, like the original.
+        let g = try #require(GrayBuffer(cgImage: half))
+        let bright = (0..<g.height).reduce(0) { n, y in n + (0..<g.width).filter { g.value($0, y) > 128 }.count }
+        #expect(bright * 2 > g.width * g.height)
+    }
 }

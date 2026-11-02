@@ -340,14 +340,14 @@ enum OCRService {
         return row[b.count]
     }
 
-    private static func scaled(_ image: CGImage, by factor: Double) -> CGImage {
+    static func scaled(_ image: CGImage, by factor: Double) -> CGImage {
         let w = max(1, Int(Double(image.width) * factor))
         let h = max(1, Int(Double(image.height) * factor))
-        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue
+        // Always RGB: a grayscale page's own color space with this pixel format draws solid black.
         guard let ctx = CGContext(data: nil, width: w, height: h,
                                   bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: colorSpace, bitmapInfo: bitmapInfo) else { return image }
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
         ctx.interpolationQuality = .high
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage() ?? image
