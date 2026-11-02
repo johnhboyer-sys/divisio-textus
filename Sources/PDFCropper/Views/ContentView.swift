@@ -95,10 +95,11 @@ private struct ExportReadout: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            ProgressView(value: model.exportProgress)
+            // Always spinning, so a long wait for Vision doesn't look like a hang.
+            ProgressView()
                 .progressViewStyle(.circular)
                 .controlSize(.small)
-            Text("Exporting \(Int((model.exportProgress * 100).rounded()))%")
+            Text(model.exportProgress > 0 ? "Exporting \(Int((model.exportProgress * 100).rounded()))%" : "Starting…")
                 .monospacedDigit()
             Button {
                 model.cancelExport()

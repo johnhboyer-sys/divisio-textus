@@ -51,7 +51,9 @@ enum PDFExporter {
     /// the slow step — runs on the batch's pages in parallel.
     private static let batchSize = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
 
-    /// Progress callback receives (completedCrops, totalCrops).
+    /// Progress callback receives (completedCrops, totalCrops), possibly from several
+    /// threads, one at a time. With OCR a crop counts once it's read, the slow step, so
+    /// the count moves within a batch; it reaches the total only once all are written.
     static func export(pages: [BookPage],
                        from document: PDFDocument,
                        to url: URL,
@@ -87,6 +89,8 @@ enum PDFExporter {
         var report = Report()
         let textFont = makeTextLayerFont()
         var batchStart = 0
+        var pagesRead = 0
+        let readLock = NSLock()
         while batchStart < todo.count {
             if isCancelled?() == true { throw ExportError.cancelled }
             let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
@@ -139,6 +143,11 @@ enum PDFExporter {
                 text.withUnsafeMutableBufferPointer { out in
                     DispatchQueue.concurrentPerform(iterations: images.count) { i in
                         out[i] = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages)
+                        readLock.withLock {
+                            pagesRead += 1
+                            let shown = min(pagesRead, total - 1)
+                            if shown > 0 { progress?(shown, total) }
+                        }
                     }
                 }
                 // Vision tends to fail while it warms up and then recover, so give
@@ -169,7 +178,7 @@ enum PDFExporter {
                     report.ocrFailedPages.append(report.pageCount)
                 }
                 ctx.endPage()
-                progress?(report.pageCount, total)
+                if !settings.ocr || report.pageCount == total { progress?(report.pageCount, total) }
             }
         }
         ctx.closePDF()

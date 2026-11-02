@@ -439,7 +439,12 @@ private struct ExportSections: View {
 
             if model.isExporting {
                 HStack {
-                    ProgressView(value: model.exportProgress)
+                    // A moving bar until the first page is done: Vision can be slow to start.
+                    if model.exportProgress > 0 {
+                        ProgressView(value: model.exportProgress)
+                    } else {
+                        ProgressView().progressViewStyle(.linear)
+                    }
                     Button("Cancel") { model.cancelExport() }
                 }
             }

@@ -31,6 +31,37 @@ struct ExportTests {
         #expect(abs(box.width - 612) < 1 && abs(box.height - 792) < 1)   // 8.5 x 11 in
     }
 
+    @Test("Progress moves as each page is read and reaches the end only once it's written")
+    func progressPerPageRead() throws {
+        let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let url = Fixtures.writePDF("progress-src.pdf", media: letter, pages: [
+            { $0.draw(Fixtures.scan(1275, 1650), in: letter) },
+            { $0.draw(Fixtures.scan(1275, 1650), in: letter) }
+        ])
+        let doc = try #require(PDFDocument(url: url))
+        let pages = (0..<2).map { BookPage(sourceIndex: $0, classification: .single, leftCrop: .full, analyzed: true) }
+        let lock = NSLock()
+        var ticks: [Int] = []
+        _ = try PDFExporter.export(pages: pages, from: doc, to: Fixtures.url("progress-out.pdf"), settings: PDFExporter.Settings()) { done, _ in
+            lock.withLock { ticks.append(done) }
+        }
+        #expect(ticks == [1, 1, 2])   // one read, the other read (held below the end), written
+    }
+
+    @Test("The time estimate leaves out the wait for the first page")
+    func estimateSkipsStartupWait() {
+        // Vision sat for a minute, then read a page every 0.7 s.
+        let start = Date(timeIntervalSince1970: 0)
+        let first = start.addingTimeInterval(60)
+        let now = first.addingTimeInterval(0.7 * 9)   // 10 pages done
+        let left = AppModel.exportTimeLeft(firstPageAt: first, now: now, done: 10, total: 34)
+        #expect(abs((left ?? 0) - 0.7 * 24) < 0.01)
+        // Too few pages to tell: no estimate.
+        #expect(AppModel.exportTimeLeft(firstPageAt: first, now: first, done: 3, total: 34) == nil)
+        #expect(AppModel.exportTimeLeft(firstPageAt: first, now: now, done: 34, total: 34) == nil)
+        #expect(AppModel.exportTimeLeft(firstPageAt: nil, now: now, done: 10, total: 34) == nil)
+    }
+
     @Test("Cancelling leaves an existing destination untouched")
     func cancelKeepsDestination() throws {
         let (doc, pages) = try letterScan("cancel-src.pdf")

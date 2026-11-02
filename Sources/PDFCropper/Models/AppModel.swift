@@ -80,6 +80,7 @@ final class AppModel: ObservableObject {
     var isBusy: Bool { isAnalyzing || isExporting || isStraightening }
     @Published var statusText = "Open a scanned PDF to begin."
     @Published var exportProgress: Double = 0
+    private var exportFirstPageAt: Date?
 
     /// Editor magnification; 1 fits the whole page in the window.
     @Published var zoom: Double = 1
@@ -1617,6 +1618,7 @@ final class AppModel: ObservableObject {
         let password = documentPassword
         isExporting = true
         exportProgress = 0
+        exportFirstPageAt = nil
         // Vision can take a minute or more to start after a while unused; say so
         // rather than look stuck.
         statusText = ocrEnabled ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
@@ -1625,7 +1627,6 @@ final class AppModel: ObservableObject {
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel
-        let started = Date()
 
         // A GCD thread rather than a Swift task: OCR blocks while it waits for
         // Vision, and that shouldn't tie up Swift's small shared thread pool.
@@ -1638,16 +1639,17 @@ final class AppModel: ObservableObject {
                                                     to: url,
                                                     settings: settings,
                                                     isCancelled: { cancel.isSet }) { done, total in
-                    let elapsed = Date().timeIntervalSince(started)
+                    let now = Date()
                     Task { @MainActor in
                         guard self.isExporting, !cancel.isSet else { return }   // keep the final message
-                        self.exportProgress = total > 0 ? Double(done) / Double(total) : 0
+                        // Pages finish on several threads; never step back.
+                        let fraction = total > 0 ? Double(done) / Double(total) : 0
+                        guard fraction >= self.exportProgress else { return }
+                        self.exportProgress = fraction
+                        if self.exportFirstPageAt == nil { self.exportFirstPageAt = now }
                         // Named, since another PDF may be open by now.
                         var text = "Exporting “\(url.lastPathComponent)”: page \(done) of \(total)…"
-                        // The first pages include Vision warming up, so wait a little
-                        // before estimating.
-                        if done >= 2, done < total {
-                            let remaining = elapsed / Double(done) * Double(total - done)
+                        if let remaining = Self.exportTimeLeft(firstPageAt: self.exportFirstPageAt, now: now, done: done, total: total) {
                             text += " \(Self.describe(remaining)) left."
                         }
                         self.statusText = text
@@ -1678,6 +1680,14 @@ final class AppModel: ObservableObject {
         guard isExporting, let exportCancel else { return }
         exportCancel.set()
         statusText = "Cancelling export… (finishing the pages in progress)"
+    }
+
+    /// Seconds left, timed from the first finished page: Vision's wait to start can
+    /// be a minute, and counting it would promise far longer than the rest will take.
+    /// nil until a few pages have finished, since a batch's first pages land together.
+    nonisolated static func exportTimeLeft(firstPageAt: Date?, now: Date, done: Int, total: Int) -> TimeInterval? {
+        guard let firstPageAt, done >= 4, done < total else { return nil }
+        return now.timeIntervalSince(firstPageAt) / Double(done - 1) * Double(total - done)
     }
 
     nonisolated private static func describe(_ seconds: TimeInterval) -> String {
