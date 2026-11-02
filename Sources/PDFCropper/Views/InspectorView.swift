@@ -73,10 +73,10 @@ private struct PageSections: View {
 
                 Section("Straighten") {
                     if page.classification == .spread {
-                        skewControl("Left", leftSkewBinding(idx))
-                        skewControl("Right", rightSkewBinding(idx))
+                        skewControl("Left", leftSkewBinding(idx), side: .left)
+                        skewControl("Right", rightSkewBinding(idx), side: .right)
                     } else {
-                        skewControl("Angle", leftSkewBinding(idx))
+                        skewControl("Angle", leftSkewBinding(idx), side: .left)
                     }
                     Button {
                         model.autoStraightenSelected()
@@ -126,7 +126,7 @@ private struct PageSections: View {
     }
 
     @ViewBuilder
-    private func skewControl(_ title: String, _ value: Binding<Double>) -> some View {
+    private func skewControl(_ title: String, _ value: Binding<Double>, side: BookPage.Side) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title)
@@ -136,6 +136,7 @@ private struct PageSections: View {
             }
             HStack(spacing: 6) {
                 Slider(value: value, in: -8...8, step: 0.1) { editing in
+                    model.straightenFocus.dragged = editing ? side : nil
                     if editing { model.beginEdit() } else { model.endEdit("Straighten") }
                 }
                 .labelsHidden()     // else the Form gives it only the value column
@@ -146,6 +147,10 @@ private struct PageSections: View {
                 .help("Reset to 0°")
             }
         }
+        // On hover as well as in a drag, so the grid stays to judge the page between nudges.
+        .onHover { model.straightenFocus.hovered = $0 ? side : nil }
+        // A row can go with the pointer still on it, and then hears no hover end.
+        .onDisappear { model.straightenFocus = StraightenFocus() }
     }
 
     private func leftSkewBinding(_ idx: Int) -> Binding<Double> {

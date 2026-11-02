@@ -123,6 +123,9 @@ struct PageEditorView: View {
 
         // Left / single crop.
         let leftOut = page.isSpread && page.omittedSide == .left
+        if model.straightenFocus.side == .left {
+            StraightenGrid(crop: page.leftCrop.relative(to: area), imageFrame: frame)
+        }
         CropBoxView(crop: leftBinding(idx, area),
                     imageFrame: frame,
                     color: leftOut ? .gray : .blue,
@@ -131,6 +134,9 @@ struct PageEditorView: View {
 
         if page.classification == .spread {
             let rightOut = page.omittedSide == .right
+            if model.straightenFocus.side == .right {
+                StraightenGrid(crop: page.rightCrop.relative(to: area), imageFrame: frame)
+            }
             CropBoxView(crop: rightBinding(idx, area),
                         imageFrame: frame,
                         color: rightOut ? .gray : .green,
