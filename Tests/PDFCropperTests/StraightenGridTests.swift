@@ -48,12 +48,57 @@ struct StraightenGridTests {
     func dragOutranksHover() {
         var focus = StraightenFocus()
         #expect(focus.side == nil)
-        focus.hovered = .right
+        focus.hover(.right, inside: true)
         #expect(focus.side == .right)
-        focus.dragged = .left
-        focus.hovered = nil
+        focus.beginDrag(.left)
+        focus.hover(.right, inside: false)
         #expect(focus.side == .left)
-        focus.dragged = nil
+    }
+
+    @Test("A drag released outside its row hides the grid without a hover end")
+    func releasedOutside() {
+        var focus = StraightenFocus()
+        focus.hover(.left, inside: true)
+        focus.beginDrag(.left)
+        focus.endDrag(.left, pointerInside: false)
+        #expect(focus.side == nil)
+    }
+
+    @Test("A drag released on its row keeps the grid, even if the hover ended mid-drag")
+    func releasedInside() {
+        var focus = StraightenFocus()
+        focus.hover(.left, inside: true)
+        focus.beginDrag(.left)
+        focus.hover(.left, inside: false)
+        focus.endDrag(.left, pointerInside: true)
+        #expect(focus.side == .left)
+    }
+
+    @Test("A row going away leaves the hover of the row now under the pointer")
+    func rowSwap() {
+        var focus = StraightenFocus()
+        focus.hover(.left, inside: true)
+        focus.hover(.angle, inside: true)
+        focus.remove(.left)
+        #expect(focus.side == .left)    // Angle turns the left box's page
+        focus.remove(.angle)
+        #expect(focus.side == nil)
+    }
+
+    @Test("A late hover end from one row leaves the next row's hover")
+    func crossingRows() {
+        var focus = StraightenFocus()
+        focus.hover(.left, inside: true)
+        focus.hover(.right, inside: true)
+        focus.hover(.left, inside: false)
+        #expect(focus.side == .right)
+    }
+
+    @Test("A row that goes mid-drag ends the drag")
+    func removedMidDrag() {
+        var focus = StraightenFocus()
+        focus.beginDrag(.right)
+        focus.remove(.right)
         #expect(focus.side == nil)
     }
 }

@@ -1,12 +1,60 @@
 import SwiftUI
 
-/// Which page's Straighten control is in use, if any. The pointer can leave the
-/// control mid-drag, so a drag counts until it ends and outranks the hover.
+/// Which Straighten row is in use, if any. The pointer can leave a row mid-drag, so
+/// a drag counts until it ends and outranks the hover. Rows report in any order
+/// when the pointer crosses or the rows swap, so each changes only its own claim.
 struct StraightenFocus: Equatable {
-    var hovered: BookPage.Side?
-    var dragged: BookPage.Side?
+    enum Row { case left, right, angle }
 
-    var side: BookPage.Side? { dragged ?? hovered }
+    private var hovered: Row?
+    private var dragged: Row?
+
+    var side: BookPage.Side? {
+        guard let row = dragged ?? hovered else { return nil }
+        return row == .right ? .right : .left
+    }
+
+    mutating func hover(_ row: Row, inside: Bool) {
+        if inside { hovered = row } else if hovered == row { hovered = nil }
+    }
+
+    mutating func beginDrag(_ row: Row) { dragged = row }
+
+    /// A drag hears no hover end, so its end says where the pointer is.
+    mutating func endDrag(_ row: Row, pointerInside: Bool) {
+        guard dragged == row else { return }
+        dragged = nil
+        hover(row, inside: pointerInside)
+    }
+
+    /// A row can go with the pointer still on it, and then hears no hover end.
+    mutating func remove(_ row: Row) {
+        hover(row, inside: false)
+        if dragged == row { dragged = nil }
+    }
+}
+
+/// Says where the pointer is when a drag ends, through a view behind each row.
+final class StraightenRowProbes {
+    fileprivate var views: [StraightenFocus.Row: NSView] = [:]
+
+    func pointerIsOn(_ row: StraightenFocus.Row) -> Bool {
+        guard let view = views[row], let window = view.window else { return false }
+        return view.bounds.contains(view.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+}
+
+struct StraightenRowProbe: NSViewRepresentable {
+    let row: StraightenFocus.Row
+    let probes: StraightenRowProbes
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        probes.views[row] = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// The lines over a crop box while its page is straightened by hand. They stay

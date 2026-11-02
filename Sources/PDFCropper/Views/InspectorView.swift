@@ -37,6 +37,8 @@ struct InspectorView: View {
 /// The selected page's type, straightening and detection.
 private struct PageSections: View {
     @EnvironmentObject var model: AppModel
+    // To tell where a drag ended. State(initialValue:) as in CropBoxView; a class, as setting it redraws nothing.
+    private let skewProbes = State(initialValue: StraightenRowProbes())
 
     var body: some View {
         if let page = model.selectedPage, let idx = model.selectedIndex {
@@ -73,10 +75,10 @@ private struct PageSections: View {
 
                 Section("Straighten") {
                     if page.classification == .spread {
-                        skewControl("Left", leftSkewBinding(idx), side: .left)
-                        skewControl("Right", rightSkewBinding(idx), side: .right)
+                        skewControl("Left", leftSkewBinding(idx), row: .left)
+                        skewControl("Right", rightSkewBinding(idx), row: .right)
                     } else {
-                        skewControl("Angle", leftSkewBinding(idx), side: .left)
+                        skewControl("Angle", leftSkewBinding(idx), row: .angle)
                     }
                     Button {
                         model.autoStraightenSelected()
@@ -126,7 +128,7 @@ private struct PageSections: View {
     }
 
     @ViewBuilder
-    private func skewControl(_ title: String, _ value: Binding<Double>, side: BookPage.Side) -> some View {
+    private func skewControl(_ title: String, _ value: Binding<Double>, row: StraightenFocus.Row) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title)
@@ -136,7 +138,11 @@ private struct PageSections: View {
             }
             HStack(spacing: 6) {
                 Slider(value: value, in: -8...8, step: 0.1) { editing in
-                    model.straightenFocus.dragged = editing ? side : nil
+                    if editing {
+                        model.straightenFocus.beginDrag(row)
+                    } else {
+                        model.straightenFocus.endDrag(row, pointerInside: skewProbes.wrappedValue.pointerIsOn(row))
+                    }
                     if editing { model.beginEdit() } else { model.endEdit("Straighten") }
                 }
                 .labelsHidden()     // else the Form gives it only the value column
@@ -148,9 +154,9 @@ private struct PageSections: View {
             }
         }
         // On hover as well as in a drag, so the grid stays to judge the page between nudges.
-        .onHover { model.straightenFocus.hovered = $0 ? side : nil }
-        // A row can go with the pointer still on it, and then hears no hover end.
-        .onDisappear { model.straightenFocus = StraightenFocus() }
+        .onHover { model.straightenFocus.hover(row, inside: $0) }
+        .onDisappear { model.straightenFocus.remove(row) }
+        .background(StraightenRowProbe(row: row, probes: skewProbes.wrappedValue))
     }
 
     private func leftSkewBinding(_ idx: Int) -> Binding<Double> {
