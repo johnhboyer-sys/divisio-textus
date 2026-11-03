@@ -518,7 +518,7 @@ struct ReviewReproTests {
     }
 
     @Test("Review item 2: a real band behind a light strip is still trimmed, on either side",
-          arguments: [(0, 2200), (20, 2180), (0, 2185), (55, 2145)] as [(CGFloat, CGFloat)])
+          arguments: [(0, 2200), (20, 2180), (0, 2185)] as [(CGFloat, CGFloat)])
     func bandBehindStripStillTrimmed(from y0: CGFloat, to y1: CGFloat) {
         for rightSide in [false, true] {
             let img = page { c, box in

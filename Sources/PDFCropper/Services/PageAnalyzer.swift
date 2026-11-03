@@ -574,11 +574,11 @@ enum PageAnalyzer {
         return s
     }
 
-    /// A line broken by a stretch of paper over 3% of its length. A scanner band
+    /// A line broken by a stretch of paper over 1.5% of its length. A scanner band
     /// runs on to the scan's ends, past at most a thin strip of glass; a plate has
     /// its margins above and below, however tall it is.
     private static func brokenByPaper(_ length: Int, isPaper: (Int) -> Bool) -> Bool {
-        let limit = max(1, length * 3 / 100)
+        let limit = max(1, length * 15 / 1000)
         var run = 0
         for i in 0..<length {
             if isPaper(i) { run += 1; if run > limit { return true } } else { run = 0 }
