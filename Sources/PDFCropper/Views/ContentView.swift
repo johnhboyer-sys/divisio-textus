@@ -61,7 +61,10 @@ struct ContentView: View {
             if model.document != nil {
                 ToolbarItem(placement: .principal) {
                     Picker("View", selection: Binding(get: { model.viewMode },
-                                                      set: { model.viewMode = $0; model.showsExport = false })) {
+                                                      set: { mode in
+                                                          // A trim is drawn on the page, so Grid waits for Done or Cancel.
+                                                          guard mode != .grid || model.trimmingPage == nil else { return }
+                                                          model.viewMode = mode; model.showsExport = false })) {
                         Text("Grid").tag(AppModel.ViewMode.grid)
                         Text("Page").tag(AppModel.ViewMode.page)
                         Text("Stack").tag(AppModel.ViewMode.stack)

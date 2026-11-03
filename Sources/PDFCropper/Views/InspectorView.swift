@@ -240,10 +240,10 @@ private struct SelectionSections: View {
 
             Section("Straighten") {
                 if spreads.isEmpty {
-                    skewRow("Angle", kept.map(\.leftSkew), side: .left, row: .angle)
+                    skewRow("Angle", kept, side: .left, row: .angle)
                 } else {
-                    skewRow("Left", kept.map(\.leftSkew), side: .left, row: .left)
-                    skewRow("Right", spreads.map(\.rightSkew), side: .right, row: .right)
+                    skewRow("Left", kept, side: .left, row: .left)
+                    skewRow("Right", spreads, side: .right, row: .right)
                 }
                 Button {
                     model.autoStraighten(ids)
@@ -284,10 +284,12 @@ private struct SelectionSections: View {
         }
     }
 
-    /// A slider over several pages: it shows the last page clicked's angle and sets
-    /// every page's, "mixed" while they differ.
-    private func skewRow(_ title: String, _ values: [Double], side: BookPage.Side, row: StraightenFocus.Row) -> some View {
-        let anchor = model.selectedPage.map { side == .left ? $0.leftSkew : $0.rightSkew } ?? values.first ?? 0
+    /// A slider over the pages it sets: it shows the last page clicked's angle (or,
+    /// when that page isn't one of them, the first one's) and sets every page's,
+    /// "mixed" while they differ.
+    private func skewRow(_ title: String, _ pages: [BookPage], side: BookPage.Side, row: StraightenFocus.Row) -> some View {
+        let values = pages.map { side == .left ? $0.leftSkew : $0.rightSkew }
+        let anchor = pages.firstIndex { $0.id == model.selectedPageID }.map { values[$0] } ?? values.first ?? 0
         return HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
             Slider(value: Binding(get: { anchor }, set: { model.setSkew($0, side: side, for: ids) }),

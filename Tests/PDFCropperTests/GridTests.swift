@@ -108,4 +108,45 @@ struct GridTests {
         m.cancelTrim()
         #expect(m.viewMode == .grid && m.pages.allSatisfy { $0.trim == nil })
     }
+
+    @Test("Needs a look: the grid's arrows and the sidebar keep to the pages it shows (Codex review)")
+    func filtered() {
+        let m = testModel()
+        // Pages 1 and 3's left crops are wider than the rest of their stack's.
+        m.pages = (0..<5).map { i in
+            var page = BookPage(sourceIndex: i, splitX: 0.5, analyzed: true)
+            page.leftCrop = CropRect(x: 0.05, y: 0.1, width: i == 1 || i == 3 ? 0.40 : 0.30, height: 0.8)
+            page.rightCrop = CropRect(x: 0.55, y: 0.1, width: 0.3, height: 0.8)
+            return page
+        }
+        let ids = m.pages.map(\.id)
+        #expect(Set(m.flaggedSides.keys) == [ids[1], ids[3]])
+        m.selectedPageID = ids[0]
+        m.viewMode = .grid
+        m.chooseInGrid(ids[1], .toggle, order: ids)
+        m.showsOnlyFlagged = true
+        #expect(m.gridPages.map(\.id) == [ids[1], ids[3]])
+        #expect(m.sidebarTargets == [ids[1]])                       // page 0 is hidden, so left alone
+        m.selectAdjacentPage(1)
+        #expect(m.selectedPageID == ids[3] && m.sidebarTargets == [ids[3]])
+        m.selectAdjacentPage(1)
+        #expect(m.selectedPageID == ids[3])
+        m.selectAdjacentPage(-1)
+        #expect(m.selectedPageID == ids[1])
+    }
+
+    @Test("Opening another PDF starts the grid afresh on its first page (Codex review)")
+    func reload() async {
+        let (m, _) = await load()
+        let ids = m.pages.map(\.id)
+        m.viewMode = .grid
+        m.chooseInGrid(ids[2], .plain, order: ids)
+        m.chooseInGrid(ids[4], .toggle, order: ids)
+        let other = Fixtures.writePDF("grid-reload.pdf", media: CGRect(x: 0, y: 0, width: 400, height: 600),
+                                      pages: [{ _ in }, { _ in }])
+        m.load(url: other)
+        await waitUntilIdle(m)
+        #expect(m.viewMode == .grid && m.pages.count == 2)
+        #expect(m.gridSelection == [m.pages[0].id] && m.sidebarTargets == [m.pages[0].id])
+    }
 }

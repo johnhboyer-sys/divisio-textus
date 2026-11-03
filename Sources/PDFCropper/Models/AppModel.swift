@@ -363,6 +363,7 @@ final class AppModel: ObservableObject {
             if let loadNotice { statusText += " " + loadNotice }
         }
         selectedPageID = pages.first?.id
+        selectInGrid(selectedPageID)                            // the old PDF's choice is gone
         analyzeAll()
         checkForText()
     }
@@ -1474,9 +1475,15 @@ final class AppModel: ObservableObject {
             let i = max(0, min(pages.count - 1, from + offset))
             return chooseForTrim(pages[i].id, .plain, order: pages.map(\.id))
         }
+        if viewMode == .grid {
+            // Only through the pages the grid shows.
+            let shown = gridPages
+            guard !shown.isEmpty else { return }
+            let from = shown.firstIndex { $0.id == selectedPageID } ?? (offset > 0 ? -1 : shown.count)
+            return selectInGrid(shown[max(0, min(shown.count - 1, from + offset))].id)
+        }
         let i = max(0, min(pages.count - 1, (selectedIndex ?? 0) + offset))
         selectedPageID = pages[i].id
-        if viewMode == .grid { selectInGrid(pages[i].id) }
     }
 
     /// Match Sizes: one of a spread's two crops takes the other's size (see CropRect.matched).
@@ -1704,11 +1711,19 @@ final class AppModel: ObservableObject {
 
     // MARK: - Grid selection
 
-    /// What the sidebar acts on: in Grid view the pages chosen, in page order;
-    /// elsewhere the page shown.
+    /// The pages Grid view shows: all, or only those that need a look.
+    var gridPages: [BookPage] {
+        guard showsOnlyFlagged else { return pages }
+        let flagged = flaggedSides
+        return pages.filter { flagged[$0.id] != nil }
+    }
+
+    /// What the sidebar acts on: in Grid view the pages chosen that it shows, in
+    /// page order; elsewhere the page shown.
     var sidebarTargets: [BookPage.ID] {
-        if viewMode == .grid, !gridSelection.isEmpty {
-            return pages.map(\.id).filter { gridSelection.contains($0) }
+        if viewMode == .grid {
+            let chosen = gridPages.map(\.id).filter { gridSelection.contains($0) }
+            if !chosen.isEmpty { return chosen }
         }
         return selectedPageID.map { [$0] } ?? []
     }

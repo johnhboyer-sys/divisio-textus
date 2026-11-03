@@ -11,7 +11,7 @@ struct GridView: View {
 
     var body: some View {
         let flagged = model.flaggedSides
-        let shown = model.showsOnlyFlagged ? model.pages.filter { flagged[$0.id] != nil } : model.pages
+        let shown = model.gridPages
         let order = shown.map(\.id)
         VStack(spacing: 0) {
             HStack {
