@@ -57,6 +57,8 @@ final class AppModel: ObservableObject {
 
     /// The whole-spread stack's draft split and crops; nil: the stack's usual layout.
     @Published var spreadLayout: SpreadLayout?
+    /// Stack view shows the stack's picture, so its Apply buttons apply what is drawn.
+    @Published var stackImageReady = false
     /// The whole-spread stack's draft: the user's, or else the spreads' usual layout.
     func spreadLayout(for stack: PageStack) -> SpreadLayout { spreadLayout ?? stack.medianLayout }
 

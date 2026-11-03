@@ -183,11 +183,15 @@ private struct PageSections: View {
 private struct PageHeader: View {
     let title: String
     var flagged = false
+    var note: String? = nil
 
     var body: some View {
         HStack {
             Text(title).font(.headline).foregroundStyle(.primary)
             Spacer()
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
             if flagged {
                 Label("Needs a look", systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
@@ -197,74 +201,118 @@ private struct PageHeader: View {
     }
 }
 
-/// Stack view: the pages in the stack on show whose crop differs in size, or in
-/// the whole-spread stack, whose split is far from the rest.
+/// Stack view, This Stack: the orange draft's sizes, Apply to every page of the
+/// stack or only the flagged ones, the flagged pages (in the whole-spread stack,
+/// those whose split is far from the rest), and which pages are in the stack.
 private struct StackSections: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         let stacks = model.stacks
         if let stack = stacks.first(where: { $0.id == model.stackKind }) ?? stacks.first {
-            // The orange draft's two boxes, once analysis has settled them.
-            if stack.id == .spreads, !model.isAnalyzing, let document = model.document,
-               let size = StackRenderer.pointSize(of: stack, in: document) {
-                Section("Crops") {
-                    let layout = model.spreadLayout(for: stack)
-                    let readout = CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit())
-                    SpreadSizeControls(readout: readout)
-                    MatchMenu(differs: readout.same == false) { rightMatchesLeft in
-                            var l = model.spreadLayout(for: stack)
-                            l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
-                            model.spreadLayout = l
-                            let (moved, other) = rightMatchesLeft ? (l.rightCrop, l.leftCrop) : (l.leftCrop, l.rightCrop)
-                            if other.width - moved.width > 1e-6 {
-                                model.statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft)
-                            }
-                    }
-                }
-            }
+            let spreads = stack.id == .spreads
             Section {
-                // Until analysis is done the crops are placeholders, so judging them misleads.
-                if model.isAnalyzing {
-                    Text("Waiting for page analysis to finish…")
-                        .foregroundStyle(.secondary)
-                } else if stack.outliers.isEmpty {
-                    Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(stack.outliers) { member in
-                        Button {
-                            model.selectedPageID = member.id
-                            model.showsStack = false
-                        } label: {
-                            HStack {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .foregroundStyle(.red)
-                                Text("p. \(member.page.sourceIndex + 1) · \(member.side == .whole ? "split at \(Int((member.page.splitX * 100).rounded()))%" : member.side.rawValue)")
-                                Spacer()
-                                Text("Show").foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Open this page in Page view")
-                    }
-                }
+                cropRows(stack)
             } header: {
-                Text("\(stack.id.label) (\(stack.members.count))")
-            } footer: {
-                if !model.isAnalyzing, !stack.outliers.isEmpty, stack.id == .spreads {
-                    Text("\(stack.outliers.count) \(stack.outliers.count == 1 ? "spread's split is" : "spreads' splits are") over \(Int(PageStack.splitTolerance * 100))% of the scan's width from the usual split. Apply Layout above the stack sets them to the orange split and the blue and green boxes.")
-                        .foregroundStyle(.secondary)
-                } else if !model.isAnalyzing, !stack.outliers.isEmpty {
-                    Text("\(stack.outliers.count) \(stack.outliers.count == 1 ? "page differs" : "pages differ") in size from the rest of this stack. Apply Crop above the stack sets them to the orange box.")
-                        .foregroundStyle(.secondary)
-                }
+                PageHeader(title: stack.id.label,
+                           note: "\(stack.members.count) of \(stack.allMembers.count) in the stack")
             }
+
+            Section(spreads ? "Apply layout" : "Apply crop") {
+                HStack {
+                    Button { apply(stack, to: stack.members) } label: {
+                        Text("To All \(stack.members.count)").frame(maxWidth: .infinity)
+                    }
+                    Button { apply(stack, to: stack.outliers) } label: {
+                        Text("To the \(stack.outliers.count) Flagged").frame(maxWidth: .infinity)
+                    }
+                    .disabled(stack.outliers.isEmpty)
+                }
+                .disabled(model.isAnalyzing || stack.members.isEmpty || !model.stackImageReady)
+                .help(spreads ? "Set every spread, or only the flagged ones, to the orange split and the blue and green crops"
+                              : "Set every page in this stack, or only the flagged ones, to the orange crop")
+            }
+
+            flaggedSection(stack)
             pickSection(stack)
         } else {
             Text("No pages to stack.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The draft's sizes, once analysis has settled them.
+    @ViewBuilder
+    private func cropRows(_ stack: PageStack) -> some View {
+        if !model.isAnalyzing, let document = model.document,
+           let size = StackRenderer.pointSize(of: stack, in: document) {
+            if stack.id == .spreads {
+                let layout = model.spreadLayout(for: stack)
+                let readout = CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit())
+                MatchMenu(differs: readout.same == false) { rightMatchesLeft in
+                    var l = model.spreadLayout(for: stack)
+                    l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
+                    model.spreadLayout = l
+                    let (moved, other) = rightMatchesLeft ? (l.rightCrop, l.leftCrop) : (l.leftCrop, l.rightCrop)
+                    if other.width - moved.width > 1e-6 {
+                        model.statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft)
+                    }
+                }
+                SpreadSizeControls(readout: readout)
+            } else {
+                let readout = CropSizeReadout(leftCrop: model.stackDraft(for: stack), rightCrop: nil, in: size, unit: RulerUnit())
+                LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() }
+            }
+        } else {
+            Text("Waiting for page analysis to finish…")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func apply(_ stack: PageStack, to members: [PageStack.Member]) {
+        if stack.id == .spreads {
+            model.applySpreadLayout(model.spreadLayout(for: stack), to: members)
+        } else {
+            model.applyStackCrop(model.stackDraft(for: stack), to: members, in: stack)
+        }
+    }
+
+    private func flaggedSection(_ stack: PageStack) -> some View {
+        Section {
+            // Until analysis is done the crops are placeholders, so judging them misleads.
+            if model.isAnalyzing {
+                Text("Waiting for page analysis to finish…")
+                    .foregroundStyle(.secondary)
+            } else if stack.outliers.isEmpty {
+                Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(stack.outliers) { member in
+                    LabeledContent {
+                        Button("Show") {
+                            model.selectedPageID = member.id
+                            model.showsStack = false
+                        }
+                        .help("Open this page in Page view")
+                    } label: {
+                        Label {
+                            Text(member.side == .whole || member.side == .single
+                                 ? "p. \(member.page.sourceIndex + 1)"
+                                 : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                        } icon: {
+                            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text(model.isAnalyzing ? "Flagged" : "Flagged (\(stack.outliers.count))")
+        } footer: {
+            if !model.isAnalyzing, !stack.outliers.isEmpty {
+                Text(stack.id == .spreads ? "Their splits are far from the usual split."
+                                          : "Their crops differ in size from the rest of the stack.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -274,11 +322,14 @@ private struct StackSections: View {
         let pages = stack.allMembers
         return Section {
             HStack {
-                Button("All") { model.setAllStackPages(included: true, in: stack) }
-                    .disabled(stack.excludedMembers.isEmpty)
-                Button("None") { model.setAllStackPages(included: false, in: stack) }
-                    .disabled(stack.members.isEmpty)
-                Spacer()
+                Button { model.setAllStackPages(included: true, in: stack) } label: {
+                    Text("All").frame(maxWidth: .infinity)
+                }
+                .disabled(stack.excludedMembers.isEmpty)
+                Button { model.setAllStackPages(included: false, in: stack) } label: {
+                    Text("None").frame(maxWidth: .infinity)
+                }
+                .disabled(stack.members.isEmpty)
             }
             // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
             ScrollView {
@@ -293,10 +344,10 @@ private struct StackSections: View {
             }
             .frame(height: min(180, Double(pages.count) * 24 + 4))
         } header: {
-            Text("Pages in this stack (\(stack.members.count) of \(pages.count))")
+            Text("Pages in this stack")
         } footer: {
             Text("A page left out is not drawn here, counted or changed by Apply. It is still in Page view and the export.")
-                .foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

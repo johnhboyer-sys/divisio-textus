@@ -110,40 +110,13 @@ struct StackView: View {
                 .help("Rebuild the stack image")
                 .disabled(stack == nil || loadingState.wrappedValue)
                 Spacer()
-                if let stack, stack.id == .spreads {
-                    Menu("Apply Layout") {
-                        Button("To All \(stack.members.count) Spreads") {
-                            model.applySpreadLayout(layout(stack).wrappedValue, to: stack.members)
-                        }
-                        Button("To the \(stack.outliers.count) Flagged Spreads") {
-                            model.applySpreadLayout(layout(stack).wrappedValue, to: stack.outliers)
-                        }
-                        .disabled(stack.outliers.isEmpty)
-                    }
-                    .fixedSize()
-                    .disabled(model.isAnalyzing || stack.members.isEmpty || imageState.wrappedValue == nil || loadingState.wrappedValue)
-                    .help("Set every spread, or only the flagged ones, to the orange split and the blue and green crops")
-                } else if let stack {
-                    Menu("Apply Crop") {
-                        Button("To All \(stack.members.count) Pages") {
-                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.members, in: stack)
-                        }
-                        Button("To the \(stack.outliers.count) Flagged Pages") {
-                            model.applyStackCrop(draft(stack).wrappedValue, to: stack.outliers, in: stack)
-                        }
-                        .disabled(stack.outliers.isEmpty)
-                    }
-                    .fixedSize()
-                    .disabled(model.isAnalyzing || stack.members.isEmpty || imageState.wrappedValue == nil || loadingState.wrappedValue)
-                    .help("Set every page in this stack, or only the flagged ones, to the orange crop")
-                }
             }
             .padding([.horizontal, .top])
             if let stack, stack.members.isEmpty {
                 Text("No pages in this stack. Tick some in the sidebar.").foregroundStyle(.secondary)
                 Spacer()
             } else if let stack {
-                // The pages that differ in size are listed in the inspector's Stack tab.
+                // The pages that differ are listed in the sidebar, with Apply.
                 canvas(stack)
                     .frame(minWidth: 240, minHeight: 240)
             } else {
@@ -177,6 +150,10 @@ struct StackView: View {
             imageDocument = requested.document
             loadingState.wrappedValue = false
         }
+        .onChange(of: imageState.wrappedValue != nil && !loadingState.wrappedValue, initial: true) { _, ready in
+            model.stackImageReady = ready
+        }
+        .onDisappear { model.stackImageReady = false }
     }
 
     private func canvas(_ stack: PageStack) -> some View {
