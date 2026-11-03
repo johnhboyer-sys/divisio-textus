@@ -13,7 +13,27 @@ final class AppModel: ObservableObject {
     @Published var selectedPageID: BookPage.ID? {
         didSet { if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil } }   // a trim drawn is that page's
     }
-    @Published var showsStack = false
+    /// Grid, Page or Stack view. A book opens in Page view.
+    enum ViewMode: Hashable { case grid, page, stack }
+    @Published var viewMode = ViewMode.page {
+        // Into the grid with the page shown as its selection, unless it is one of
+        // the pages chosen there (back from a trim, say).
+        didSet {
+            if viewMode == .grid, oldValue != .grid, !(selectedPageID.map(gridSelection.contains) ?? false) {
+                selectInGrid(selectedPageID)
+            }
+        }
+    }
+    var showsStack: Bool {
+        get { viewMode == .stack }
+        set { viewMode = newValue ? .stack : .page }
+    }
+    /// The rail's and the grid's "Needs a look" filter.
+    @Published var showsOnlyFlagged = false
+    /// Grid view's chosen pages. The last one clicked is selectedPageID, and a
+    /// Shift-click chooses the run from gridAnchor.
+    @Published private(set) var gridSelection: Set<BookPage.ID> = []
+    private var gridAnchor: BookPage.ID?
     /// The Export view: the output pages and the export's settings, in place of the canvas.
     @Published var showsExport = false
     @Published var straightenFocus = StraightenFocus()
@@ -101,6 +121,9 @@ final class AppModel: ObservableObject {
     /// Trim All Pages: the pages chosen in the side panel, to leave out or put back.
     @Published private(set) var trimSelection: Set<BookPage.ID> = []
     private var trimAnchor: BookPage.ID?
+    /// Trim from the grid: the pages Done trims, and the way back to the grid after.
+    private var trimTargets: Set<BookPage.ID> = []
+    private var trimReturnsToGrid = false
 
     /// A click in the side panel, as on a Mac: one page, a run from the last page
     /// clicked (Shift), or one page more or less (⌘).
@@ -151,6 +174,15 @@ final class AppModel: ObservableObject {
     private var outputOrder: [Int] = []           // least recently used first
     private let outputCacheLimit = 400
     private let outputPreviewDPI: Double = 40
+
+    // Grid cells: each page straightened, from its thumbnail.
+    private struct CachedCell {
+        let left: Double, right: Double, split: Double, isSpread: Bool
+        let image: CGImage
+    }
+    private var cellCache: [Int: CachedCell] = [:]
+    private var cellOrder: [Int] = []             // least recently used first
+    private let cellCacheLimit = 400
 
     /// The page, and analysis's claim on it, as they were when a drag or slider
     /// edit began (see beginEdit / endEdit).
@@ -485,6 +517,26 @@ final class AppModel: ObservableObject {
         return images
     }
 
+    /// A page as the grid shows it: straightened like the editor's page, small.
+    func gridImage(for page: BookPage) -> CGImage? {
+        let straight = abs(page.leftSkew) < 0.01 && abs(page.rightSkew) < 0.01
+        if let c = cellCache[page.sourceIndex], c.left == page.leftSkew, c.right == page.rightSkew,
+           c.split == page.splitX || straight, c.isSpread == page.isSpread {
+            cellOrder.removeAll { $0 == page.sourceIndex }
+            cellOrder.append(page.sourceIndex)
+            return c.image
+        }
+        guard let cg = thumbnail(for: page)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let image = ImageTransform.deskewedComposite(cg, splitX: page.splitX, leftDegrees: page.leftSkew,
+                                                     rightDegrees: page.rightSkew, isSpread: page.isSpread)
+        cellCache[page.sourceIndex] = CachedCell(left: page.leftSkew, right: page.rightSkew, split: page.splitX,
+                                                 isSpread: page.isSpread, image: image)
+        cellOrder.removeAll { $0 == page.sourceIndex }
+        cellOrder.append(page.sourceIndex)
+        while cellOrder.count > cellCacheLimit { cellCache[cellOrder.removeFirst()] = nil }
+        return image
+    }
+
     private func touchPreview(_ index: Int) {
         previewOrder.removeAll { $0 == index }
         previewOrder.append(index)
@@ -500,6 +552,8 @@ final class AppModel: ObservableObject {
         thumbnailOrder.removeAll()
         outputCache.removeAll()
         outputOrder.removeAll()
+        cellCache.removeAll()
+        cellOrder.removeAll()
         stackCache.removeAll()
     }
 
@@ -938,24 +992,32 @@ final class AppModel: ObservableObject {
     }
 
     func setClassification(_ c: PageClassification, for id: BookPage.ID) {
-        guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].classification != c else { return }
-        let old = pages[i].classification
+        setClassification(c, for: [id])
+    }
+
+    /// Every page given takes the type, as one undo step.
+    func setClassification(_ c: PageClassification, for ids: [BookPage.ID]) {
+        let todo = pages.indices.filter { ids.contains(pages[$0].id) && pages[$0].classification != c }
+        guard !todo.isEmpty else { return }
         perform("Change Page Type") {
-            // A Single's one crop covers the whole page while a spread's left crop
-            // covers only its left half, so switching between them re-detects the
-            // crops. Skipping keeps the existing crops, and un-skipping to the type
-            // they were made for keeps them too; to another type, or when an older
-            // save didn't record the type, it re-detects (⌘Z gives the crops back).
-            if c == .skip {
-                pages[i].typeBeforeSkip = old
-                pages[i].classification = .skip
-            } else if old == .skip, pages[i].typeBeforeSkip == c {
-                pages[i].classification = c
-                pages[i].typeBeforeSkip = nil
-            } else {
-                reanalyze(i, as: c)
-                pages[i].typeBeforeSkip = nil
-                pages[i].omittedSide = nil      // the crops are new, so the choice goes with them
+            for i in todo {
+                let old = pages[i].classification
+                // A Single's one crop covers the whole page while a spread's left crop
+                // covers only its left half, so switching between them re-detects the
+                // crops. Skipping keeps the existing crops, and un-skipping to the type
+                // they were made for keeps them too; to another type, or when an older
+                // save didn't record the type, it re-detects (⌘Z gives the crops back).
+                if c == .skip {
+                    pages[i].typeBeforeSkip = old
+                    pages[i].classification = .skip
+                } else if old == .skip, pages[i].typeBeforeSkip == c {
+                    pages[i].classification = c
+                    pages[i].typeBeforeSkip = nil
+                } else {
+                    reanalyze(i, as: c)
+                    pages[i].typeBeforeSkip = nil
+                    pages[i].omittedSide = nil      // the crops are new, so the choice goes with them
+                }
             }
         }
     }
@@ -963,13 +1025,19 @@ final class AppModel: ObservableObject {
     /// Leave one page of a spread out of the export, or (nil) export both. The
     /// side keeps its crop, so choosing both again brings it back unchanged.
     func setOmittedSide(_ side: BookPage.Side?, for id: BookPage.ID) {
-        guard let i = pages.firstIndex(where: { $0.id == id }), pages[i].isSpread,
-              pages[i].omittedSide != side else { return }
+        setOmittedSide(side, for: [id])
+    }
+
+    /// The same for every spread given, as one undo step.
+    func setOmittedSide(_ side: BookPage.Side?, for ids: [BookPage.ID]) {
+        let todo = pages.indices.filter { ids.contains(pages[$0].id) && pages[$0].isSpread && pages[$0].omittedSide != side }
+        guard !todo.isEmpty else { return }
         // Which pages a spread exports is no crop edit: the page stays analysis's,
         // so the book's page size still places its crops.
-        let before = pages[i]
-        pages[i].omittedSide = side
-        registerUndo(restoring: [before], claims: setByAnalysis.filter { $0.key == id },
+        let before = todo.map { pages[$0] }
+        for i in todo { pages[i].omittedSide = side }
+        let ids = Set(before.map(\.id))
+        registerUndo(restoring: before, claims: setByAnalysis.filter { ids.contains($0.key) },
                      actionName: "Change Pages Exported")
     }
 
@@ -1408,6 +1476,7 @@ final class AppModel: ObservableObject {
         }
         let i = max(0, min(pages.count - 1, (selectedIndex ?? 0) + offset))
         selectedPageID = pages[i].id
+        if viewMode == .grid { selectInGrid(pages[i].id) }
     }
 
     /// Match Sizes: one of a spread's two crops takes the other's size (see CropRect.matched).
@@ -1494,6 +1563,8 @@ final class AppModel: ObservableObject {
     /// its trim to draw.
     func beginTrim(allPages: Bool = false) {
         guard let p = selectedPage, allPages || p.classification != .skip, !isBusy else { return }
+        trimTargets = []
+        trimReturnsToGrid = false
         trimDraft = p.trim ?? .full
         trimmingAllPages = allPages
         trimExcluded = []
@@ -1510,7 +1581,26 @@ final class AppModel: ObservableObject {
         trimmingPage = p.id
     }
 
-    func cancelTrim() { trimmingPage = nil }
+    func cancelTrim() {
+        trimmingPage = nil
+        leaveTrim()
+    }
+
+    /// Grid view's Trim: the last page clicked opens in Page view to draw on, and
+    /// Done trims every page chosen (skipped ones aside), then goes back to the grid.
+    func beginTrim(selection ids: [BookPage.ID]) {
+        let fromGrid = viewMode == .grid
+        beginTrim()
+        guard trimmingPage != nil else { return }
+        trimTargets = Set(ids.filter { id in pages.first { $0.id == id }.map { $0.classification != .skip } ?? false })
+        trimReturnsToGrid = fromGrid
+    }
+
+    private func leaveTrim() {
+        if trimReturnsToGrid { viewMode = .grid }
+        trimReturnsToGrid = false
+        trimTargets = []
+    }
 
     /// Done: the page takes the trim drawn, as one undo step. A page as analysis
     /// left it is detected again inside it; one edited by hand keeps its boxes,
@@ -1519,6 +1609,7 @@ final class AppModel: ObservableObject {
     func finishTrim() {
         guard let id = trimmingPage else { return }
         trimmingPage = nil
+        defer { leaveTrim() }
         guard pages.contains(where: { $0.id == id }) else { return }
         let t = trimDraft.normalized()
         let trim: CropRect? = t.width >= 0.999 && t.height >= 0.999 ? nil : t
@@ -1532,6 +1623,18 @@ final class AppModel: ObservableObject {
                 }
             }
             statusText = "Trimmed \(chosen.count) of \(pages.count) pages. Auto-detect all pages to place the boxes inside the trim."
+            return
+        }
+        if trimTargets.count > 1 {
+            let chosen = pages.indices.filter { trimTargets.contains(pages[$0].id) }
+            let placed = Set(chosen.filter { setByAnalysis[pages[$0].id] != nil })
+            perform("Trim") {
+                for i in chosen {
+                    pages[i].trim = trim
+                    pages[i].trimByHand = true
+                    if placed.contains(i) { reanalyze(i) } else { fitInsideTrim(i) }
+                }
+            }
             return
         }
         guard let i = pages.firstIndex(where: { $0.id == id }) else { return }
@@ -1596,6 +1699,149 @@ final class AppModel: ObservableObject {
             (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
         } else {
             pages[i].leftCrop = pages[i].leftCrop.kept(in: b)
+        }
+    }
+
+    // MARK: - Grid selection
+
+    /// What the sidebar acts on: in Grid view the pages chosen, in page order;
+    /// elsewhere the page shown.
+    var sidebarTargets: [BookPage.ID] {
+        if viewMode == .grid, !gridSelection.isEmpty {
+            return pages.map(\.id).filter { gridSelection.contains($0) }
+        }
+        return selectedPageID.map { [$0] } ?? []
+    }
+
+    /// A click on a cell: alone, with ⌘ to add or take out, with ⇧ for the run from
+    /// the last plain or ⌘-click. `order` is the grid's, as filtered.
+    func chooseInGrid(_ id: BookPage.ID, _ click: TrimClick, order: [BookPage.ID]) {
+        switch click {
+        case .plain:
+            selectInGrid(id)
+        case .toggle:
+            if gridSelection.contains(id), gridSelection.count > 1 {
+                gridSelection.remove(id)
+                if selectedPageID == id { selectedPageID = order.first { gridSelection.contains($0) } }
+            } else {
+                gridSelection.insert(id)
+                selectedPageID = id
+            }
+            gridAnchor = id
+        case .range:
+            guard let anchor = gridAnchor, let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: id)
+            else { return selectInGrid(id) }
+            gridSelection = Set(order[min(a, b)...max(a, b)])
+            selectedPageID = id
+        }
+    }
+
+    private func selectInGrid(_ id: BookPage.ID?) {
+        gridSelection = id.map { [$0] } ?? []
+        gridAnchor = id
+        if let id, selectedPageID != id { selectedPageID = id }
+    }
+
+    /// Return or a double-click in the grid: that page in Page view.
+    func openInPageView(_ id: BookPage.ID) {
+        selectedPageID = id
+        viewMode = .page
+    }
+
+    /// The sidebar's Straighten for several pages: `side` sets each page's left (or
+    /// a single page's only) angle, or each spread's right one.
+    func setSkew(_ degrees: Double, side: BookPage.Side, for ids: [BookPage.ID]) {
+        for i in pages.indices where ids.contains(pages[i].id) && pages[i].classification != .skip {
+            if side == .left { pages[i].leftSkew = degrees }
+            else if pages[i].isSpread { pages[i].rightSkew = degrees }
+        }
+    }
+
+    /// A slider dragged over several pages is one undo step, recording only those pages.
+    private var bulkSnapshot: [(page: BookPage, claim: AnalysisClaim?)]?
+
+    func beginEdit(of ids: [BookPage.ID]) {
+        guard bulkSnapshot == nil else { return }
+        bulkSnapshot = pages.filter { ids.contains($0.id) }.map { ($0, setByAnalysis[$0.id]) }
+        // Claim them now so analysis still running can't overwrite the gesture.
+        for i in pages.indices where ids.contains(pages[i].id) {
+            pages[i].analyzed = true
+            setByAnalysis[pages[i].id] = nil
+        }
+    }
+
+    func endEdit(of ids: [BookPage.ID], _ actionName: String) {
+        guard let snapshot = bulkSnapshot else { return }
+        bulkSnapshot = nil
+        var changed: [BookPage] = [], claims: [BookPage.ID: AnalysisClaim] = [:], waiting = false
+        for (before, claim) in snapshot {
+            guard let i = pages.firstIndex(where: { $0.id == before.id }) else { continue }
+            var after = pages[i]
+            after.analyzed = before.analyzed
+            if after == before {
+                // Unchanged: back as it was (see endEdit).
+                setByAnalysis[before.id] = claim
+                pages[i].analyzed = before.analyzed
+                if !before.analyzed { waiting = true }
+            } else {
+                setByAnalysis[before.id] = nil
+                pages[i].analyzed = true
+                changed.append(before)
+                if let claim { claims[before.id] = claim }
+            }
+        }
+        if !changed.isEmpty { registerUndo(restoring: changed, claims: claims, actionName: actionName) }
+        if waiting { analyzeAll() }
+    }
+
+    /// Detect, Auto-straighten, Match and Remove Trim for every page given, each one
+    /// undo step. Skipped pages are left alone.
+    func reanalyze(_ ids: [BookPage.ID]) {
+        let todo = pages.indices.filter { ids.contains(pages[$0].id) && pages[$0].classification != .skip }
+        perform("Auto-detect") { for i in todo { reanalyze(i) } }
+    }
+
+    func autoStraighten(_ ids: [BookPage.ID]) {
+        guard let doc = document else { return }
+        var found: [Int: (left: Double, right: Double)] = [:]
+        for i in pages.indices where ids.contains(pages[i].id) && pages[i].classification != .skip {
+            guard let pdfPage = doc.page(at: pages[i].sourceIndex),
+                  let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { continue }
+            found[i] = Self.detectSkews(cg, splitX: pages[i].splitX, isSpread: pages[i].isSpread)
+        }
+        perform("Auto-straighten") {
+            for (i, s) in found {
+                pages[i].leftSkew = s.left
+                pages[i].rightSkew = s.right
+            }
+        }
+    }
+
+    func matchCropSizes(of ids: [BookPage.ID], rightMatchesLeft: Bool) {
+        let todo = pages.indices.filter { ids.contains(pages[$0].id) && pages[$0].isSpread }
+        perform(rightMatchesLeft ? "Make Right Match Left" : "Make Left Match Right") {
+            for i in todo {
+                let page = pages[i]
+                var l = SpreadLayout(splitX: page.splitX, leftCrop: page.leftCrop, rightCrop: page.rightCrop, bounds: page.bounds)
+                l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
+                (pages[i].splitX, pages[i].leftCrop, pages[i].rightCrop) = (l.splitX, l.leftCrop, l.rightCrop)
+            }
+        }
+        let short = todo.contains { i in
+            let p = pages[i], (moved, other) = rightMatchesLeft ? (p.rightCrop, p.leftCrop) : (p.leftCrop, p.rightCrop)
+            return other.width - moved.width > 1e-6
+        }
+        if short { statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft) }
+    }
+
+    func removeTrims(_ ids: [BookPage.ID]) {
+        let todo = pages.indices.filter { ids.contains(pages[$0].id) && pages[$0].trim != nil }
+        guard !todo.isEmpty else { return }
+        perform("Remove Trim") {
+            for i in todo {
+                pages[i].trim = nil
+                pages[i].trimByHand = true
+            }
         }
     }
 

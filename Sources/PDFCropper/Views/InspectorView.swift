@@ -16,7 +16,8 @@ struct InspectorView: View {
         let side = choosing ? .all : sideState.wrappedValue
         VStack(spacing: 0) {
             Picker("Inspector", selection: Binding(get: { side }, set: { sideState.wrappedValue = $0 })) {
-                Text(model.showsStack ? "This Stack" : "This Page").tag(Side.one)
+                Text(model.viewMode == .grid ? "\(model.sidebarTargets.count) Selected"
+                     : model.showsStack ? "This Stack" : "This Page").tag(Side.one)
                 Text("All Pages").tag(Side.all)
             }
             .pickerStyle(.segmented)
@@ -27,7 +28,9 @@ struct InspectorView: View {
             Form {
                 switch side {
                 case .one:
-                    if model.showsStack { StackSections() } else { PageSections() }
+                    if model.showsStack { StackSections() }
+                    else if model.sidebarTargets.count > 1 { SelectionSections(ids: model.sidebarTargets) }
+                    else { PageSections() }
                 case .all: BookSections()
                 }
             }
@@ -176,6 +179,137 @@ private struct PageSections: View {
     private func rightSkewBinding(_ idx: Int) -> Binding<Double> {
         Binding(get: { model.pages[idx].rightSkew },
                 set: { model.pages[idx].rightSkew = $0 })
+    }
+}
+
+/// Grid view with several pages chosen: the same groups as This Page, acting on
+/// every one of them. A value they don't share reads "mixed". Apply layout copies
+/// from the last page clicked; Trim draws on it and trims them all.
+private struct SelectionSections: View {
+    @EnvironmentObject var model: AppModel
+    let ids: [BookPage.ID]
+    private let skewProbes = State(initialValue: StraightenRowProbes())
+
+    private var chosen: [BookPage] { model.pages.filter { ids.contains($0.id) } }
+
+    var body: some View {
+        let chosen = self.chosen
+        let kept = chosen.filter { $0.classification != .skip }
+        let spreads = chosen.filter(\.isSpread)
+        let flagged = chosen.filter { model.flaggedSides[$0.id] != nil }.count
+        Section {
+            Picker("Type", selection: Binding<PageClassification?>(
+                get: { chosen.map(\.classification).shared },
+                set: { if let c = $0 { model.setClassification(c, for: ids) } })
+            ) {
+                ForEach(PageClassification.allCases) { c in
+                    Text(c.label).tag(PageClassification?.some(c))
+                }
+            }
+            .pickerStyle(.segmented)
+            if !spreads.isEmpty {
+                Picker("Export", selection: Binding<BookPage.Side??>(
+                    get: { spreads.map(\.omittedSide).shared.map { .some($0) } ?? nil },
+                    set: { if let side = $0 { model.setOmittedSide(side, for: ids) } })
+                ) {
+                    Text("Both").tag(BookPage.Side??.some(nil))
+                    Text("Left").tag(BookPage.Side??.some(.right))     // leaves the right out
+                    Text("Right").tag(BookPage.Side??.some(.left))
+                }
+                .pickerStyle(.segmented)
+                .help("Choose which page or pages of each chosen spread go in the export.")
+            }
+            Text(Self.numbers(chosen)).font(.caption).foregroundStyle(.secondary)
+        } header: {
+            PageHeader(title: "\(chosen.count) pages",
+                       note: flagged > 0 ? "\(flagged) need\(flagged == 1 ? "s" : "") a look" : nil)
+        }
+
+        if !kept.isEmpty {
+            Section("Trim") {
+                HStack {
+                    Button { model.beginTrim(selection: ids) } label: {
+                        Label("Trim", systemImage: "crop").frame(maxWidth: .infinity)
+                    }
+                        .disabled(model.isBusy || model.selectedPage?.classification == .skip)
+                        .help("Draw the trim on the last page clicked; Done trims every page chosen")
+                    Button { model.removeTrims(ids) } label: { Text("Remove Trim").frame(maxWidth: .infinity) }
+                        .disabled(!chosen.contains { $0.trim != nil } || model.isBusy)
+                }
+            }
+
+            Section("Straighten") {
+                if spreads.isEmpty {
+                    skewRow("Angle", kept.map(\.leftSkew), side: .left, row: .angle)
+                } else {
+                    skewRow("Left", kept.map(\.leftSkew), side: .left, row: .left)
+                    skewRow("Right", spreads.map(\.rightSkew), side: .right, row: .right)
+                }
+                Button {
+                    model.autoStraighten(ids)
+                } label: {
+                    Label("Auto-straighten", systemImage: "level").frame(maxWidth: .infinity)
+                }
+            }
+
+            Section("Crop") {
+                let readouts = spreads.compactMap { p in
+                    model.displaySize(of: p).map { CropSizeReadout(leftCrop: p.leftCrop, rightCrop: p.rightCrop, in: $0, unit: RulerUnit()) }
+                }
+                let difference = CropSizeReadout.difference(of: readouts)
+                HStack {
+                    Button { model.reanalyze(ids) } label: {
+                        Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                    }
+                    .help("Auto-detect each chosen page")
+                    if !spreads.isEmpty {
+                        MatchMenu(differs: difference.differs) { model.matchCropSizes(of: ids, rightMatchesLeft: $0) }
+                    }
+                }
+                if !readouts.isEmpty {
+                    SizeRows(left: readouts.map { $0.lengths[0] }.shared ?? "mixed",
+                             right: readouts.map { $0.lengths[1] }.shared ?? "mixed",
+                             difference: difference.text, differs: difference.differs)
+                    LockSizesToggle()
+                }
+                if model.selectedPage?.isSpread == true {
+                    Button {
+                        model.applyLayoutToAllSpreads()
+                    } label: {
+                        Text("Apply layout to all spreads").frame(maxWidth: .infinity)
+                    }
+                    .help("Copies the last page clicked's split line and both crops to every spread.")
+                }
+            }
+        }
+    }
+
+    /// A slider over several pages: it shows the last page clicked's angle and sets
+    /// every page's, "mixed" while they differ.
+    private func skewRow(_ title: String, _ values: [Double], side: BookPage.Side, row: StraightenFocus.Row) -> some View {
+        let anchor = model.selectedPage.map { side == .left ? $0.leftSkew : $0.rightSkew } ?? values.first ?? 0
+        return HStack(spacing: 6) {
+            Text(title).frame(width: 42, alignment: .leading)
+            Slider(value: Binding(get: { anchor }, set: { model.setSkew($0, side: side, for: ids) }),
+                   in: -8...8, step: 0.1) { editing in
+                if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
+            }
+            .labelsHidden()
+            Text(values.shared.map { String(format: "%+.1f°", $0) } ?? "mixed")
+                .monospacedDigit().foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .trailing)
+            Button { model.perform("Straighten") { model.setSkew(0, side: side, for: ids) } } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Reset each to 0°")
+        }
+    }
+
+    /// "Pages 2, 4, 6", the first few and how many more.
+    private static func numbers(_ pages: [BookPage]) -> String {
+        let shown = pages.prefix(8).map { String($0.sourceIndex + 1) }.joined(separator: ", ")
+        return "Pages " + shown + (pages.count > 8 ? " and \(pages.count - 8) more" : "")
     }
 }
 
@@ -371,7 +505,7 @@ private struct TrimSection: View {
             } else if allPages {
                 HStack {
                     Button { model.beginTrim(allPages: true) } label: {
-                        Text("Trim All Pages").frame(maxWidth: .infinity)
+                        Label("Trim All Pages", systemImage: "crop").frame(maxWidth: .infinity)
                     }
                     .disabled(model.selectedPage == nil || model.isBusy)
                     Button { model.removeAllTrims() } label: {
@@ -381,7 +515,9 @@ private struct TrimSection: View {
                 }
             } else {
                 HStack {
-                    Button { model.beginTrim() } label: { Text("Trim").frame(maxWidth: .infinity) }
+                    Button { model.beginTrim() } label: {
+                        Label("Trim", systemImage: "crop").frame(maxWidth: .infinity)
+                    }
                         .disabled(model.isBusy)
                         .help("Draw the part of the scan the page is on")
                     Button { model.removeTrim() } label: { Text("Remove Trim").frame(maxWidth: .infinity) }

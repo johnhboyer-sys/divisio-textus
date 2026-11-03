@@ -57,6 +57,8 @@ struct PDFCropperApp: App {
                     .keyboardShortcut("1")
                 Button("Stack View") { model.showsStack = true; model.showsExport = false }
                     .keyboardShortcut("2")
+                Button("Grid View") { model.viewMode = .grid; model.showsExport = false }
+                    .keyboardShortcut("3")
                 Divider()
                 Button("Previous Page") { model.selectAdjacentPage(-1) }
                     .keyboardShortcut(.upArrow, modifiers: [])

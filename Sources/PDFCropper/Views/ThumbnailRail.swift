@@ -4,18 +4,16 @@ import SwiftUI
 /// the pages that need a look.
 struct ThumbnailRail: View {
     @EnvironmentObject var model: AppModel
-    // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
-    private let onlyFlaggedState = State(initialValue: false)
 
     var body: some View {
         let flagged = model.flaggedSides
         // Trim All Pages: the pages are chosen here, as on a Mac, to leave out; all of them shown.
         let choosing = model.trimmingPage != nil && model.trimmingAllPages
-        let shown = onlyFlaggedState.wrappedValue && !choosing ? model.pages.filter { flagged[$0.id] != nil } : model.pages
+        let shown = model.showsOnlyFlagged && !choosing ? model.pages.filter { flagged[$0.id] != nil } : model.pages
         VStack(spacing: 0) {
             // While choosing for Trim All Pages: All, greyed out; the choice comes back after.
-            Picker("Show", selection: Binding(get: { onlyFlaggedState.wrappedValue && !choosing },
-                                              set: { onlyFlaggedState.wrappedValue = $0 })) {
+            Picker("Show", selection: Binding(get: { model.showsOnlyFlagged && !choosing },
+                                              set: { model.showsOnlyFlagged = $0 })) {
                 Text("All").tag(false)
                 Text(flagged.isEmpty ? "Needs a look" : "Needs a look (\(flagged.count))").tag(true)
             }
@@ -199,7 +197,7 @@ extension AppModel {
         let order = Array(pages[min(start, pages.count)...]) + Array(pages[..<min(start, pages.count)])
         if let next = order.first(where: { flagged[$0.id] != nil }) {
             selectedPageID = next.id
-            showsStack = false
+            if viewMode == .grid { chooseInGrid(next.id, .plain, order: []) } else { showsStack = false }
         }
     }
 }

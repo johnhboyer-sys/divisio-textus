@@ -6,10 +6,11 @@ struct ContentView: View {
     // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
     private let railState = State(initialValue: NavigationSplitViewVisibility.all)
 
-    /// The rail as the user left it, hidden in the Export view.
+    /// The rail as the user left it, hidden in Grid view and the Export view.
     private var railVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(get: { model.showsExport ? .detailOnly : railState.wrappedValue },
-                set: { if !model.showsExport { railState.wrappedValue = $0 } })
+        let hidden = model.showsExport || model.viewMode == .grid
+        return Binding(get: { hidden ? .detailOnly : railState.wrappedValue },
+                       set: { if !hidden { railState.wrappedValue = $0 } })
     }
 
     var body: some View {
@@ -26,8 +27,11 @@ struct ContentView: View {
                     } else {
                         HSplitView {
                             Group {
-                                if model.showsStack { StackView() }
-                                else { PageEditorView() }
+                                switch model.viewMode {
+                                case .grid: GridView()
+                                case .page: PageEditorView()
+                                case .stack: StackView()
+                                }
                             }
                             .frame(minWidth: 380)
                             InspectorView()
@@ -56,19 +60,21 @@ struct ContentView: View {
             }
             if model.document != nil {
                 ToolbarItem(placement: .principal) {
-                    Picker("View", selection: $model.showsStack) {
-                        Text("Page").tag(false)
-                        Text("Stack").tag(true)
+                    Picker("View", selection: Binding(get: { model.viewMode },
+                                                      set: { model.viewMode = $0; model.showsExport = false })) {
+                        Text("Grid").tag(AppModel.ViewMode.grid)
+                        Text("Page").tag(AppModel.ViewMode.page)
+                        Text("Stack").tag(AppModel.ViewMode.stack)
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 150)
-                    .help("Page view (⌘1) or Stack view (⌘2)")
+                    .frame(width: 210)
+                    .help("Grid view (⌘3), Page view (⌘1) or Stack view (⌘2)")
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.isAnalyzing || model.isStraightening {
                         ProgressView().controlSize(.small)
                     }
-                    if !model.showsStack && !model.showsExport {
+                    if model.viewMode == .page && !model.showsExport {
                         ControlGroup {
                             Button { model.zoomOut() } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
                                 .help("Zoom Out (⌘−)")
