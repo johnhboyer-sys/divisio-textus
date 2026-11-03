@@ -5,20 +5,17 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
     private let railState = State(initialValue: NavigationSplitViewVisibility.all)
+    private let savedRail = State(initialValue: NavigationSplitViewVisibility.all)
 
-    /// The rail as the user left it, hidden in Grid view and the Export view.
-    private var railVisibility: Binding<NavigationSplitViewVisibility> {
-        let hidden = model.showsExport || model.viewMode == .grid
-        return Binding(get: { hidden ? .detailOnly : railState.wrappedValue },
-                       set: { if !hidden { railState.wrappedValue = $0 } })
-    }
+    /// No rail in Grid view or the Export view.
+    private var railHidden: Bool { model.showsExport || model.viewMode == .grid }
 
     var body: some View {
         Group {
             if model.document == nil {
                 WelcomeView()
             } else {
-                NavigationSplitView(columnVisibility: railVisibility) {
+                NavigationSplitView(columnVisibility: railState.projectedValue) {
                     ThumbnailRail()
                         .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
                 } detail: {
@@ -37,6 +34,15 @@ struct ContentView: View {
                             InspectorView()
                                 .frame(minWidth: 260, maxWidth: 340)
                         }
+                    }
+                }
+                // The rail goes, and comes back as the user left it.
+                .onChange(of: railHidden, initial: true) { _, hidden in
+                    if hidden {
+                        savedRail.wrappedValue = railState.wrappedValue
+                        railState.wrappedValue = .detailOnly
+                    } else {
+                        railState.wrappedValue = savedRail.wrappedValue
                     }
                 }
                 .dropDestination(for: URL.self) { urls, _ in
