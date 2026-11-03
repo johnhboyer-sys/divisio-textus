@@ -10,7 +10,10 @@ struct PDFCropperApp: App {
         WindowGroup("Divisio Textus") {
             ContentView()
                 .environmentObject(model)
-                .onAppear { appDelegate.onOpenPDF { model.load(url: $0) } }
+                .onAppear {
+                    appDelegate.watch(model)
+                    appDelegate.onOpenPDF { model.load(url: $0) }
+                }
         }
         .windowStyle(.titleBar)
         // A PDF opened from Finder goes to AppDelegate and loads into the existing
@@ -83,6 +86,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// The open document, so quitting can save and ask if that failed.
+    private var model: AppModel?
+
+    func watch(_ model: AppModel) { self.model = model }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model else { return .terminateNow }
+        return MainActor.assumeIsolated { model.terminateReply() }
     }
 
     // Finder "Open With" / dropping a PDF on the Dock icon. At launch this can

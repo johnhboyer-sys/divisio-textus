@@ -232,5 +232,225 @@ struct ReviewReproTests {
             #expect(OCRService.spelledRight("nicht", languages: ["en-US", "de-DE"]))
         }
         #expect(!OCRService.spelledRight("specity", languages: ["en-US"]))
+    /// Saved edits for this test only, put back when it ends. Never the real folder.
+    private func scratchEdits() throws -> URL {
+        _ = Fixtures.directory
+        let dir = Fixtures.directory.appendingPathComponent("repro-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        ProjectStore.directory = dir
+        return dir
+    }
+
+    private func onePage(_ name: String) -> URL {
+        Fixtures.writePDF(name, media: CGRect(x: 0, y: 0, width: 120, height: 120), pages: [{ _ in }])
+    }
+
+    @Test("An unreadable save is moved aside, and nil means there was no file")
+    func unreadableSaveIsKept() throws {
+        _ = Fixtures.directory
+        let savedDir = ProjectStore.directory
+        defer { ProjectStore.directory = savedDir }
+        let dir = try scratchEdits()
+        let fm = FileManager.default
+
+        #expect(ProjectStore.load(key: "missing-\(UUID().uuidString)") == nil)
+
+        func put(_ key: String, _ bytes: Data) throws -> URL {
+            let url = dir.appendingPathComponent("\(key).json")
+            try bytes.write(to: url)
+            return url
+        }
+
+        let garbage = Data("not json".utf8)
+        let garbageKey = "garbage-\(UUID().uuidString)"
+        let garbageFile = try put(garbageKey, garbage)
+        #expect(ProjectStore.load(key: garbageKey) == nil)
+        #expect(!fm.fileExists(atPath: garbageFile.path))
+        #expect(try Data(contentsOf: dir.appendingPathComponent("\(garbageKey).unreadable.json")) == garbage)
+
+        let oldVersion = Data(#"{"version":1,"pages":[],"direction":"leftToRight"}"#.utf8)
+        let versionKey = "version-\(UUID().uuidString)"
+        let versionFile = try put(versionKey, oldVersion)
+        #expect(ProjectStore.load(key: versionKey) == nil)
+        #expect(!fm.fileExists(atPath: versionFile.path))
+        #expect(try Data(contentsOf: dir.appendingPathComponent("\(versionKey).unreadable.json")) == oldVersion)
+
+        let takenKey = "taken-\(UUID().uuidString)"
+        let first = Data("first".utf8), second = Data("second".utf8)
+        try first.write(to: dir.appendingPathComponent("\(takenKey).unreadable.json"))
+        let takenFile = try put(takenKey, second)
+        #expect(ProjectStore.load(key: takenKey) == nil)
+        #expect(try Data(contentsOf: dir.appendingPathComponent("\(takenKey).unreadable.json")) == first)
+        #expect(try Data(contentsOf: dir.appendingPathComponent("\(takenKey).unreadable-2.json")) == second)
+        #expect(!fm.fileExists(atPath: takenFile.path))
+
+        let unreadKey = "unread-\(UUID().uuidString)"
+        let secret = Data("secret".utf8)
+        let unreadFile = try put(unreadKey, secret)
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadFile.path)
+        #expect(ProjectStore.load(key: unreadKey) == nil)
+        let kept = dir.appendingPathComponent("\(unreadKey).unreadable.json")
+        #expect(fm.fileExists(atPath: kept.path))
+        #expect(!fm.fileExists(atPath: unreadFile.path))
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: kept.path)
+        #expect(try Data(contentsOf: kept) == secret)
+    }
+
+    @Test("Opening a PDF whose save can't be read starts fresh and keeps the file")
+    func unreadableSaveStartsFresh() async throws {
+        _ = Fixtures.directory
+        let savedDir = ProjectStore.directory
+        defer { ProjectStore.directory = savedDir }
+        let dir = try scratchEdits()
+        let url = onePage("fresh-\(UUID().uuidString).pdf")
+        let key = try #require(ProjectStore.key(for: url))
+        let bad = Data("not json".utf8)
+        try bad.write(to: dir.appendingPathComponent("\(key).json"))
+        let m = testModel()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        let keptName = "\(key).unreadable.json"
+        #expect(m.statusText.contains("Couldn't read the saved edits for this PDF, so it starts fresh. They're kept as \(keptName)."))
+        #expect(try Data(contentsOf: dir.appendingPathComponent(keptName)) == bad)
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        #expect(try Data(contentsOf: dir.appendingPathComponent(keptName)) == bad)
+        let rewritten = try Data(contentsOf: dir.appendingPathComponent("\(key).json"))
+        #expect(rewritten != bad)
+
+        let legacyBad = Data("legacy bad".utf8)
+        let url2 = onePage("legacy-fresh-\(UUID().uuidString).pdf")
+        let legacy2 = try #require(ProjectStore.legacyKey(for: url2))
+        #expect(ProjectStore.key(for: url2) != legacy2)
+        try legacyBad.write(to: dir.appendingPathComponent("\(legacy2).json"))
+        let m2 = testModel()
+        m2.load(url: url2)
+        await waitUntilIdle(m2)
+        let legacyKept = "\(legacy2).unreadable.json"
+        #expect(m2.statusText.contains("Couldn't read the saved edits for this PDF, so it starts fresh. They're kept as \(legacyKept)."))
+        #expect(try Data(contentsOf: dir.appendingPathComponent(legacyKept)) == legacyBad)
+    }
+
+    @Test("A save that can't be moved aside is not written over")
+    func unreadableSaveNotOverwritten() async throws {
+        _ = Fixtures.directory
+        let savedDir = ProjectStore.directory
+        let dir = try scratchEdits()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+            ProjectStore.directory = savedDir
+        }
+        let url = onePage("blocked-\(UUID().uuidString).pdf")
+        let key = try #require(ProjectStore.key(for: url))
+        let file = dir.appendingPathComponent("\(key).json")
+        let bad = Data("keep me".utf8)
+        try bad.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+        let m = testModel()
+        m.load(url: url)
+        await waitUntilIdle(m)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        #expect(m.statusText.contains("edits won't be saved"))
+        #expect(try Data(contentsOf: file) == bad)
+        m.pages[0].leftCrop = CropRect(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        #expect(try Data(contentsOf: file) == bad)
+    }
+
+    @Test("Keep Working on a failed save does not open the other PDF or quit")
+    func failedSaveAsksBeforeDroppingEdits() async throws {
+        _ = Fixtures.directory
+        let savedDir = ProjectStore.directory
+        defer { ProjectStore.directory = savedDir }
+        let dir = try scratchEdits()
+        let url = onePage("keep-\(UUID().uuidString).pdf")
+        let m = testModel()
+        m.confirmFailedSave = { true }
+        m.load(url: url)
+        await waitUntilIdle(m)
+        let crop = CropRect(x: 0.21, y: 0.22, width: 0.33, height: 0.44)
+        m.pages[0].leftCrop = crop
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        let key = try #require(ProjectStore.key(for: url))
+        let file = dir.appendingPathComponent("\(key).json")
+        try? FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        var asked = 0
+        m.confirmFailedSave = { asked += 1; return true }
+        let other = onePage("other-\(UUID().uuidString).pdf")
+        m.load(url: other)
+        #expect(asked == 1)
+        #expect(m.sourceURL == url)
+        #expect(m.pages[0].leftCrop == crop)
+
+        m.confirmFailedSave = { asked += 1; return false }
+        m.load(url: other)
+        await waitUntilIdle(m)
+        #expect(asked == 2)
+        #expect(m.sourceURL == other)
+
+        let again = testModel()
+        again.confirmFailedSave = { true }
+        again.load(url: url)
+        await waitUntilIdle(again)
+        again.pages[0].leftCrop = crop
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        let againKey = try #require(ProjectStore.key(for: url))
+        let againFile = dir.appendingPathComponent("\(againKey).json")
+        try? FileManager.default.removeItem(at: againFile)
+        try FileManager.default.createDirectory(at: againFile, withIntermediateDirectories: true)
+        let delegate = AppDelegate()
+        delegate.watch(again)
+        let reply = delegate.applicationShouldTerminate(NSApplication.shared)
+        #expect(reply == .terminateCancel)
+        #expect(again.sourceURL == url)
+        again.confirmFailedSave = { false }
+        #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
+    }
+
+    @Test("A bad export file is not treated as finished")
+    func incompleteExportIsRejected() throws {
+        let good = Fixtures.writePDF("complete-\(UUID().uuidString).pdf",
+                                     media: CGRect(x: 0, y: 0, width: 100, height: 100),
+                                     pages: [{ _ in }, { _ in }])
+        #expect(PDFExporter.isComplete(good, pageCount: 2))
+        #expect(!PDFExporter.isComplete(good, pageCount: 1))
+        let bad = Fixtures.url("truncated-\(UUID().uuidString).pdf")
+        try Data("%PDF-1.3 not a whole file".utf8).write(to: bad)
+        #expect(!PDFExporter.isComplete(bad, pageCount: 1))
+        #expect(!PDFExporter.isComplete(Fixtures.url("missing-\(UUID().uuidString).pdf"), pageCount: 0))
+    }
+
+    @Test("Export stops when the source file changed after it was opened")
+    func exportStopsWhenSourceChanges() async throws {
+        let src = onePage("swap-src-\(UUID().uuidString).pdf")
+        let m = testModel()
+        m.load(url: src)
+        await waitUntilIdle(m)
+        let out = Fixtures.url("swap-out-\(UUID().uuidString).pdf")
+        try Data("keep".utf8).write(to: out)
+        let replacement = onePage("swap-other-\(UUID().uuidString).pdf")
+        try Data(contentsOf: replacement).write(to: src)
+        m.export(to: out)
+        await waitUntilIdle(m)
+        #expect(m.statusText == "\(src.lastPathComponent) changed after it was opened. Open it again to export.")
+        #expect(try Data(contentsOf: out) == Data("keep".utf8))
+        #expect(!m.isExporting)
+    }
+
+    @Test("A page size can use a decimal comma")
+    func decimalCommaPageSize() {
+        #expect(PageSize.inches("6,5") == 6.5)
+        #expect(PageSize(parsing: "6,5 x 9") == PageSize(width: 6.5, height: 9))
+        #expect(PageSize(parsing: "6,5 × 9,25") == PageSize(width: 6.5, height: 9.25))
+        #expect(PageSize(parsing: "6 x 9") == PageSize(width: 6, height: 9))
+        #expect(PageSize(parsing: "6×9") == PageSize(width: 6, height: 9))
+        #expect(PageSize(parsing: "5.5 X 8.25 in") == PageSize(width: 5.5, height: 8.25))
+        #expect(PageSize(parsing: "6 by 9") == PageSize(width: 6, height: 9))
+        #expect(PageSize.inches("6") == 6)
+        #expect(PageSize.inches(" 5.45 ") == 5.45)
+        #expect(PageSize.inches("6 cm") == nil)
+        #expect(PageSize.inches("6..5") == nil)
+        #expect(PageSize(parsing: "6 x 9 cm") == nil)
+        #expect(PageSize(parsing: "") == nil)
     }
 }

@@ -184,6 +184,8 @@ enum PDFExporter {
         ctx.closePDF()
         // Cancel pressed during the last batch: don't replace the destination.
         if isCancelled?() == true { throw ExportError.cancelled }
+        // A file that isn't the PDF we just wrote must not replace the destination.
+        guard isComplete(tmpURL, pageCount: report.pageCount) else { throw ExportError.writeFailed }
         do {
             if fm.fileExists(atPath: url.path) {
                 _ = try fm.replaceItemAt(url, withItemAt: tmpURL)
@@ -364,6 +366,12 @@ enum PDFExporter {
             ctx.restoreGState()
         }
         ctx.restoreGState()
+    }
+
+    /// True when `url` is a PDF of exactly `pageCount` pages.
+    static func isComplete(_ url: URL, pageCount: Int) -> Bool {
+        guard let doc = PDFDocument(url: url) else { return false }
+        return doc.pageCount == pageCount
     }
 
     /// Whether the page already has text a reader can search: from an earlier

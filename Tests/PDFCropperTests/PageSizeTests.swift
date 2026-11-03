@@ -443,7 +443,7 @@ struct PageSizeTests {
         ("6\" × 9\"", PageSize(width: 6, height: 9)), (" 6 in x 9 in ", PageSize(width: 6, height: 9)),
         ("inf × 9", nil), ("nan x 9", nil), ("1e308 x 9", nil), ("6xgarbagex9", nil), ("6 x 9 cm", nil),
         ("6 x", nil), ("6 x 9 x 2", nil), ("0 x 9", nil), ("-6 x 9", nil), ("0.5 x 9", nil), ("6 x 40", nil),
-        ("6,5 x 9", nil), ("", nil)] as [(String, PageSize?)])
+        ("6,5 x 9", PageSize(width: 6.5, height: 9)), ("", nil)] as [(String, PageSize?)])
     func parseSize(_ input: String, _ expected: PageSize?) {
         #expect(PageSize(parsing: input) == expected, "\(input)")
     }

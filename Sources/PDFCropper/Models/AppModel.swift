@@ -107,6 +107,10 @@ final class AppModel: ObservableObject {
     /// Show the exported file in Finder when an export finishes (off in tests).
     var revealExportInFinder = true
 
+    /// Asked when a save fails while opening a PDF or quitting. True: keep
+    /// working. Tests replace this so no alert shows.
+    var confirmFailedSave: () -> Bool = AppModel.askFailedSave
+
     // Preview-image cache keyed by source page index, remembering what the cached
     // composite was built with so any change re-renders. Each entry is a full page
     // at preview DPI, so only the most recently viewed few are kept.
@@ -137,7 +141,10 @@ final class AppModel: ObservableObject {
     private var editSnapshot: (page: BookPage, claim: AnalysisClaim?)?
 
     // Edits are saved automatically (see ProjectStore) under this PDF's key.
+    // Nil when a save file is there but couldn't be moved aside, so nothing writes over it.
     private var projectKey: String?
+    /// Appended to the load's status when the save file couldn't be read.
+    private var loadNotice: String?
     private var autosave: AnyCancellable?
     private let saveQueue = DispatchQueue(label: "Divisio Textus autosave")
 
@@ -191,6 +198,13 @@ final class AppModel: ObservableObject {
     /// Added to the status on opening a PDF that already has text.
     private var textNote: String { sourceHasText ? " This PDF already has text: see Export." : "" }
 
+    /// Analysis's closing line, still carrying a note about an unreadable save.
+    private func readyStatus() -> String {
+        var text = "Ready — \(pages.count) source pages → \(outputPageCount) output pages.\(textNote)"
+        if let loadNotice { text += " " + loadNotice }
+        return text
+    }
+
     /// Export is possible: a PDF is open, nothing else is running, and at least
     /// one page isn't skipped.
     var canExport: Bool { document != nil && !isBusy && outputPageCount > 0 }
@@ -208,7 +222,6 @@ final class AppModel: ObservableObject {
     }
 
     func load(url: URL) {
-        trimmingPage = nil                                      // a trim being drawn was for the old PDF
         guard let doc = PDFDocument(url: url) else {
             statusText = "Could not open \(url.lastPathComponent)."
             return
@@ -230,8 +243,9 @@ final class AppModel: ObservableObject {
         // Save the outgoing PDF's edits now, and wait for it and any save still
         // queued: a pending autosave would otherwise be replaced by the new PDF's
         // pages before it fired, and reopening the same PDF would read the older
-        // record.
-        saveEdits(pages, direction, wait: true)
+        // record. Keep Working leaves this PDF open, before any of that changes.
+        if !saveEdits(pages, direction, wait: true), confirmFailedSave() { return }
+        trimmingPage = nil                                      // a trim being drawn was for the old PDF
         clearImageCaches()
         undoManager?.removeAllActions()
         editSnapshot = nil
@@ -248,12 +262,32 @@ final class AppModel: ObservableObject {
         isStraightening = false
         projectKey = ProjectStore.key(for: url)
         // Saves made before keys hashed the whole file are found by the old key,
-        // and from then on saved under the new one.
+        // and from then on saved under the new one. A file that is there but
+        // can't be read is moved aside, not treated as if this PDF had no edits.
         var legacy: String?
-        var restored = projectKey.flatMap(ProjectStore.load)
-        if restored == nil, let old = ProjectStore.legacyKey(for: url), let saved = ProjectStore.load(key: old) {
+        var keptAside: String?
+        var blocked = false
+        func read(_ key: String) -> ProjectStore.Saved? {
+            ProjectStore.load(key: key) { name in
+                if let name { keptAside = name } else { blocked = true }
+            }
+        }
+        var restored = projectKey.flatMap(read)
+        // A bad file under the current key is this PDF's own save. An older key
+        // can belong to another PDF, so use it only when this key has no file.
+        if restored == nil, !blocked, keptAside == nil,
+           let old = ProjectStore.legacyKey(for: url), old != projectKey,
+           let saved = read(old) {
             restored = saved
             legacy = old
+        }
+        if blocked { projectKey = nil }
+        if let keptAside {
+            loadNotice = "Couldn't read the saved edits for this PDF, so it starts fresh. They're kept as \(keptAside)."
+        } else if blocked {
+            loadNotice = "Couldn't read the saved edits for this PDF, so edits won't be saved."
+        } else {
+            loadNotice = nil
         }
         if let saved = restored, saved.pages.map(\.sourceIndex) == Array(0..<doc.pageCount) {
             pages = saved.pages
@@ -276,6 +310,7 @@ final class AppModel: ObservableObject {
             pageSizeOverride = nil
             setByAnalysis = [:]
             statusText = "Loaded \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s"). Analyzing…\(textNote)"
+            if let loadNotice { statusText += " " + loadNotice }
         }
         selectedPageID = pages.first?.id
         analyzeAll()
@@ -299,6 +334,15 @@ final class AppModel: ObservableObject {
                 if !self.isBusy, loadMessage, !self.statusText.contains(self.textNote) { self.statusText += self.textNote }
             }
         }
+    }
+
+    /// Ask whether to keep working after a save failed. True: keep working.
+    private static func askFailedSave() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't save your edits."
+        alert.addButton(withTitle: "Keep Working")
+        alert.addButton(withTitle: "Lose Edits")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Ask for the password of a protected PDF until it unlocks or the user cancels.
@@ -571,7 +615,7 @@ final class AppModel: ObservableObject {
                 // the other one, and the pages are back as they were. Drop them.
                 guard self.cropTarget == target else {
                     self.isAnalyzing = false
-                    self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages.\(self.textNote)"
+                    self.statusText = self.readyStatus()
                     return
                 }
                 // Pages edited or undone meanwhile keep what they are now.
@@ -591,7 +635,7 @@ final class AppModel: ObservableObject {
                     self.setByAnalysis[page.id] = claims[page.id]
                 }
                 self.isAnalyzing = false
-                self.statusText = "Ready — \(self.pages.count) source pages → \(self.outputPageCount) output pages.\(self.textNote)"
+                self.statusText = self.readyStatus()
             }
         }
     }
@@ -1627,10 +1671,20 @@ final class AppModel: ObservableObject {
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel
+        let openedKey = projectKey
 
         // A GCD thread rather than a Swift task: OCR blocks while it waits for
         // Vision, and that shouldn't tie up Swift's small shared thread pool.
         DispatchQueue.global(qos: .userInitiated).async {
+            // Hashing the file is slow; a file swapped since it was opened must
+            // not be exported with these edits. No key: nothing to compare with.
+            if let openedKey, ProjectStore.key(for: src) != openedKey {
+                Task { @MainActor in
+                    self.isExporting = false
+                    self.statusText = "\(src.lastPathComponent) changed after it was opened. Open it again to export."
+                }
+                return
+            }
             do {
                 // Own PDFDocument, for the same reason as analyzeAll.
                 guard let doc = Self.reopen(src, password: password) else { throw PDFExporter.ExportError.sourceUnreadable }
@@ -1697,18 +1751,40 @@ final class AppModel: ObservableObject {
         return "About \(minutes / 60) h \(minutes % 60) min"
     }
 
-    private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) {
-        guard let key = projectKey, !pages.isEmpty else { return }
+    /// Save, then say whether quitting can go ahead. Keep Working cancels it.
+    func terminateReply() -> NSApplication.TerminateReply {
+        if saveEdits(pages, direction, wait: true) { return .terminateNow }
+        return confirmFailedSave() ? .terminateCancel : .terminateNow
+    }
+
+    /// With `wait`, returns whether the save landed. Nothing to save counts as
+    /// landed. A background save says so when it fails; a waited save returns
+    /// false and the caller asks before opening another PDF or quitting.
+    @discardableResult
+    private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) -> Bool {
+        guard let key = projectKey, !pages.isEmpty else { return true }
         let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
                                        pageSize: pageSizeOverride, claims: setByAnalysis,
                                        stackExcluded: ProjectStore.stored(exclusions: stackExclusions))
-        // A failed save is said, not swallowed: later edits would go unsaved too.
+        final class Outcome { var ok = true }
+        let outcome = Outcome()
         let save = { [weak self] in
-            do { try ProjectStore.save(saved, key: key) } catch {
-                Task { @MainActor in self?.statusText = "Couldn't save your edits: \(error.localizedDescription)" }
+            do {
+                try ProjectStore.save(saved, key: key)
+            } catch {
+                outcome.ok = false
+                if !wait {
+                    let text = error.localizedDescription
+                    Task { @MainActor in self?.statusText = "Couldn't save your edits: \(text)" }
+                }
             }
         }
-        if wait { saveQueue.sync(execute: save) } else { saveQueue.async(execute: save) }
+        if wait {
+            saveQueue.sync(execute: save)
+            return outcome.ok
+        }
+        saveQueue.async(execute: save)
+        return true
     }
 
     nonisolated private static func exportMessage(_ name: String, _ report: PDFExporter.Report) -> String {

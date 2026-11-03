@@ -53,11 +53,44 @@ enum ProjectStore {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    static func load(key: String) -> Saved? {
-        guard let url = fileURL(for: key), let data = try? Data(contentsOf: url) else { return nil }
-        guard let saved = try? JSONDecoder().decode(Saved.self, from: data),
-              saved.version == currentVersion else { return nil }
-        return saved
+    /// The saved edits, or nil when no file is left at this key. A file that
+    /// can't be read or decoded, or that has another version, is moved aside
+    /// in the same folder and `problem` is told the name it was kept as. If it
+    /// can't be moved, `problem` is told nil and the file stays; don't write over it.
+    static func load(key: String, problem: ((String?) -> Void)? = nil) -> Saved? {
+        guard let url = fileURL(for: key) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        if let data = try? Data(contentsOf: url),
+           let saved = try? JSONDecoder().decode(Saved.self, from: data),
+           saved.version == currentVersion {
+            return saved
+        }
+        // The name is reported only when someone is listening, but the file is
+        // always moved: a nil callback must not leave it to be written over.
+        // (An optional call skips its argument when the optional is nil.)
+        let kept = moveAside(url, key: key)
+        problem?(kept)
+        return nil
+    }
+
+    /// `<key>.unreadable.json`, or with a number when that name is taken.
+    /// Nil when the file can't be moved. Never overwrites a file already there.
+    private static func moveAside(_ url: URL, key: String) -> String? {
+        let dir = url.deletingLastPathComponent()
+        var n = 1
+        while n < 10_000 {
+            let name = n == 1 ? "\(key).unreadable.json" : "\(key).unreadable-\(n).json"
+            let dest = dir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: dest.path) { n += 1; continue }
+            do {
+                try FileManager.default.moveItem(at: url, to: dest)
+                return name
+            } catch {
+                if FileManager.default.fileExists(atPath: dest.path) { n += 1; continue }
+                return nil
+            }
+        }
+        return nil
     }
 
     /// Throws when the edits can't be encoded or written, so the app can say so.

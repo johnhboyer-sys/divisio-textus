@@ -166,23 +166,25 @@ extension PageSize {
     static func roundedDown(_ v: Double) -> Double { (v * 100 + 1e-6).rounded(.down) / 100 }
 
     /// A size as typed: two numbers in inches, such as "6 × 9", "6 x 9 in",
-    /// "5.5 by 8.5" or 6" × 9". Nil for anything else, or a size outside `sensible`.
-    /// One length as typed in a Width or Height field: inches, as "6", "5.45 in" or 6".
+    /// "5.5 by 8.5", "6,5 × 9,25" or 6" × 9". A comma is a decimal point.
+    /// Nil for anything else, or a size outside `sensible`.
+    /// One length as typed in a Width or Height field: inches, as "6", "5.45 in", "6,5" or 6".
     static func inches(_ text: String) -> Double? {
-        let pattern = #"^\s*(\d+(?:\.\d+)?|\.\d+)\s*(?:in|"|″)?\s*$"#
+        let pattern = #"^\s*(\d+(?:[.,]\d+)?|[.,]\d+)\s*(?:in|"|″)?\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let r = Range(match.range(at: 1), in: text) else { return nil }
-        return Double(text[r])
+        return Double(text[r].replacingOccurrences(of: ",", with: "."))
     }
 
     init?(parsing text: String) {
-        let number = #"(\d+(?:\.\d+)?|\.\d+)"#, unit = #"\s*(?:in|"|″)?\s*"#
+        let number = #"(\d+(?:[.,]\d+)?|[.,]\d+)"#, unit = #"\s*(?:in|"|″)?\s*"#
         let pattern = "^\\s*" + number + unit + "(?:×|x|by)" + "\\s*" + number + unit + "$"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let a = Range(match.range(at: 1), in: text), let b = Range(match.range(at: 2), in: text),
-              let width = Double(text[a]), let height = Double(text[b]) else { return nil }
+              let width = Double(text[a].replacingOccurrences(of: ",", with: ".")),
+              let height = Double(text[b].replacingOccurrences(of: ",", with: ".")) else { return nil }
         self.init(width: width, height: height)
         guard isSensible else { return nil }
     }
