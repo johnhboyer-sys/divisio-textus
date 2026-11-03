@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
         didSet { if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil } }   // a trim drawn is that page's
     }
     @Published var showsStack = false
+    @Published var straightenFocus = StraightenFocus()
     /// The stack on show and each stack's draft crop, kept here so a visit to a
     /// flagged page comes back to the same stack and box.
     @Published var stackKind: PageStack.Kind = .left
