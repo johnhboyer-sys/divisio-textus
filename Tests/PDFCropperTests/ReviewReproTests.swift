@@ -356,6 +356,10 @@ struct ReviewReproTests {
         m.pages[0].leftCrop = CropRect(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
         try await Task.sleep(nanoseconds: 1_200_000_000)
         #expect(try Data(contentsOf: file) == bad)
+        // Edits that can't be saved are asked about on quitting, not dropped.
+        var asked = false
+        m.confirmFailedSave = { asked = true; return true }
+        #expect(m.terminateReply() == .terminateCancel && asked)
     }
 
     @Test("Keep Working on a failed save does not open the other PDF or quit")
@@ -514,7 +518,7 @@ struct ReviewReproTests {
     }
 
     @Test("Review item 2: a real band behind a light strip is still trimmed, on either side",
-          arguments: [(0, 2200), (20, 2180), (0, 2185)] as [(CGFloat, CGFloat)])
+          arguments: [(0, 2200), (20, 2180), (0, 2185), (55, 2145)] as [(CGFloat, CGFloat)])
     func bandBehindStripStillTrimmed(from y0: CGFloat, to y1: CGFloat) {
         for rightSide in [false, true] {
             let img = page { c, box in
@@ -558,6 +562,19 @@ struct ReviewReproTests {
             dark(c, 0.1)
             bars(box, x: 200, width: 1300, y: 300, lines: 25)
             box(843, 2060, width, height); box(600, 90, width, height)
+        }
+        let a = PageAnalyzer.analyze(cgImage: clean, as: .single).leftCrop
+        let b = PageAnalyzer.analyze(cgImage: specked, as: .single).leftCrop
+        #expect(a == b, "clean \(a), specked \(b)")
+    }
+
+    @Test("Review note: a digit-sized speck far from the text doesn't widen the crop")
+    func farSpeckLeftOut() {
+        let clean = page { c, box in dark(c, 0.1); bars(box, x: 200, width: 1300, y: 900, lines: 15) }
+        let specked = page { c, box in
+            dark(c, 0.1)
+            bars(box, x: 200, width: 1300, y: 900, lines: 15)
+            box(843, 110, 9, 18)
         }
         let a = PageAnalyzer.analyze(cgImage: clean, as: .single).leftCrop
         let b = PageAnalyzer.analyze(cgImage: specked, as: .single).leftCrop

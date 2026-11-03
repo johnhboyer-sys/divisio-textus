@@ -142,8 +142,9 @@ final class AppModel: ObservableObject {
     private var editSnapshot: (page: BookPage, claim: AnalysisClaim?)?
 
     // Edits are saved automatically (see ProjectStore) under this PDF's key.
-    // Nil when a save file is there but couldn't be moved aside, so nothing writes over it.
     private var projectKey: String?
+    /// A save file is there but couldn't be moved aside, so nothing writes over it.
+    private var saveBlocked = false
     /// Appended to the load's status when the save file couldn't be read.
     private var loadNotice: String?
     private var autosave: AnyCancellable?
@@ -282,7 +283,7 @@ final class AppModel: ObservableObject {
             restored = saved
             legacy = old
         }
-        if blocked { projectKey = nil }
+        saveBlocked = blocked
         if let keptAside {
             loadNotice = "Couldn't read the saved edits for this PDF, so it starts fresh. They're kept as \(keptAside)."
         } else if blocked {
@@ -1764,6 +1765,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func saveEdits(_ pages: [BookPage], _ direction: ReadingDirection, wait: Bool) -> Bool {
         guard let key = projectKey, !pages.isEmpty else { return true }
+        if saveBlocked { return !wait }
         let saved = ProjectStore.Saved(pages: pages, direction: direction, cropTarget: cropTarget,
                                        pageSize: pageSizeOverride, claims: setByAnalysis,
                                        stackExcluded: ProjectStore.stored(exclusions: stackExclusions))

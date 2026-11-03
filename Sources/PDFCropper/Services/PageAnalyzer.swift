@@ -574,11 +574,11 @@ enum PageAnalyzer {
         return s
     }
 
-    /// A line broken by a stretch of paper over 1.5% of its length. A scanner band
+    /// A line broken by a stretch of paper over 3% of its length. A scanner band
     /// runs on to the scan's ends, past at most a thin strip of glass; a plate has
     /// its margins above and below, however tall it is.
     private static func brokenByPaper(_ length: Int, isPaper: (Int) -> Bool) -> Bool {
-        let limit = max(1, length * 15 / 1000)
+        let limit = max(1, length * 3 / 100)
         var run = 0
         for i in 0..<length {
             if isPaper(i) { run += 1; if run > limit { return true } } else { run = 0 }
@@ -1107,11 +1107,12 @@ enum PageAnalyzer {
         // A page number above or below the text can be too narrow for the row test:
         // a digit is under 1% of the width. Rows of ink in the text's columns count
         // when they are a digit's height, no taller than a line (3% of the page),
-        // more than a speck's 2 px wide, and upright or in pieces side by side. Dust
-        // is smaller, a scratch too thin or too long, and ink running off the scan's
-        // top or bottom is the scan's.
+        // more than a speck's 2 px wide, upright or in pieces side by side, and within
+        // 15% of the page of the text. Dust is smaller or further off, a scratch too
+        // thin or too long, and ink running off the scan's top or bottom is the scan's.
         let textRows = top...bottom
         let digit = max(4, (by1 - by0) * 75 / 10000), tallest = max(digit, (by1 - by0) * 3 / 100)
+        let furthest = (by1 - by0) * 15 / 100
         func folioInk(_ y: Int) -> Bool { !textRows.contains(y) && (left...right).contains { ink($0, y) } }
         var y = by0
         while y < by1 {
@@ -1121,7 +1122,8 @@ enum PageAnalyzer {
             let inked = (left...right).filter { x in (y...end).contains { ink(x, $0) } }
             let pieces = zip(inked, inked.dropFirst()).filter { $1 != $0 + 1 }.count + 1
             let tall = end - y + 1, wide = inked.last! - inked.first! + 1
-            if y > by0 && end < by1 - 1 && tall >= digit && tall <= tallest && wide > 2 && (tall >= wide || pieces >= 2) {
+            if y > by0 && end < by1 - 1 && tall >= digit && tall <= tallest && wide > 2 && (tall >= wide || pieces >= 2)
+                && max(textRows.lowerBound - end, y - textRows.upperBound) <= furthest {
                 top = min(top, y); bottom = max(bottom, end)
             }
             y = end + 1
