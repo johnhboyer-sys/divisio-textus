@@ -29,6 +29,9 @@ struct InspectorView: View {
                 switch side {
                 case .one:
                     if model.showsStack { StackSections() }
+                    else if model.viewMode == .grid && model.sidebarTargets.isEmpty {
+                        Text("No page chosen.").foregroundStyle(.secondary)
+                    }
                     else if model.sidebarTargets.count > 1 { SelectionSections(ids: model.sidebarTargets) }
                     else { PageSections() }
                 case .all: BookSections()

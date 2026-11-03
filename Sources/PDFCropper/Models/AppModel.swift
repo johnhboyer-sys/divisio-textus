@@ -29,7 +29,9 @@ final class AppModel: ObservableObject {
         set { viewMode = newValue ? .stack : .page }
     }
     /// The rail's and the grid's "Needs a look" filter.
-    @Published var showsOnlyFlagged = false
+    @Published var showsOnlyFlagged = false {
+        didSet { if viewMode == .grid { keepGridChoiceShown() } }
+    }
     /// Grid view's chosen pages. The last one clicked is selectedPageID, and a
     /// Shift-click chooses the run from gridAnchor.
     @Published private(set) var gridSelection: Set<BookPage.ID> = []
@@ -1721,11 +1723,19 @@ final class AppModel: ObservableObject {
     /// What the sidebar acts on: in Grid view the pages chosen that it shows, in
     /// page order; elsewhere the page shown.
     var sidebarTargets: [BookPage.ID] {
-        if viewMode == .grid {
-            let chosen = gridPages.map(\.id).filter { gridSelection.contains($0) }
-            if !chosen.isEmpty { return chosen }
-        }
+        if viewMode == .grid { return gridPages.map(\.id).filter { gridSelection.contains($0) } }
         return selectedPageID.map { [$0] } ?? []
+    }
+
+    /// When the grid stops showing pages (the filter, or a page no longer needing a
+    /// look), they leave the choice, and the last page clicked becomes one it shows.
+    func keepGridChoiceShown() {
+        let shown = gridPages.map(\.id)
+        let kept = shown.filter { gridSelection.contains($0) }
+        guard !kept.isEmpty else { return selectInGrid(shown.first) }
+        if kept.count != gridSelection.count { gridSelection = Set(kept) }
+        if let id = selectedPageID, !kept.contains(id) { selectedPageID = kept.first }
+        if let anchor = gridAnchor, !kept.contains(anchor) { gridAnchor = selectedPageID }
     }
 
     /// A click on a cell: alone, with ⌘ to add or take out, with ⇧ for the run from

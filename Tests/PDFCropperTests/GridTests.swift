@@ -133,6 +133,20 @@ struct GridTests {
         #expect(m.selectedPageID == ids[3])
         m.selectAdjacentPage(-1)
         #expect(m.selectedPageID == ids[1])
+        // The last page clicked hidden by the filter: the choice moves to one shown.
+        m.showsOnlyFlagged = false
+        m.chooseInGrid(ids[3], .plain, order: ids)
+        m.chooseInGrid(ids[2], .toggle, order: ids)
+        m.showsOnlyFlagged = true
+        #expect(m.gridSelection == [ids[3]] && m.selectedPageID == ids[3] && m.sidebarTargets == [ids[3]])
+        m.showsOnlyFlagged = false
+        m.chooseInGrid(ids[0], .plain, order: ids)
+        m.showsOnlyFlagged = true
+        #expect(m.selectedPageID == ids[1] && m.sidebarTargets == [ids[1]])
+        // Nothing shown: nothing to act on.
+        for i in m.pages.indices { m.pages[i].leftCrop.width = 0.30 }
+        m.keepGridChoiceShown()
+        #expect(m.gridPages.isEmpty && m.sidebarTargets.isEmpty)
     }
 
     @Test("Opening another PDF starts the grid afresh on its first page (Codex review)")
