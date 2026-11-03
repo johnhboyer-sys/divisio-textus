@@ -57,7 +57,12 @@ struct CropSizeReadout: Equatable {
     static let tolerance = 72.0 / 150
 
     var sizes: [String]
+    /// The sizes alone, left first, for rows that name the side themselves.
+    var lengths: [String]
     var verdict: String?
+    /// The sidebar's Difference row: "Equal", or how the right box differs, as
+    /// "Right 0.50 in taller". Nil with one box.
+    var difference: String?
     var same: Bool?
 
     /// The sizes of crops drawn on a page `page` PDF points across.
@@ -76,24 +81,27 @@ struct CropSizeReadout: Equatable {
         }
         guard let right else {
             sizes = [size(left)]
+            lengths = sizes
             return
         }
         // Differences to hundredths, so one just over the tolerance never reads as zero.
-        func difference(_ d: Double, _ more: String, _ less: String) -> String? {
+        func change(_ d: Double, _ more: String, _ less: String) -> String? {
             abs(d) < Self.tolerance ? nil
                 : "\(unit.number(points: abs(d), locale: locale, digits: 2)) \(unit.symbol) \(d > 0 ? more : less)"
         }
-        let parts = [difference(right.width - left.width, "wider", "narrower"),
-                     difference(right.height - left.height, "taller", "shorter")].compactMap { $0 }
+        let parts = [change(right.width - left.width, "wider", "narrower"),
+                     change(right.height - left.height, "taller", "shorter")].compactMap { $0 }
         same = parts.isEmpty
         verdict = parts.isEmpty ? "Same size" : "Right is " + parts.joined(separator: " and ")
+        difference = parts.isEmpty ? "Equal" : "Right " + parts.joined(separator: " and ")
         func alike(_ a: Double, _ b: Double) -> Bool {
             unit.number(points: a, locale: locale, digits: 2) == unit.number(points: b, locale: locale, digits: 2)
         }
         let hidden = (abs(right.width - left.width) >= Self.tolerance && alike(left.width, right.width))
             || (abs(right.height - left.height) >= Self.tolerance && alike(left.height, right.height))
         let digits = hidden ? 3 : 2
-        sizes = ["Left " + size(left, digits: digits), "Right " + size(right, digits: digits)]
+        lengths = [size(left, digits: digits), size(right, digits: digits)]
+        sizes = ["Left " + lengths[0], "Right " + lengths[1]]
     }
 }
 

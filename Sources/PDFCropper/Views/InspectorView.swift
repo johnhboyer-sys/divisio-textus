@@ -1,29 +1,34 @@
 import SwiftUI
 
-/// Right panel, in two tabs: this page (or, in Stack view, the stack) and the whole
-/// book. The export's settings are in the Export view.
+/// Right panel: a switch between this page (in Stack view, this stack) and all
+/// pages, each a column of grouped rows. The export's settings are in the Export view.
 struct InspectorView: View {
     @EnvironmentObject var model: AppModel
 
-    enum Tab: Hashable { case page, book }
+    enum Side: Hashable { case one, all }
     // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
-    private let tabState = State(initialValue: Tab.page)
+    // Kept across pages: the sidebar stays on the side last chosen.
+    private let sideState = State(initialValue: Side.one)
 
     var body: some View {
+        // Trim All Pages is chosen and finished on the All Pages side.
+        let choosing = model.trimmingPage != nil && model.trimmingAllPages
+        let side = choosing ? .all : sideState.wrappedValue
         VStack(spacing: 0) {
-            Picker("Inspector", selection: tabState.projectedValue) {
-                Text(model.showsStack ? "Stack" : "Page").tag(Tab.page)
-                Text("Book").tag(Tab.book)
+            Picker("Inspector", selection: Binding(get: { side }, set: { sideState.wrappedValue = $0 })) {
+                Text(model.showsStack ? "This Stack" : "This Page").tag(Side.one)
+                Text("All Pages").tag(Side.all)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .disabled(choosing)
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2)
 
             Form {
-                switch tabState.wrappedValue {
-                case .page:
+                switch side {
+                case .one:
                     if model.showsStack { StackSections() } else { PageSections() }
-                case .book: BookSections()
+                case .all: BookSections()
                 }
             }
             .formStyle(.grouped)
@@ -32,7 +37,7 @@ struct InspectorView: View {
     }
 }
 
-/// The selected page's type, straightening and detection.
+/// The selected page: its type, trim, straightening and crops.
 private struct PageSections: View {
     @EnvironmentObject var model: AppModel
     // To tell where a drag ended. State(initialValue:) as in CropBoxView; a class, as setting it redraws nothing.
@@ -40,7 +45,7 @@ private struct PageSections: View {
 
     var body: some View {
         if let page = model.selectedPage, let idx = model.selectedIndex {
-            Section("Page \(page.sourceIndex + 1)") {
+            Section {
                 Picker("Type", selection: Binding(
                     get: { model.pages[idx].classification },
                     set: { model.setClassification($0, for: page.id) })
@@ -56,16 +61,18 @@ private struct PageSections: View {
                         set: { model.setOmittedSide($0, for: page.id) })
                     ) {
                         Text("Both").tag(BookPage.Side?.none)
-                        Text("Left only").tag(BookPage.Side?.some(.right))     // leaves the right out
-                        Text("Right only").tag(BookPage.Side?.some(.left))
+                        Text("Left").tag(BookPage.Side?.some(.right))     // leaves the right out
+                        Text("Right").tag(BookPage.Side?.some(.left))
                     }
                     .pickerStyle(.segmented)
-                    .help("Choose which page or pages of this spread go in the export. The page left out keeps its crop.")
+                    .help("Choose which page or pages of this spread go in the export: both, the left only or the right only. The page left out keeps its crop.")
                 }
                 if page.classification == .skip {
                     Text("Left out of the export.")
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                PageHeader(title: "Page \(page.sourceIndex + 1)", flagged: model.flaggedSides[page.id] != nil)
             }
 
             if page.classification != .skip {
@@ -81,42 +88,12 @@ private struct PageSections: View {
                     Button {
                         model.autoStraightenSelected()
                     } label: {
-                        Label("Auto-straighten", systemImage: "level")
+                        Label("Auto-straighten", systemImage: "level").frame(maxWidth: .infinity)
                     }
                 }
-            }
 
-            Section("Crops") {
-                CropTargetPicker()
-                Button {
-                    model.reanalyzeSelected()
-                } label: {
-                    Label("Auto-detect this page", systemImage: "wand.and.stars")
-                }
-                switch page.classification {
-                case .spread:
-                    if let size = model.displaySize(of: page) {
-                        SpreadSizeControls(
-                            readout: CropSizeReadout(leftCrop: page.leftCrop, rightCrop: page.rightCrop, in: size, unit: RulerUnit()),
-                            match: { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) })
-                    }
-                    Button {
-                        model.applyLayoutToAllSpreads()
-                    } label: {
-                        Label("Apply layout to all spreads", systemImage: "rectangle.on.rectangle")
-                    }
-                    .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
-                case .single:
-                    Menu {
-                        Button("To All Single Pages") { model.applySingleCrop(alternate: false) }
-                        Button("To Alternate Pages") { model.applySingleCrop(alternate: true) }
-                            .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
-                    } label: {
-                        Label("Apply crop", systemImage: "rectangle.on.rectangle")
-                    }
-                    .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
-                case .skip:
-                    EmptyView()
+                Section("Crop") {
+                    cropRows(page)
                 }
             }
         } else {
@@ -126,30 +103,65 @@ private struct PageSections: View {
     }
 
     @ViewBuilder
+    private func cropRows(_ page: BookPage) -> some View {
+        let readout = model.displaySize(of: page).map {
+            CropSizeReadout(leftCrop: page.leftCrop, rightCrop: page.isSpread ? page.rightCrop : nil, in: $0, unit: RulerUnit())
+        }
+        HStack {
+            Button {
+                model.reanalyzeSelected()
+            } label: {
+                Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+            }
+            .help("Auto-detect this page: its type, split and crops, found again.")
+            if page.isSpread {
+                MatchMenu(differs: readout?.same == false) { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) }
+            }
+        }
+        if page.isSpread {
+            if let readout { SpreadSizeControls(readout: readout) }
+            Button {
+                model.applyLayoutToAllSpreads()
+            } label: {
+                Text("Apply layout to all spreads").frame(maxWidth: .infinity)
+            }
+            .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
+        } else {
+            if let readout { LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() } }
+            Menu {
+                Button("To All Single Pages") { model.applySingleCrop(alternate: false) }
+                Button("To Alternate Pages") { model.applySingleCrop(alternate: true) }
+                    .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
+            } label: {
+                Text("Apply crop").frame(maxWidth: .infinity)
+            }
+            .menuStyle(.button)
+            .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
+        }
+    }
+
+    /// A row: the side's name, its slider, its angle and a reset to 0°.
+    @ViewBuilder
     private func skewControl(_ title: String, _ value: Binding<Double>, row: StraightenFocus.Row) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(String(format: "%+.1f°", value.wrappedValue))
-                    .monospacedDigit().foregroundStyle(.secondary)
-            }
-            HStack(spacing: 6) {
-                Slider(value: value, in: -8...8, step: 0.1) { editing in
-                    if editing {
-                        model.straightenFocus.beginDrag(row)
-                    } else {
-                        model.straightenFocus.endDrag(row, pointerInside: skewProbes.wrappedValue.pointerIsOn(row))
-                    }
-                    if editing { model.beginEdit() } else { model.endEdit("Straighten") }
+        HStack(spacing: 6) {
+            Text(title).frame(width: 42, alignment: .leading)
+            Slider(value: value, in: -8...8, step: 0.1) { editing in
+                if editing {
+                    model.straightenFocus.beginDrag(row)
+                } else {
+                    model.straightenFocus.endDrag(row, pointerInside: skewProbes.wrappedValue.pointerIsOn(row))
                 }
-                .labelsHidden()     // else the Form gives it only the value column
-                Button { model.perform("Straighten") { value.wrappedValue = 0 } } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Reset to 0°")
+                if editing { model.beginEdit() } else { model.endEdit("Straighten") }
             }
+            .labelsHidden()     // else the Form gives it only the value column
+            Text(String(format: "%+.1f°", value.wrappedValue))
+                .monospacedDigit().foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .trailing)
+            Button { model.perform("Straighten") { value.wrappedValue = 0 } } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Reset to 0°")
         }
         // On hover as well as in a drag, so the grid stays to judge the page between nudges.
         .onHover { model.straightenFocus.hover(row, inside: $0) }
@@ -167,6 +179,24 @@ private struct PageSections: View {
     }
 }
 
+/// The sidebar's title line: what it acts on, and "Needs a look" when it does.
+private struct PageHeader: View {
+    let title: String
+    var flagged = false
+
+    var body: some View {
+        HStack {
+            Text(title).font(.headline).foregroundStyle(.primary)
+            Spacer()
+            if flagged {
+                Label("Needs a look", systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
 /// Stack view: the pages in the stack on show whose crop differs in size, or in
 /// the whole-spread stack, whose split is far from the rest.
 private struct StackSections: View {
@@ -180,9 +210,9 @@ private struct StackSections: View {
                let size = StackRenderer.pointSize(of: stack, in: document) {
                 Section("Crops") {
                     let layout = model.spreadLayout(for: stack)
-                    SpreadSizeControls(
-                        readout: CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit()),
-                        match: { rightMatchesLeft in
+                    let readout = CropSizeReadout(leftCrop: layout.leftCrop, rightCrop: layout.rightCrop, in: size, unit: RulerUnit())
+                    SpreadSizeControls(readout: readout)
+                    MatchMenu(differs: readout.same == false) { rightMatchesLeft in
                             var l = model.spreadLayout(for: stack)
                             l.matchSizesMovingSplit(rightMatchesLeft: rightMatchesLeft)
                             model.spreadLayout = l
@@ -190,7 +220,7 @@ private struct StackSections: View {
                             if other.width - moved.width > 1e-6 {
                                 model.statusText = SpreadLayout.matchShortfall(rightMatchesLeft: rightMatchesLeft)
                             }
-                        })
+                    }
                 }
             }
             Section {
@@ -271,8 +301,7 @@ private struct StackSections: View {
     }
 }
 
-/// Work on every page at once, and the settings that steer detection.
-/// Trim: this page's (Page tab) or every page's (Book tab). While a trim is drawn,
+/// Trim: this page's (This Page) or every page's (All Pages). While a trim is drawn,
 /// Done and Cancel.
 private struct TrimSection: View {
     @EnvironmentObject var model: AppModel
@@ -281,31 +310,32 @@ private struct TrimSection: View {
     var body: some View {
         Section("Trim") {
             if model.trimmingPage != nil {
+                if allPages && model.trimmingAllPages { pagesToTrim }
                 HStack {
-                    Button("Done") { model.finishTrim() }
+                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
                         .keyboardShortcut(.defaultAction)
-                    Button("Cancel") { model.cancelTrim() }
+                    Button { model.cancelTrim() } label: { Text("Cancel").frame(maxWidth: .infinity) }
                         .keyboardShortcut(.cancelAction)
                 }
-                if allPages && model.trimmingAllPages { pagesToTrim }
             } else if allPages {
-                Button {
-                    model.beginTrim(allPages: true)
-                } label: {
-                    Label("Trim All Pages", systemImage: "crop")
-                }
-                .disabled(model.selectedPage == nil || model.isBusy)
-                Button("Remove All Trims") { model.removeAllTrims() }
+                HStack {
+                    Button { model.beginTrim(allPages: true) } label: {
+                        Text("Trim All Pages").frame(maxWidth: .infinity)
+                    }
+                    .disabled(model.selectedPage == nil || model.isBusy)
+                    Button { model.removeAllTrims() } label: {
+                        Text("Remove All Trims").frame(maxWidth: .infinity)
+                    }
                     .disabled(!model.pages.contains { $0.trim != nil } || model.isBusy)
-            } else {
-                Button {
-                    model.beginTrim()
-                } label: {
-                    Label("Trim This Page", systemImage: "crop")
                 }
-                .disabled(model.isBusy)
-                Button("Remove Trim") { model.removeTrim() }
-                    .disabled(model.selectedPage?.trim == nil || model.isBusy)
+            } else {
+                HStack {
+                    Button { model.beginTrim() } label: { Text("Trim").frame(maxWidth: .infinity) }
+                        .disabled(model.isBusy)
+                        .help("Draw the part of the scan the page is on")
+                    Button { model.removeTrim() } label: { Text("Remove Trim").frame(maxWidth: .infinity) }
+                        .disabled(model.selectedPage?.trim == nil || model.isBusy)
+                }
             }
         }
     }
@@ -314,80 +344,83 @@ private struct TrimSection: View {
     @ViewBuilder
     private var pagesToTrim: some View {
         let count = model.pages.count - model.trimExcluded.count
-        Text("Pages to trim: \(count) of \(model.pages.count)")
-        Text("Choose pages in the side panel.").font(.caption).foregroundStyle(.secondary)
+        LabeledContent("Pages to trim") { Text("\(count) of \(model.pages.count)").monospacedDigit() }
+        Text("Choose pages in the list on the left.").font(.caption).foregroundStyle(.secondary)
         HStack {
-            Button("Leave Out Selected") { model.leaveOutOfTrim(true) }
-            Button("Include Selected") { model.leaveOutOfTrim(false) }
+            Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out").frame(maxWidth: .infinity) }
+            Button { model.leaveOutOfTrim(false) } label: { Text("Include").frame(maxWidth: .infinity) }
         }
         .disabled(model.trimSelection.isEmpty)
         HStack {
-            Button("All") { model.trimExcluded = [] }
+            Button { model.trimExcluded = [] } label: { Text("All").frame(maxWidth: .infinity) }
                 .disabled(model.trimExcluded.isEmpty)
-            Button("None") { model.trimExcluded = Set(model.pages.map(\.id)) }
+            Button { model.trimExcluded = Set(model.pages.map(\.id)) } label: { Text("None").frame(maxWidth: .infinity) }
                 .disabled(count == 0)
         }
     }
 }
 
+/// All Pages: work on every page at once, the settings that steer detection, and
+/// the book's page size.
 private struct BookSections: View {
     @EnvironmentObject var model: AppModel
 
     /// Why the buttons below are greyed out, while they are.
     private var busyNote: String? {
-        if model.isAnalyzing { return "Analyzing pages. These and Crop to come back when it's done." }
-        if model.isStraightening { return "Straightening pages. These and Crop to come back when it's done." }
-        if model.isExporting { return "Exporting. These and Crop to come back when it's done." }
+        if model.isAnalyzing { return "Analyzing pages. These come back when it's done." }
+        if model.isStraightening { return "Straightening pages. These come back when it's done." }
+        if model.isExporting { return "Exporting. These come back when it's done." }
         return nil
     }
 
     var body: some View {
         Section {
-            Button {
-                model.autoDetectAllPages()
-            } label: {
-                Label("Auto-detect all pages", systemImage: "wand.and.stars")
+            HStack {
+                Button {
+                    model.autoDetectAllPages()
+                } label: {
+                    Label("Detect all", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                }
+                .help("Auto-detect all pages: finds every page's split, type and crops again, replacing hand edits (⌘Z undoes it). Straightens too when Auto-straighten on import is on.")
+                Button {
+                    Task { await model.autoStraightenAllPages() }
+                } label: {
+                    Label("Straighten all", systemImage: "level").frame(maxWidth: .infinity)
+                }
+                .help("Auto-straighten all pages: finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
             }
-            .help("Finds every page's split, type and crops again, replacing hand edits (⌘Z undoes it). Straightens too when Auto-straighten on import is on.")
-            Button {
-                Task { await model.autoStraightenAllPages() }
-            } label: {
-                Label("Auto-straighten all pages", systemImage: "level")
-            }
-            .help("Finds every page's straightening angle again and keeps its crops (⌘Z undoes it). Skipped pages are left alone.")
+            .disabled(model.isBusy)
+            CropTargetPicker()
+            Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
         } header: {
-            Text("Whole book")
+            PageHeader(title: model.sourceURL?.deletingPathExtension().lastPathComponent ?? "Whole book")
         } footer: {
             if let busyNote {
                 Text(busyNote).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .disabled(model.isBusy)
 
         TrimSection(allPages: true)
 
-        Section("Detection") {
-            CropTargetPicker()
-            if let size = model.pageSize {
+        if let size = model.pageSize {
+            Section("Page size") {
                 PageSizeRow(size: size)
             }
-            Toggle("Auto-straighten on import", isOn: $model.autoDeskewEnabled)
         }
     }
 }
 
-/// What auto-detect crops to, for the whole book. In the Page tab beside
-/// Auto-detect as well as in the Book tab.
+/// What auto-detect crops to, for the whole book.
 private struct CropTargetPicker: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         Picker("Crop to", selection: Binding(get: { model.cropTarget },
                                              set: { model.setCropTarget($0) })) {
-            ForEach(CropTarget.allCases) { t in
-                Text(t.label).tag(t)
-            }
+            Text(CropTarget.page.label).tag(CropTarget.page)
+            Text(CropTarget.text.label).tag(CropTarget.text)
         }
+        .pickerStyle(.segmented)
         .disabled(model.isBusy)
         .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
     }

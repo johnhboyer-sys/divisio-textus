@@ -12,7 +12,7 @@ struct RulerMenuButton: View {
 
 /// The crop boxes' sizes, in the gap under the page; with two boxes, whether
 /// they are the same size. Shown with or without the rulers. Matching the two
-/// boxes is done in the inspector (SpreadSizeControls).
+/// boxes is done in the sidebar (MatchMenu).
 struct CropSizeLabel: View {
     let readout: CropSizeReadout
 
@@ -60,28 +60,71 @@ private struct SizeVerdict: View {
     }
 }
 
-/// A spread's two crop sizes, the buttons that make one match the other, and the
-/// Lock sizes switch: rows for the inspector's Crops section (Page view) and for
-/// the whole-spread stack.
+/// A spread's two crop sizes, how they differ, and the Lock sizes switch: rows for
+/// the sidebar's Crop group, in Page view and for the whole-spread stack.
 struct SpreadSizeControls: View {
     let readout: CropSizeReadout
-    /// true makes the right box match the left; false, the left match the right.
-    let match: (Bool) -> Void
+
+    var body: some View {
+        SizeRows(readout)
+        LockSizesToggle()
+    }
+}
+
+/// Left and Right sizes and the Difference, red when the boxes differ.
+struct SizeRows: View {
+    let left: String
+    let right: String
+    let difference: String
+    let differs: Bool
+
+    init(left: String, right: String, difference: String, differs: Bool) {
+        (self.left, self.right, self.difference, self.differs) = (left, right, difference, differs)
+    }
+
+    init(_ readout: CropSizeReadout) {
+        self.init(left: readout.lengths.first ?? "", right: readout.lengths.dropFirst().first ?? "",
+                  difference: readout.difference ?? "", differs: readout.same == false)
+    }
+
+    var body: some View {
+        LabeledContent("Left") { Text(left).monospacedDigit() }
+        LabeledContent("Right") { Text(right).monospacedDigit() }
+        LabeledContent("Difference") {
+            Text(difference)
+                .monospacedDigit()
+                .foregroundStyle(differs ? .red : .secondary)
+                .fontWeight(differs ? .semibold : .regular)
+        }
+    }
+}
+
+struct LockSizesToggle: View {
     @AppStorage(CropLock.storageKey) private var locks = CropLock.onByDefault
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(readout.sizes, id: \.self) { Text($0).monospacedDigit() }
-            SizeVerdict(readout: readout)
-        }
-        Button("Make Right Match Left") { match(true) }
-            .disabled(readout.same != false)
-            .help("Give the right box the left's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the scan's edge, the split moves to make room.")
-        Button("Make Left Match Right") { match(false) }
-            .disabled(readout.same != false)
-            .help("Give the left box the right's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the scan's edge, the split moves to make room.")
         Toggle("Lock sizes", isOn: $locks)
             .help("While on, dragging one box of a spread gives the other box its size, and moving the split moves both boxes with it, widths kept. Turning it on changes nothing until you drag.")
+    }
+}
+
+/// Match: one box of a spread takes the other's size.
+struct MatchMenu: View {
+    /// The boxes differ, so there is something to match.
+    let differs: Bool
+    /// true makes the right box match the left; false, the left match the right.
+    let match: (Bool) -> Void
+
+    var body: some View {
+        Menu {
+            Button("Make Right Match Left") { match(true) }
+            Button("Make Left Match Right") { match(false) }
+        } label: {
+            Text("Match").frame(maxWidth: .infinity)
+        }
+        .menuStyle(.button)
+        .disabled(!differs)
+        .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the scan's edge, the split moves to make room.")
     }
 }
 

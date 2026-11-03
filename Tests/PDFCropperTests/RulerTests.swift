@@ -126,6 +126,8 @@ struct RulerTests {
         let r = CropSizeReadout(left: CGSize(width: 442, height: 648), right: nil, unit: .inches, locale: Locale(identifier: "en_US"))
         #expect(r.sizes == ["6.14 × 9.00 in"])
         #expect(r.verdict == nil)
+        #expect(r.difference == nil)
+        #expect(r.lengths == ["6.14 × 9.00 in"])
         #expect(r.same == nil)
     }
 
@@ -136,6 +138,7 @@ struct RulerTests {
                                 unit: .inches, locale: Locale(identifier: "en_US"))
         #expect(r.sizes == ["Left 6.14 × 9.00 in", "Right 6.14 × 9.00 in"])
         #expect(r.verdict == "Same size")
+        #expect(r.difference == "Equal")
         #expect(r.same == true)
     }
 
@@ -149,6 +152,9 @@ struct RulerTests {
         let both = CropSizeReadout(left: CGSize(width: 442, height: 648), right: CGSize(width: 435, height: 655.2),
                                    unit: .inches, locale: us)
         #expect(both.verdict == "Right is 0.10 in narrower and 0.10 in taller")
+        #expect(both.difference == "Right 0.10 in narrower and 0.10 in taller")
+        #expect(both.lengths == ["6.14 × 9.00 in", "6.04 × 9.10 in"])
+        #expect(wider.difference == "Right 0.02 in wider")
         // Just over the tolerance still shows a non-zero difference in centimetres.
         let cm = CropSizeReadout(left: CGSize(width: 300, height: 600), right: CGSize(width: 300.5, height: 600),
                                  unit: .centimeters, locale: Locale(identifier: "fr_FR"))
