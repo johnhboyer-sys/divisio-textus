@@ -232,6 +232,8 @@ struct ReviewReproTests {
             #expect(OCRService.spelledRight("nicht", languages: ["en-US", "de-DE"]))
         }
         #expect(!OCRService.spelledRight("specity", languages: ["en-US"]))
+    }
+
     /// Saved edits for this test only, put back when it ends. Never the real folder.
     private func scratchEdits() throws -> URL {
         _ = Fixtures.directory
@@ -452,6 +454,8 @@ struct ReviewReproTests {
         #expect(PageSize.inches("6..5") == nil)
         #expect(PageSize(parsing: "6 x 9 cm") == nil)
         #expect(PageSize(parsing: "") == nil)
+    }
+
     // Codex review of 2026-10-30 (docs/review-2026-10-30.md), analysis findings.
 
     /// A 1700×2200 page; `draw` works in pixels from the top left.
