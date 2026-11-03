@@ -3,24 +3,36 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.undoManager) private var undoManager
+    // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
+    private let railState = State(initialValue: NavigationSplitViewVisibility.all)
+
+    /// The rail as the user left it, hidden in the Export view.
+    private var railVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(get: { model.showsExport ? .detailOnly : railState.wrappedValue },
+                set: { if !model.showsExport { railState.wrappedValue = $0 } })
+    }
 
     var body: some View {
         Group {
             if model.document == nil {
                 WelcomeView()
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: railVisibility) {
                     ThumbnailRail()
                         .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
                 } detail: {
-                    HSplitView {
-                        Group {
-                            if model.showsStack { StackView() }
-                            else { PageEditorView() }
+                    if model.showsExport {
+                        ExportView()
+                    } else {
+                        HSplitView {
+                            Group {
+                                if model.showsStack { StackView() }
+                                else { PageEditorView() }
+                            }
+                            .frame(minWidth: 380)
+                            InspectorView()
+                                .frame(minWidth: 260, maxWidth: 340)
                         }
-                        .frame(minWidth: 380)
-                        InspectorView()
-                            .frame(minWidth: 260, maxWidth: 340)
                     }
                 }
                 .dropDestination(for: URL.self) { urls, _ in
@@ -56,7 +68,7 @@ struct ContentView: View {
                     if model.isAnalyzing || model.isStraightening {
                         ProgressView().controlSize(.small)
                     }
-                    if !model.showsStack {
+                    if !model.showsStack && !model.showsExport {
                         ControlGroup {
                             Button { model.zoomOut() } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
                                 .help("Zoom Out (⌘−)")
@@ -70,13 +82,12 @@ struct ContentView: View {
                         ExportReadout()
                     } else {
                         Button {
-                            model.exportPanel()
+                            model.showsExport = true
                         } label: {
                             Label("Export…", systemImage: "square.and.arrow.up")
                                 .labelStyle(.titleAndIcon)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.canExport)
                         .help("Export PDF (⌘E)")
                     }
                 }

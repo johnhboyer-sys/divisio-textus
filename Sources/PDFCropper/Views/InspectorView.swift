@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// Right panel, in three tabs: this page (or, in Stack view, the stack), the whole
-/// book, and the export.
+/// Right panel, in two tabs: this page (or, in Stack view, the stack) and the whole
+/// book. The export's settings are in the Export view.
 struct InspectorView: View {
     @EnvironmentObject var model: AppModel
 
-    enum Tab: Hashable { case page, book, export }
+    enum Tab: Hashable { case page, book }
     // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
     private let tabState = State(initialValue: Tab.page)
 
@@ -14,7 +14,6 @@ struct InspectorView: View {
             Picker("Inspector", selection: tabState.projectedValue) {
                 Text(model.showsStack ? "Stack" : "Page").tag(Tab.page)
                 Text("Book").tag(Tab.book)
-                Text("Export").tag(Tab.export)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -25,7 +24,6 @@ struct InspectorView: View {
                 case .page:
                     if model.showsStack { StackSections() } else { PageSections() }
                 case .book: BookSections()
-                case .export: ExportSections()
                 }
             }
             .formStyle(.grouped)
@@ -378,7 +376,6 @@ private struct BookSections: View {
     }
 }
 
-/// How the exported PDF is made, and the Export button.
 /// What auto-detect crops to, for the whole book. In the Page tab beside
 /// Auto-detect as well as in the Book tab.
 private struct CropTargetPicker: View {
@@ -394,178 +391,4 @@ private struct CropTargetPicker: View {
         .disabled(model.isBusy)
         .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
     }
-}
-
-private struct ExportSections: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        if model.sourceHasText {
-            Section {
-                Label(model.ocrEnabled
-                      ? "This PDF already has text. Export makes each page a new image and reads its text again, so the old text is replaced."
-                      : "This PDF already has text. Export makes each page a new image, so with Searchable text off, that text is dropped.",
-                      systemImage: "text.magnifyingglass")
-                    .foregroundStyle(.secondary)
-            }
-        }
-
-        Section("Output") {
-            Picker("Color", selection: $model.enhanceMode) {
-                ForEach(EnhanceMode.allCases) { m in
-                    Text(m.label).tag(m)
-                }
-            }
-            Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
-            Picker("Reading order", selection: $model.direction) {
-                ForEach(ReadingDirection.allCases) { d in
-                    Text(d.label).tag(d)
-                }
-            }
-            Toggle("Match scan resolution", isOn: $model.matchScanResolution)
-                .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
-            VStack(alignment: .leading) {
-                Text(model.matchScanResolution
-                     ? "Pages without a scan: \(Int(model.exportDPI)) DPI"
-                     : "Export resolution: \(Int(model.exportDPI)) DPI")
-                Slider(value: $model.exportDPI, in: 150...600, step: 50)
-                    .labelsHidden()
-            }
-        }
-
-        Section {
-            LabeledContent("Source pages", value: "\(model.pages.count)")
-            LabeledContent("Output pages", value: "\(model.outputPageCount)")
-        }
-
-        Section {
-            Button {
-                model.exportPanel()
-            } label: {
-                Label("Export PDF…", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.canExport)
-
-            if model.isExporting {
-                HStack {
-                    // A moving bar until the first page is done: Vision can be slow to start.
-                    if model.exportProgress > 0 {
-                        ProgressView(value: model.exportProgress)
-                    } else {
-                        ProgressView().progressViewStyle(.linear)
-                    }
-                    Button("Cancel") { model.cancelExport() }
-                }
-            }
-        }
-    }
-}
-
-/// Whole page: the book's page size: measured (or the largest that fits every page)
-/// with Use on All Pages, and Width and Height to set it by hand with Apply (both
-/// empty goes back to the measured size).
-private struct PageSizeRow: View {
-    @EnvironmentObject var model: AppModel
-    let size: AppModel.PageSizeSummary
-    // State(initialValue:) rather than @State, for Command Line Tools (see CropBoxView).
-    private let widthState = State(initialValue: "")
-    private let heightState = State(initialValue: "")
-    private let problemState = State<String?>(initialValue: nil)
-    private var problem: String? {
-        get { problemState.wrappedValue }
-        nonmutating set { problemState.wrappedValue = newValue }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(shown.0 == nil && shown.1 == nil ? "Page size" : "Page size: \(Self.describe(shown)) in")
-            if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
-            if let disagreement = size.disagreement {
-                Text("Stacks differ: \(disagreement)").font(.caption).foregroundStyle(.orange)
-            }
-            if let suggested = size.suggested, suggested != size.override {
-                HStack {
-                    Text("\(size.width != nil && size.height != nil ? "Measured" : "Fits every page"): \(Self.describe(suggested)) in")
-                        .font(.caption)
-                    Spacer()
-                    Button("Use on All Pages") { problem = nil; model.setPageSize(suggested) }
-                        .disabled(model.isBusy)
-                }
-            }
-            field("Width", widthState.projectedValue)
-            field("Height", heightState.projectedValue)
-            Button("Apply", action: apply)
-                .disabled(model.isBusy)
-            if let problem {
-                Text(problem).font(.caption).foregroundStyle(.red)
-            }
-            if size.override != nil, size.tooBig > 0 {
-                Text("This page size is too large for \(size.tooBig) page\(size.tooBig == 1 ? "" : "s")."
-                     + (size.fitsAll.map { " The largest size that fits every page is \(Self.describe($0)) in." } ?? ""))
-                    .font(.caption).foregroundStyle(.orange)
-            }
-        }
-        .help(size.details.joined(separator: "\n"))
-        .onAppear(perform: fill)
-        .onChange(of: size.override) { _, _ in fill() }
-    }
-
-    private func field(_ name: String, _ text: Binding<String>) -> some View {
-        HStack {
-            Text(name).frame(width: 48, alignment: .leading)
-            TextField(name, text: text)
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 70)
-                .onSubmit(apply)
-                .disabled(model.isBusy)
-            Text("in")
-        }
-    }
-
-    /// The fields show the size set by hand, or are empty.
-    private func fill() {
-        widthState.wrappedValue = size.override.map { String(format: "%.2f", $0.width) } ?? ""
-        heightState.wrappedValue = size.override.map { String(format: "%.2f", $0.height) } ?? ""
-    }
-
-    private var shown: (Double?, Double?) {
-        if let o = size.override { return (o.width, o.height) }
-        return (size.width, size.height)
-    }
-
-    /// None for a typed size: a note says only what is wrong (John, 2026-10-27).
-    private var note: String? {
-        if size.override != nil { return nil }
-        if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
-        return "Measured on \(size.measured) of \(size.total) pages."
-    }
-
-    private func apply() {
-        let number = PageSize.inches
-        let w = widthState.wrappedValue.trimmingCharacters(in: .whitespaces)
-        let h = heightState.wrappedValue.trimmingCharacters(in: .whitespaces)
-        if w.isEmpty && h.isEmpty { problem = nil; model.setPageSize(nil); return }
-        let range = "\(Int(PageSize.sensible.lowerBound)) and \(Int(PageSize.sensible.upperBound))"
-        guard let width = number(w), let height = number(h) else {
-            problem = "Type a width and a height in inches, like 6 and 9."
-            return
-        }
-        let typed = PageSize(width: width, height: height)
-        guard typed.isSensible else {
-            problem = "Each must be between \(range) inches."
-            return
-        }
-        problem = nil
-        model.setPageSize(typed)
-    }
-
-    private static func describe(_ v: (Double?, Double?)) -> String {
-        func f(_ x: Double?) -> String { x.map { String(format: "%.2f", $0) } ?? "—" }
-        return "\(f(v.0)) × \(f(v.1))"
-    }
-
-    private static func describe(_ p: PageSize) -> String { describe((p.width, p.height)) }
 }

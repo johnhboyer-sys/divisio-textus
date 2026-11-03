@@ -14,6 +14,8 @@ final class AppModel: ObservableObject {
         didSet { if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil } }   // a trim drawn is that page's
     }
     @Published var showsStack = false
+    /// The Export view: the output pages and the export's settings, in place of the canvas.
+    @Published var showsExport = false
     @Published var straightenFocus = StraightenFocus()
     /// The stack on show and each stack's draft crop, kept here so a visit to a
     /// flagged page comes back to the same stack and box.
@@ -137,6 +139,17 @@ final class AppModel: ObservableObject {
     private let thumbnailCacheLimit = 200         // about 130 MB of the largest spreads
     private let thumbnailDPI: Double = 30
 
+    // The Export view's pages, made as the export makes them from a small render,
+    // remembering the page and settings each was made with.
+    private struct CachedOutput {
+        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection
+        let images: [CGImage]
+    }
+    private var outputCache: [Int: CachedOutput] = [:]
+    private var outputOrder: [Int] = []           // least recently used first
+    private let outputCacheLimit = 400
+    private let outputPreviewDPI: Double = 40
+
     /// The page, and analysis's claim on it, as they were when a drag or slider
     /// edit began (see beginEdit / endEdit).
     private var editSnapshot: (page: BookPage, claim: AnalysisClaim?)?
@@ -248,6 +261,7 @@ final class AppModel: ObservableObject {
         // record. Keep Working leaves this PDF open, before any of that changes.
         if !saveEdits(pages, direction, wait: true), confirmFailedSave() { return }
         trimmingPage = nil                                      // a trim being drawn was for the old PDF
+        showsExport = false
         clearImageCaches()
         undoManager?.removeAllActions()
         editSnapshot = nil
@@ -450,6 +464,25 @@ final class AppModel: ObservableObject {
         return img
     }
 
+    /// The pages Export writes for `page`, in reading order, small: the export's own
+    /// steps (PDFExporter.outputImages) run on a low-resolution render.
+    func outputPreview(for page: BookPage) -> [CGImage] {
+        if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction {
+            outputOrder.removeAll { $0 == page.sourceIndex }
+            outputOrder.append(page.sourceIndex)
+            return c.images
+        }
+        guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
+              let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: outputPreviewDPI) else { return [] }
+        let settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
+        let images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
+        outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction, images: images)
+        outputOrder.removeAll { $0 == page.sourceIndex }
+        outputOrder.append(page.sourceIndex)
+        while outputOrder.count > outputCacheLimit { outputCache[outputOrder.removeFirst()] = nil }
+        return images
+    }
+
     private func touchPreview(_ index: Int) {
         previewOrder.removeAll { $0 == index }
         previewOrder.append(index)
@@ -463,6 +496,8 @@ final class AppModel: ObservableObject {
         previewOrder.removeAll()
         thumbnailCache.removeAll()
         thumbnailOrder.removeAll()
+        outputCache.removeAll()
+        outputOrder.removeAll()
         stackCache.removeAll()
     }
 
@@ -1469,6 +1504,7 @@ final class AppModel: ObservableObject {
             }.map(\.id))
         }
         showsStack = false                                      // the trim is drawn on the page
+        showsExport = false
         trimmingPage = p.id
     }
 

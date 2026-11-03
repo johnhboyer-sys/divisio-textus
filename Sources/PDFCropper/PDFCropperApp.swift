@@ -25,9 +25,9 @@ struct PDFCropperApp: App {
                     .keyboardShortcut("o")
             }
             CommandGroup(after: .saveItem) {
-                Button("Export PDF…") { model.exportPanel() }
+                Button("Export PDF…") { model.showsExport = true }
                     .keyboardShortcut("e")
-                    .disabled(!model.canExport)
+                    .disabled(model.document == nil)
                 Button("Cancel Export") { model.cancelExport() }
                     .keyboardShortcut(".")
                     .disabled(!model.isExporting)
@@ -53,9 +53,9 @@ struct PDFCropperApp: App {
                 Divider()
             }
             CommandMenu("Go") {
-                Button("Page View") { model.showsStack = false }
+                Button("Page View") { model.showsStack = false; model.showsExport = false }
                     .keyboardShortcut("1")
-                Button("Stack View") { model.showsStack = true }
+                Button("Stack View") { model.showsStack = true; model.showsExport = false }
                     .keyboardShortcut("2")
                 Divider()
                 Button("Previous Page") { model.selectAdjacentPage(-1) }

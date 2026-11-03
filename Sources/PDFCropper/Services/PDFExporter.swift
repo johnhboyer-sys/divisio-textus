@@ -114,24 +114,13 @@ enum PDFExporter {
                     let dpi = settings.matchScanResolution
                         ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
                         : settings.dpi
-                    guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
+                    // A crop that fails would silently drop an output page: fail the export.
+                    guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
+                          let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                         throw ExportError.renderFailed(page.sourceIndex)
                     }
-                    // Deskew each half independently at full export resolution,
-                    // matching the preview composite, so the crop boxes line up.
-                    let composite = ImageTransform.deskewedComposite(
-                        rendered, splitX: page.splitX,
-                        leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
-                        isSpread: page.isSpread)
-                    let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
-                    // A crop that fails would silently drop an output page: fail the export.
-                    for crop in page.outputCrops(direction: settings.direction) {
-                        guard let sub = PDFRenderer.crop(enhanced, to: crop) else {
-                            throw ExportError.renderFailed(page.sourceIndex)
-                        }
-                        images.append(sub)
-                        dpis.append(dpi)
-                    }
+                    images += out
+                    dpis += Array(repeating: dpi, count: out.count)
                 }
             }
 
@@ -196,6 +185,24 @@ enum PDFExporter {
             throw ExportError.writeFailed
         }
         return report
+    }
+
+    /// One source page's output pages, in reading order, from its render: each half
+    /// straightened (as the preview composite, so the crop boxes line up), in color
+    /// or gray, cut to its crop. The Export view draws these too, from a small render.
+    /// Nil when a crop fails.
+    static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings) -> [CGImage]? {
+        let composite = ImageTransform.deskewedComposite(
+            rendered, splitX: page.splitX,
+            leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
+            isSpread: page.isSpread)
+        let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+        var images: [CGImage] = []
+        for crop in page.outputCrops(direction: settings.direction) {
+            guard let sub = PDFRenderer.crop(enhanced, to: crop) else { return nil }
+            images.append(sub)
+        }
+        return images
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages
