@@ -143,6 +143,14 @@ struct GridTests {
         m.chooseInGrid(ids[0], .plain, order: ids)
         m.showsOnlyFlagged = true
         #expect(m.selectedPageID == ids[1] && m.sidebarTargets == [ids[1]])
+        // The filter turned on outside the grid: back in it, the same.
+        m.showsOnlyFlagged = false
+        m.chooseInGrid(ids[1], .plain, order: ids)
+        m.chooseInGrid(ids[2], .toggle, order: ids)
+        m.viewMode = .page
+        m.showsOnlyFlagged = true
+        m.viewMode = .grid
+        #expect(m.selectedPageID == ids[1] && m.sidebarTargets == [ids[1]])
         // Nothing shown: nothing to act on.
         for i in m.pages.indices { m.pages[i].leftCrop.width = 0.30 }
         m.keepGridChoiceShown()

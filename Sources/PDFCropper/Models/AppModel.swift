@@ -17,11 +17,11 @@ final class AppModel: ObservableObject {
     enum ViewMode: Hashable { case grid, page, stack }
     @Published var viewMode = ViewMode.page {
         // Into the grid with the page shown as its selection, unless it is one of
-        // the pages chosen there (back from a trim, say).
+        // the pages chosen there (back from a trim, say), and only pages it shows.
         didSet {
-            if viewMode == .grid, oldValue != .grid, !(selectedPageID.map(gridSelection.contains) ?? false) {
-                selectInGrid(selectedPageID)
-            }
+            guard viewMode == .grid, oldValue != .grid else { return }
+            if !(selectedPageID.map(gridSelection.contains) ?? false) { selectInGrid(selectedPageID) }
+            keepGridChoiceShown()
         }
     }
     var showsStack: Bool {
