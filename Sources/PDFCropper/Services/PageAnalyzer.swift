@@ -421,14 +421,15 @@ enum PageAnalyzer {
         }
         // Walk in from an edge past background lines, allowing short gaps between
         // them (the book block's streaks) and a light strip before the first (the
-        // scanner glass's border). Returns the first line of paper.
-        func paperStart(from start: Int, toward end: Int, line: (Int) -> Double?) -> Int {
+        // scanner glass's border; a line behind that strip must also be `unbroken`).
+        // Returns the first line of paper.
+        func paperStart(from start: Int, toward end: Int, line: (Int) -> Double?, unbroken: (Int) -> Bool) -> Int {
             let step = end >= start ? 1 : -1, span = abs(end - start)
             let leadIn = max(1, span * 3 / 100), maxGap = max(1, span * 15 / 1000)
             var last: Int?, i = start
             while i != end {
                 if let s = line(i) {
-                    if s >= 0.9 { last = i }
+                    if s >= 0.9 && (last != nil || i == start || unbroken(i)) { last = i }
                     else if let l = last { if abs(i - l) > maxGap { break } }
                     else if abs(i - start) > leadIn { break }
                 }
@@ -437,16 +438,25 @@ enum PageAnalyzer {
             return last.map { $0 + step } ?? start
         }
 
+        func unbroken(_ pixels: [(Int, Int)]) -> Bool {
+            !brokenByPaper(pixels.count) { i in
+                let (x, y) = pixels[i]
+                return scanned(x, y) && Double(g.value(x, y)) >= dark
+            }
+        }
+
         // Columns, then rows within them, twice over: a sheet short of the scan's
         // height leaves background above and below every column at first.
         var left = x0, right = x1, top = 0, bottom = g.height
         for _ in 0..<2 {
             let ys = top..<bottom
-            left = paperStart(from: x0, toward: x1) { x in share(ys.map { (x, $0) }) }
-            right = max(left, paperStart(from: x1 - 1, toward: left - 1) { x in share(ys.map { (x, $0) }) } + 1)
+            let column = { (x: Int) in ys.map { (x, $0) } }
+            left = paperStart(from: x0, toward: x1, line: { share(column($0)) }, unbroken: { unbroken(column($0)) })
+            right = max(left, paperStart(from: x1 - 1, toward: left - 1, line: { share(column($0)) }, unbroken: { unbroken(column($0)) }) + 1)
             let xs = left..<right
-            top = paperStart(from: 0, toward: g.height) { y in share(xs.map { ($0, y) }) }
-            bottom = max(top, paperStart(from: g.height - 1, toward: top - 1) { y in share(xs.map { ($0, y) }) } + 1)
+            let row = { (y: Int) in xs.map { ($0, y) } }
+            top = paperStart(from: 0, toward: g.height, line: { share(row($0)) }, unbroken: { unbroken(row($0)) })
+            bottom = max(top, paperStart(from: g.height - 1, toward: top - 1, line: { share(row($0)) }, unbroken: { unbroken(row($0)) }) + 1)
         }
 
         // Keep inside the largest upright box the turned scan still covers: half
@@ -564,6 +574,18 @@ enum PageAnalyzer {
         return s
     }
 
+    /// A line broken by a stretch of paper over 1.5% of its length. A scanner band
+    /// runs on to the scan's ends, past at most a thin strip of glass; a plate has
+    /// its margins above and below, however tall it is.
+    private static func brokenByPaper(_ length: Int, isPaper: (Int) -> Bool) -> Bool {
+        let limit = max(1, length * 15 / 1000)
+        var run = 0
+        for i in 0..<length {
+            if isPaper(i) { run += 1; if run > limit { return true } } else { run = 0 }
+        }
+        return false
+    }
+
     /// `more`: also keep the print the rules marked "(more)" below take in.
     private static func findContent(_ g: GrayBuffer, xRange: Range<Double>, more: Bool) -> (crop: CropRect, blank: Bool) {
         let x0 = max(0, Int(Double(g.width) * xRange.lowerBound))
@@ -607,9 +629,10 @@ enum PageAnalyzer {
         // before the first solid line and short gaps between solid lines.
         // A band that starts right at the edge only needs to be mostly dark; one
         // behind a light strip must run nearly the full length, as a scanner band
-        // does, so a dark picture just inside the margin isn't mistaken for one.
+        // does, unbroken by paper, so a dark picture just inside the margin isn't
+        // mistaken for one.
         func bandEnd(from start: Int, toward end: Int, span: Int,
-                     darkness: (Int) -> Double, isStreak: (Int) -> Bool) -> Int {
+                     darkness: (Int) -> Double, unbroken: (Int) -> Bool, isStreak: (Int) -> Bool) -> Int {
             let step = end >= start ? 1 : -1
             let leadIn = max(1, span * 3 / 100)       // light strip allowed before the band
             let maxGap = max(1, span * 15 / 1000)     // gap allowed between streaks
@@ -618,8 +641,9 @@ enum PageAnalyzer {
             while x != end {
                 // Past the solid band, fainter lines (the page block's edge) still
                 // belong to it; text is never that continuous down one line.
-                let needed = (lastSolid == nil && x != start) ? 0.85 : bandFraction
-                if darkness(x) > needed || (lastSolid != nil && isStreak(x)) {
+                let behindStrip = lastSolid == nil && x != start
+                if (darkness(x) > (behindStrip ? 0.85 : bandFraction) && (!behindStrip || unbroken(x)))
+                    || (lastSolid != nil && isStreak(x)) {
                     lastSolid = x
                 } else if let solid = lastSolid {
                     if abs(x - solid) > maxGap { break }
@@ -646,6 +670,10 @@ enum PageAnalyzer {
             for x in xLo..<xHi where Double(g.value(x, y)) < threshold { dark += 1 }
             return Double(dark) / Double(xHi - xLo)
         }
+        func columnUnbroken(_ x: Int) -> Bool { !brokenByPaper(g.height) { Double(g.value(x, $0)) >= threshold } }
+        func rowUnbroken(_ y: Int, _ xLo: Int, _ xHi: Int) -> Bool {
+            !brokenByPaper(xHi - xLo) { Double(g.value(xLo + $0, y)) >= threshold }
+        }
         let streak = 0.35
         // A column inked over most of its height is a shadow, not text, even when
         // it is only grey: a soft binding shadow (tilted, once its half has been
@@ -654,9 +682,11 @@ enum PageAnalyzer {
         // line of bold type can ink half a row.
         var bx0 = bandEnd(from: x0, toward: x1, span: spanW,
                           darkness: { max(columnDarkFraction($0, 0, g.height), columnInk($0)) },
+                          unbroken: columnUnbroken,
                           isStreak: { columnInk($0) > streak })
         var bx1 = max(bx0, bandEnd(from: x1 - 1, toward: bx0 - 1, span: spanW,
                                    darkness: { max(columnDarkFraction($0, 0, g.height), columnInk($0)) },
+                                   unbroken: columnUnbroken,
                                    isStreak: { columnInk($0) > streak }) + 1)
         // A shadow that runs at a slant (the binding shadow, once its half has
         // been straightened) fills no single column. Row by row, though, it is
@@ -705,21 +735,23 @@ enum PageAnalyzer {
         }
         let by0 = bandEnd(from: 0, toward: g.height, span: g.height,
                           darkness: { max(rowDarkFraction($0, bx0, bx1), rowInk($0, bx0, bx1) > 0.85 ? 1 : 0) },
+                          unbroken: { rowUnbroken($0, bx0, bx1) },
                           isStreak: { rowInk($0, bx0, bx1) > streak })
         let by1 = max(by0, bandEnd(from: g.height - 1, toward: by0 - 1, span: g.height,
                                    darkness: { max(rowDarkFraction($0, bx0, bx1), rowInk($0, bx0, bx1) > 0.85 ? 1 : 0) },
+                                   unbroken: { rowUnbroken($0, bx0, bx1) },
                                    isStreak: { rowInk($0, bx0, bx1) > streak }) + 1)
 
         func fullSubRange() -> CropRect {
-            var r = CropRect(x: xRange.lowerBound, y: 0.02,
-                             width: max(0.02, xRange.upperBound - xRange.lowerBound) - 0.02,
-                             height: 0.96)
+            var r = CropRect(x: xRange.lowerBound, y: 0,
+                             width: max(0.02, xRange.upperBound - xRange.lowerBound),
+                             height: 1)
             r.normalize()
             return r
         }
 
         // If trimming consumed the whole region (e.g. a full-bleed dark photo),
-        // keep the page rather than cropping it to nothing.
+        // keep all of the page rather than cropping it to nothing.
         guard bx1 > bx0, by1 > by0 else { return (fullSubRange(), false) }
 
         // A wedge of scanner bed beside a page that lay turned on the glass (or
@@ -1070,6 +1102,29 @@ enum PageAnalyzer {
                              width: Double(bx1 - bx0) / Double(g.width), height: Double(by1 - by0) / Double(g.height))
             r.normalize()
             return (r, true)
+        }
+
+        // A page number above or below the text can be too narrow for the row test:
+        // a digit is under 1% of the width. Rows of ink in the text's columns count
+        // when they are a digit's height, no taller than a line (3% of the page),
+        // more than a speck's 2 px wide, and upright or in pieces side by side. Dust
+        // is smaller, a scratch too thin or too long, and ink running off the scan's
+        // top or bottom is the scan's.
+        let textRows = top...bottom
+        let digit = max(4, (by1 - by0) * 75 / 10000), tallest = max(digit, (by1 - by0) * 3 / 100)
+        func folioInk(_ y: Int) -> Bool { !textRows.contains(y) && (left...right).contains { ink($0, y) } }
+        var y = by0
+        while y < by1 {
+            guard folioInk(y) else { y += 1; continue }
+            var end = y
+            while end + 1 < by1 && folioInk(end + 1) { end += 1 }
+            let inked = (left...right).filter { x in (y...end).contains { ink(x, $0) } }
+            let pieces = zip(inked, inked.dropFirst()).filter { $1 != $0 + 1 }.count + 1
+            let tall = end - y + 1, wide = inked.last! - inked.first! + 1
+            if y > by0 && end < by1 - 1 && tall >= digit && tall <= tallest && wide > 2 && (tall >= wide || pieces >= 2) {
+                top = min(top, y); bottom = max(bottom, end)
+            }
+            y = end + 1
         }
 
         let pad = 0.012 // ~1.2% normalized padding around the detected content

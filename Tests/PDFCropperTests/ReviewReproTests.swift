@@ -452,5 +452,126 @@ struct ReviewReproTests {
         #expect(PageSize.inches("6..5") == nil)
         #expect(PageSize(parsing: "6 x 9 cm") == nil)
         #expect(PageSize(parsing: "") == nil)
+    // Codex review of 2026-10-30 (docs/review-2026-10-30.md), analysis findings.
+
+    /// A 1700×2200 page; `draw` works in pixels from the top left.
+    private func page(_ draw: (CGContext, (CGFloat, CGFloat, CGFloat, CGFloat) -> Void) -> Void) -> CGImage {
+        Fixtures.image(1700, 2200) { c in
+            draw(c) { x, y, w, h in c.fill(CGRect(x: x, y: 2200 - y - h, width: w, height: h)) }
+        }
+    }
+
+    private func dark(_ c: CGContext, _ gray: CGFloat = 0.05) { c.setFillColor(CGColor(gray: gray, alpha: 1)) }
+
+    /// Lines of text-like bars, 60 px apart.
+    private func bars(_ box: (CGFloat, CGFloat, CGFloat, CGFloat) -> Void, x: CGFloat, width: CGFloat, y: CGFloat, lines: Int) {
+        for i in 0..<lines { box(x, y + CGFloat(i) * 60, width, 26) }
+    }
+
+    @Test("Review item 2: a page-sized plate near the edge stays in both crop modes",
+          arguments: [(110, 1980), (44, 1980), (176, 1980), (66, 2068)] as [(CGFloat, CGFloat)])
+    func widePlateKept(y: CGFloat, height: CGFloat) {
+        let img = page { c, box in dark(c); box(34, y, 1630, height) }
+        let text = PageAnalyzer.analyze(cgImage: img, as: .single)
+        #expect(text.leftCrop.minX < 0.03 && text.leftCrop.maxX > 0.97, "text x \(text.leftCrop.minX)…\(text.leftCrop.maxX)")
+        #expect(text.leftCrop.minY <= y / 2200 + 0.001 && text.leftCrop.maxY >= (y + height) / 2200 - 0.001,
+                "text y \(text.leftCrop.minY)…\(text.leftCrop.maxY)")
+        let whole = PageAnalyzer.analyze(cgImage: img, as: .single, target: .page)
+        #expect(whole.leftCrop.minX < 0.001 && whole.leftCrop.maxX > 0.999, "page x \(whole.leftCrop.minX)…\(whole.leftCrop.maxX)")
+        #expect(whole.leftCrop.minY < 0.001 && whole.leftCrop.maxY > 0.999, "page y \(whole.leftCrop.minY)…\(whole.leftCrop.maxY)")
+    }
+
+    @Test("Review item 2: a plate beside text stays, by either side of the page", arguments: [false, true])
+    func plateBesideTextKept(rightSide: Bool) {
+        let img = page { c, box in
+            dark(c); box(rightSide ? 1700 - 34 - 620 : 34, 110, 620, 1980)
+            bars(box, x: rightSide ? 150 : 760, width: 790, y: 200, lines: 30)
+        }
+        let text = PageAnalyzer.analyze(cgImage: img, as: .single).leftCrop
+        let whole = PageAnalyzer.analyze(cgImage: img, as: .single, target: .page).leftCrop
+        if rightSide {
+            #expect(text.maxX > 0.97, "text x \(text.minX)…\(text.maxX)")
+        } else {
+            #expect(text.minX < 0.03, "text x \(text.minX)…\(text.maxX)")
+        }
+        #expect(whole.minX < 0.001 && whole.maxX > 0.999, "page x \(whole.minX)…\(whole.maxX)")
+    }
+
+    @Test("Review item 2: a wide plate near the top stays, in both crop modes")
+    func plateNearTopKept() {
+        let img = page { c, box in
+            dark(c); box(110, 44, 1480, 900)
+            bars(box, x: 200, width: 1300, y: 1050, lines: 15)
+        }
+        let text = PageAnalyzer.analyze(cgImage: img, as: .single).leftCrop
+        #expect(text.minY < 0.03, "text y \(text.minY)…\(text.maxY)")
+        let whole = PageAnalyzer.analyze(cgImage: img, as: .single, target: .page).leftCrop
+        #expect(whole.minY < 0.001, "page y \(whole.minY)…\(whole.maxY)")
+    }
+
+    @Test("Review item 2: a real band behind a light strip is still trimmed, on either side",
+          arguments: [(0, 2200), (20, 2180), (0, 2185)] as [(CGFloat, CGFloat)])
+    func bandBehindStripStillTrimmed(from y0: CGFloat, to y1: CGFloat) {
+        for rightSide in [false, true] {
+            let img = page { c, box in
+                dark(c); box(rightSide ? 1700 - 20 - 300 : 20, y0, 300, y1 - y0)   // a light strip, then the band
+                bars(box, x: 500, width: 700, y: 200, lines: 30)
+            }
+            let text = PageAnalyzer.analyze(cgImage: img, as: .single).leftCrop
+            let whole = PageAnalyzer.analyze(cgImage: img, as: .single, target: .page).leftCrop
+            if rightSide {
+                #expect(text.maxX < 1380.0 / 1700 + 0.002, "text x \(text.minX)…\(text.maxX)")
+                #expect(abs(whole.maxX - 1380.0 / 1700) < 0.005, "page x \(whole.minX)…\(whole.maxX)")
+            } else {
+                #expect(text.minX > 320.0 / 1700 - 0.002, "text x \(text.minX)…\(text.maxX)")
+                #expect(abs(whole.minX - 320.0 / 1700) < 0.005, "page x \(whole.minX)…\(whole.maxX)")
+            }
+        }
+    }
+
+    @Test("Review note: a thin page number stays in Crop to Text, above or below the text",
+          arguments: [(14, 26, false), (14, 26, true), (14, 40, false), (10, 26, false)] as [(CGFloat, CGFloat, Bool)])
+    func thinPageNumberKept(width: CGFloat, height: CGFloat, above: Bool) {
+        let numberY: CGFloat = above ? 90 : 2060
+        let img = page { c, box in
+            dark(c, 0.1)
+            bars(box, x: 200, width: 1300, y: 300, lines: 25)
+            box(843, numberY, width, height)
+        }
+        let r = PageAnalyzer.analyze(cgImage: img, as: .single).leftCrop
+        if above {
+            #expect(r.minY <= numberY / 2200, "y \(r.minY)…\(r.maxY)")
+        } else {
+            #expect(r.maxY >= (numberY + height) / 2200, "y \(r.minY)…\(r.maxY)")
+        }
+    }
+
+    @Test("Review note: dust and scratches above or below the text don't widen the crop",
+          arguments: [(6, 6), (12, 12), (15, 10), (2, 40), (3, 90)] as [(CGFloat, CGFloat)])
+    func dustLeftOut(width: CGFloat, height: CGFloat) {
+        let clean = page { c, box in dark(c, 0.1); bars(box, x: 200, width: 1300, y: 300, lines: 25) }
+        let specked = page { c, box in
+            dark(c, 0.1)
+            bars(box, x: 200, width: 1300, y: 300, lines: 25)
+            box(843, 2060, width, height); box(600, 90, width, height)
+        }
+        let a = PageAnalyzer.analyze(cgImage: clean, as: .single).leftCrop
+        let b = PageAnalyzer.analyze(cgImage: specked, as: .single).leftCrop
+        #expect(a == b, "clean \(a), specked \(b)")
+    }
+
+    @Test("Review note: an inverted page keeps all of its region when trimming takes everything",
+          arguments: [0.0..<1.0, 0.0..<0.5, 0.5..<1.0])
+    func invertedPageKeptWhole(range: Range<Double>) throws {
+        let img = page { c, box in
+            dark(c, 0.03); box(0, 0, 1700, 2200)
+            c.setFillColor(CGColor(gray: 1, alpha: 1))
+            for side: CGFloat in [150, 1000] { bars(box, x: side, width: 550, y: 300, lines: 25) }
+        }
+        let g = try #require(GrayBuffer(cgImage: img))
+        let r = PageAnalyzer.contentBounds(g, xRange: range)
+        #expect(!r.blank)
+        #expect(abs(r.crop.minX - range.lowerBound) < 1e-9 && abs(r.crop.maxX - range.upperBound) < 1e-9, "x \(r.crop.minX)…\(r.crop.maxX)")
+        #expect(r.crop.minY == 0 && r.crop.maxY == 1, "y \(r.crop.minY)…\(r.crop.maxY)")
     }
 }
