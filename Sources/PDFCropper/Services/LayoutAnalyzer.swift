@@ -153,7 +153,16 @@ enum LayoutAnalyzer {
         // 1. Uniform full-height columns (journal / dictionary layouts).
         let fullColumns = columnsIn(ink)
         if fullColumns.count > 1 {
-            return fullColumns.map { norm($0) }
+            // The columns stop at their own ink, so a short line centred in the
+            // gutter (a page number) is in neither. Keep ink above them and below
+            // them, in reading order; the columns themselves are unchanged.
+            let top = fullColumns.map(\.y0).min() ?? ink.y0
+            let bottom = fullColumns.map(\.y1).max() ?? ink.y1
+            func apart(_ y0: Int, _ y1: Int) -> [PRect] {
+                guard y1 > y0 else { return [] }
+                return bandsIn(PRect(x0: ink.x0, x1: ink.x1, y0: y0, y1: y1)).compactMap { tighten($0) }
+            }
+            return (apart(ink.y0, top) + fullColumns + apart(bottom, ink.y1)).map { norm($0) }
         }
 
         // 2. Single main column with possible embedded multi-column bands.

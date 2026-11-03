@@ -1,6 +1,8 @@
 import Testing
 import Foundation
+import CoreGraphics
 import PDFKit
+import AppKit
 @testable import PDFCropper
 
 /// One test per defect a code review reported. Each asserts the correct behavior,
@@ -173,5 +175,62 @@ struct ReviewReproTests {
         let g = try #require(GrayBuffer(cgImage: half))
         let bright = (0..<g.height).reduce(0) { n, y in n + (0..<g.width).filter { g.value($0, y) > 128 }.count }
         #expect(bright * 2 > g.width * g.height)
+    }
+
+    @Test("Finding 6: a short centered line below two columns is its own block, after them")
+    func centeredLineBelowColumns() {
+        // A page number sits in the gutter, under both columns. The columns stop
+        // above it, so nothing holds it and it gets no text layer.
+        let w = 1700, h = 2200
+        let number = CGRect(x: 805, y: 2050, width: 90, height: 12)   // top-left pixels
+        let image = Fixtures.image(w, h) { c in
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            func fill(_ r: CGRect) {
+                c.fill(CGRect(x: r.minX, y: Double(h) - r.maxY, width: r.width, height: r.height))
+            }
+            for i in 0..<24 {
+                let y = 200 + Double(i) * 60
+                fill(CGRect(x: 150, y: y, width: 500, height: 18))
+                fill(CGRect(x: 1050, y: y, width: 500, height: 18))
+            }
+            fill(number)
+        }
+        let blocks = LayoutAnalyzer.columnBlocks(image)
+        let point = CGPoint(x: number.midX / Double(w), y: number.midY / Double(h))
+        let hit = blocks.firstIndex { $0.contains(point) }
+        let columns = blocks.indices.filter { blocks[$0].height > 0.2 }
+        #expect(columns.count == 2, "\(blocks)")
+        #expect(hit != nil, "no block contains \(point) in \(blocks)")
+        if let hit {
+            #expect(columns.allSatisfy { $0 < hit }, "block \(hit) is not after the columns \(columns): \(blocks)")
+        }
+    }
+
+    @Test("Finding 7: a second-pass line already read in parts is not added again")
+    func rowNotDoubled() {
+        // Pass 1 read the row as two halves; pass 2 read it whole. The whole
+        // line's centre falls in the gap, so no pass 1 box holds it.
+        let y = 0.50, h = 0.03
+        let left = OCRService.Line(text: "left part", box: CGRect(x: 0.10, y: y, width: 0.30, height: h))
+        let right = OCRService.Line(text: "right part", box: CGRect(x: 0.50, y: y, width: 0.30, height: h))
+        let whole = OCRService.Line(text: "left part right part", box: CGRect(x: 0.10, y: y, width: 0.70, height: h))
+        #expect(OCRService.merge([left, right], [whole]).map(\.text).sorted() == ["left part", "right part"])
+        // A line over a real gap in pass 1 is still added.
+        let dropped = OCRService.Line(text: "the dropped line", box: CGRect(x: 0.55, y: y, width: 0.30, height: h))
+        #expect(OCRService.merge([left], [left, dropped]).map(\.text).sorted() == ["left part", "the dropped line"])
+    }
+
+    @Test("Finding 8: a word spelled right in any given language passes")
+    func spelledRightInAnyLanguage() {
+        let available = NSSpellChecker.shared.availableLanguages
+        func has(_ code: String) -> Bool {
+            let wanted = code.replacingOccurrences(of: "-", with: "_")
+            let prefix = String(wanted.prefix(2))
+            return available.contains { $0 == wanted || $0 == prefix || $0.hasPrefix(prefix) }
+        }
+        if has("de-DE") {
+            #expect(OCRService.spelledRight("nicht", languages: ["en-US", "de-DE"]))
+        }
+        #expect(!OCRService.spelledRight("specity", languages: ["en-US"]))
     }
 }

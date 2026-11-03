@@ -60,7 +60,10 @@ enum OCRService {
             let clamped = widened.integral.intersection(CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
             guard !clamped.isNull, clamped.width >= 1, clamped.height >= 1,
                   let crop = cgImage.cropping(to: clamped),
-                  let sub = padded(crop, by: margin) else { continue }
+                  let sub = padded(crop, by: margin) else {
+                failedBlocks += 1
+                continue
+            }
 
             // Translate each padded-block box (Vision's bottom-left normalized) back
             // into full-page bottom-left normalized coordinates.
@@ -190,21 +193,27 @@ enum OCRService {
 
     private static let spellLock = NSLock()
 
-    /// True unless the system spell checker flags `token` (punctuation aside).
-    /// Tokens with digits, and ones in a language the checker lacks, pass.
+    /// True unless every language the checker has flags `token` (punctuation
+    /// aside). Tokens with digits pass, as does a word when the checker has
+    /// none of `languages`.
     static func spelledRight(_ token: String, languages: [String]) -> Bool {
         let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
         guard w.count > 1, w.rangeOfCharacter(from: .decimalDigits) == nil else { return true }
         spellLock.lock(); defer { spellLock.unlock() }
         let checker = NSSpellChecker.shared
         let available = checker.availableLanguages
-        guard let wanted = languages.first?.replacingOccurrences(of: "-", with: "_"),
-              let language = available.first(where: { $0 == wanted })
-                ?? available.first(where: { $0 == String(wanted.prefix(2)) })
-                ?? available.first(where: { $0.hasPrefix(String(wanted.prefix(2))) })
-        else { return true }
-        return checker.checkSpelling(of: w, startingAt: 0, language: language, wrap: false,
-                                     inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        let known = languages.compactMap { code -> String? in
+            let wanted = code.replacingOccurrences(of: "-", with: "_")
+            let prefix = String(wanted.prefix(2))
+            return available.first(where: { $0 == wanted })
+                ?? available.first(where: { $0 == prefix })
+                ?? available.first(where: { $0.hasPrefix(prefix) })
+        }
+        guard !known.isEmpty else { return true }
+        return known.contains { language in
+            checker.checkSpelling(of: w, startingAt: 0, language: language, wrap: false,
+                                 inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+        }
     }
 
     /// Words pass1 misread that pass2, at half size, read as real words: "carth" →
@@ -441,13 +450,15 @@ enum OCRService {
     ///  1. **Garbled merge** — Vision collapsed two adjacent lines into one
     ///     observation: the pass2 lines given to it sit on different rows, so they
     ///     replace it (they are individually cleaner at half resolution).
-    ///  2. **Outright drop** — a pass2 line that no pass1 box holds is appended.
+    ///  2. **Outright drop** — a pass2 line that no pass1 box holds is appended,
+    ///     unless pass1 lines on its row already cover most of its width (one
+    ///     line read in halves: its centre falls in the gap between them).
     static func merge(_ pass1: [Line], _ pass2: [Line]) -> [Line] {
         var given: [Int: [Line]] = [:]     // pass1 index → its pass2 lines
         var unheld: [Line] = []
         for line in pass2 {
             guard let nearest = holder(of: line, in: pass1) else {
-                unheld.append(line)
+                if !alreadyCovered(line, by: pass1) { unheld.append(line) }
                 continue
             }
             given[nearest, default: []].append(line)
@@ -471,6 +482,25 @@ enum OCRService {
         let center = CGPoint(x: line.box.midX, y: line.box.midY)
         return pass1.indices.filter { pass1[$0].box.insetBy(dx: -0.005, dy: -0.005).contains(center) }
             .min { abs(pass1[$0].box.midY - center.y) < abs(pass1[$1].box.midY - center.y) }
+    }
+
+    /// True when pass1 lines on `line`'s row already cover most of its width, so
+    /// an unheld pass2 reading is the same text read in parts, not a dropped line.
+    private static func alreadyCovered(_ line: Line, by pass1: [Line]) -> Bool {
+        guard line.box.width > 0 else { return false }
+        let y = line.box.midY
+        let spans = pass1.compactMap { p -> (Double, Double)? in
+            let row = p.box.insetBy(dx: 0, dy: -0.005)
+            guard y >= row.minY, y <= row.maxY else { return nil }
+            let x0 = max(p.box.minX, line.box.minX), x1 = min(p.box.maxX, line.box.maxX)
+            return x1 > x0 ? (x0, x1) : nil
+        }.sorted { $0.0 < $1.0 }
+        var covered = 0.0, end = -Double.infinity
+        for (x0, x1) in spans where x1 > end {
+            covered += x1 - max(x0, end)
+            end = x1
+        }
+        return covered > line.box.width * 0.5
     }
 
     /// Lines Vision made up in the first pass (Wallace 1957). Lines are taken in
