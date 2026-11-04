@@ -10,3 +10,4 @@ dist/
 .claude/
 .remember/
 .DS_Store
+.playwright-mcp/
