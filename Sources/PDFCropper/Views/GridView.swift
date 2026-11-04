@@ -77,8 +77,7 @@ struct GridView: View {
         .focused($focused)
         .onChange(of: shown.map(\.id)) { _, _ in model.keepGridChoiceShown() }
         .onKeyPress(.return) {
-            guard let id = model.selectedPageID else { return .ignored }
-            model.openInPageView(id)
+            model.openChosenInPageView()
             return .handled
         }
         .onAppear { focused = true }

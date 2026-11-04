@@ -1767,6 +1767,12 @@ final class AppModel: ObservableObject {
         if let id, selectedPageID != id { selectedPageID = id }
     }
 
+    /// Return in the grid: the last page clicked in Page view, if the grid shows it.
+    func openChosenInPageView() {
+        guard let id = selectedPageID, sidebarTargets.contains(id) else { return }
+        openInPageView(id)
+    }
+
     /// Return or a double-click in the grid: that page in Page view.
     func openInPageView(_ id: BookPage.ID) {
         selectedPageID = id

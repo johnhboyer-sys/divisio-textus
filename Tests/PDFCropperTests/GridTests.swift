@@ -155,6 +155,12 @@ struct GridTests {
         for i in m.pages.indices { m.pages[i].leftCrop.width = 0.30 }
         m.keepGridChoiceShown()
         #expect(m.gridPages.isEmpty && m.sidebarTargets.isEmpty)
+        m.openChosenInPageView()                                     // Return opens nothing hidden
+        #expect(m.viewMode == .grid)
+        m.showsOnlyFlagged = false
+        m.chooseInGrid(ids[2], .plain, order: ids)
+        m.openChosenInPageView()
+        #expect(m.viewMode == .page && m.selectedPageID == ids[2])
     }
 
     @Test("Opening another PDF starts the grid afresh on its first page (Codex review)")
