@@ -43,11 +43,16 @@ struct GridView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     focused = true
-                                    let keys = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags   // the click's own keys
+                                    // The click's own keys and count: the second click of a double-click on
+                                    // the page the first one chose opens it.
+                                    let event = NSApp.currentEvent
+                                    if (event?.clickCount ?? 1) >= 2, page.id == model.selectedPageID {
+                                        return model.openInPageView(page.id)
+                                    }
+                                    let keys = event?.modifierFlags ?? NSEvent.modifierFlags
                                     model.chooseInGrid(page.id, keys.contains(.shift) ? .range : keys.contains(.command) ? .toggle : .plain,
                                                        order: order)
                                 }
-                                .simultaneousGesture(TapGesture(count: 2).onEnded { model.openInPageView(page.id) })
                         }
                     }
                     .padding(18)
