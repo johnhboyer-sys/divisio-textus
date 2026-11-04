@@ -34,7 +34,7 @@ struct ThumbnailRail: View {
                                 .id(page.id)
                                 .onTapGesture {
                                     guard choosing else { model.selectedPageID = page.id; return }
-                                    let keys = NSEvent.modifierFlags
+                                    let keys = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags   // the click's own keys
                                     model.chooseForTrim(page.id, keys.contains(.shift) ? .range : keys.contains(.command) ? .toggle : .plain,
                                                         order: shown.map(\.id))
                                 }

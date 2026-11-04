@@ -43,7 +43,7 @@ struct GridView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     focused = true
-                                    let keys = NSEvent.modifierFlags
+                                    let keys = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags   // the click's own keys
                                     model.chooseInGrid(page.id, keys.contains(.shift) ? .range : keys.contains(.command) ? .toggle : .plain,
                                                        order: order)
                                 }
