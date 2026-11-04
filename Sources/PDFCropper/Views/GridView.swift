@@ -8,6 +8,9 @@ struct GridView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage("gridCellSize") private var cellSize = 200.0
     @FocusState private var focused: Bool
+    // The cell the last click hit, to tell a double-click. State(initialValue:) as in
+    // CropBoxView; a class, as setting it redraws nothing.
+    private let lastClick = State(initialValue: LastClick())
 
     var body: some View {
         let flagged = model.flaggedSides
@@ -44,9 +47,11 @@ struct GridView: View {
                                 .onTapGesture {
                                     focused = true
                                     // The click's own keys and count: the second click of a double-click on
-                                    // the page the first one chose opens it.
+                                    // one cell opens its page.
                                     let event = NSApp.currentEvent
-                                    if (event?.clickCount ?? 1) >= 2, page.id == model.selectedPageID {
+                                    let previous = lastClick.wrappedValue.page
+                                    lastClick.wrappedValue.page = page.id
+                                    if (event?.clickCount ?? 1) >= 2, previous == page.id {
                                         return model.openInPageView(page.id)
                                     }
                                     let keys = event?.modifierFlags ?? NSEvent.modifierFlags
@@ -82,6 +87,10 @@ struct GridView: View {
         }
         .onAppear { focused = true }
     }
+}
+
+private final class LastClick {
+    var page: BookPage.ID?
 }
 
 /// One page: its picture (only its trim) with the crops and split on it, a red dot
