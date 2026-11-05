@@ -450,30 +450,43 @@ enum OCRService {
     ///  1. **Garbled merge** — Vision collapsed two adjacent lines into one
     ///     observation: the pass2 lines given to it sit on different rows, so they
     ///     replace it (they are individually cleaner at half resolution).
-    ///  2. **Outright drop** — a pass2 line that no pass1 box holds is appended,
-    ///     unless pass1 lines on its row already cover most of its width (one
-    ///     line read in halves: its centre falls in the gap between them).
+    ///  2. **Outright drop** — a pass2 line that no pass1 box holds goes right
+    ///     before the line pass2 read next (Vision's own reading order), when
+    ///     pass1 has the lines pass2 read before and after it in that order;
+    ///     otherwise (the passes took columns in different orders) or when no
+    ///     line follows, at the end. Not when pass1 lines on its row already
+    ///     cover most of its width (one line read in halves: its centre falls in
+    ///     the gap between them).
     static func merge(_ pass1: [Line], _ pass2: [Line]) -> [Line] {
-        var given: [Int: [Line]] = [:]     // pass1 index → its pass2 lines
-        var unheld: [Line] = []
-        for line in pass2 {
+        var given: [Int: [Int]] = [:]      // pass1 index → indices of its pass2 lines
+        var before: [Int: [Line]] = [:]    // pass2 index → dropped lines read just before it
+        var atEnd: [Line] = []
+        var waiting: [Line] = []           // dropped lines no held line has followed yet
+        var last: Int?                     // pass1 line holding the last pass2 line read
+        for (j, line) in pass2.enumerated() {
             guard let nearest = holder(of: line, in: pass1) else {
-                if !alreadyCovered(line, by: pass1) { unheld.append(line) }
+                if !alreadyCovered(line, by: pass1) { waiting.append(line) }
                 continue
             }
-            given[nearest, default: []].append(line)
+            given[nearest, default: []].append(j)
+            if !waiting.isEmpty {
+                if last.map({ $0 <= nearest }) ?? true { before[j] = waiting } else { atEnd += waiting }
+                waiting = []
+            }
+            last = nearest
         }
 
         var result: [Line] = []
         for (i, line) in pass1.enumerated() {
             let mine = given[i] ?? []
-            if mine.count >= 2 && onDifferentRows(mine) {
-                result.append(contentsOf: mine)
+            if mine.count >= 2 && onDifferentRows(mine.map { pass2[$0] }) {
+                for j in mine { result += before[j] ?? []; result.append(pass2[j]) }
             } else {
+                for j in mine { result += before[j] ?? [] }
                 result.append(line)
             }
         }
-        return result + unheld
+        return result + atEnd + waiting
     }
 
     /// The pass1 line `line` is given to: the nearest whose (slightly enlarged)

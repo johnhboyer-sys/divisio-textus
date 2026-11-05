@@ -38,6 +38,99 @@ struct OCRMergeTests {
         #expect(OCRService.merge(pass1, pass2).map(\.text).sorted() == ["dropped", "first", "second"])
     }
 
+    /// Lines 0.05 apart in a column from x0 to x1, top first.
+    private func column(_ texts: [String], x0: Double = 0.1, x1: Double = 0.9) -> [OCRService.Line] {
+        texts.enumerated().map { i, t in
+            OCRService.Line(text: t, box: CGRect(x: x0, y: 0.8 - Double(i) * 0.05, width: x1 - x0, height: 0.03))
+        }
+    }
+
+    /// Owens 1978 p. 23: a footnote line pass1 dropped came back at the page's end.
+    @Test("A recovered line goes back where it was printed")
+    func droppedLineInPlace() {
+        let all = column(["one", "two", "three", "four"])
+        let merged = OCRService.merge([all[0], all[1], all[3]], all)
+        #expect(merged.map(\.text) == ["one", "two", "three", "four"])
+    }
+
+    @Test("A recovered line stays in its own column")
+    func droppedLineInColumn() {
+        let left = column(["L1", "L2", "L3"], x0: 0.05, x1: 0.45)
+        let right = column(["R1", "R2", "R3"], x0: 0.55, x1: 0.95)
+        let pass1 = [left[0], left[2], right[0], right[1]]
+        let merged = OCRService.merge(pass1, left + right)
+        #expect(merged.map(\.text) == ["L1", "L2", "L3", "R1", "R2", "R3"])
+    }
+
+    @Test("A recovered folio follows a short last line")
+    func droppedFolio() {
+        let body = OCRService.Line(text: "body", box: CGRect(x: 0.10, y: 0.60, width: 0.80, height: 0.03))
+        let last = OCRService.Line(text: "short last line", box: CGRect(x: 0.10, y: 0.50, width: 0.20, height: 0.03))
+        let folio = OCRService.Line(text: "23", box: CGRect(x: 0.48, y: 0.10, width: 0.04, height: 0.03))
+        #expect(OCRService.merge([body, last], [body, last, folio]).map(\.text) == ["body", "short last line", "23"])
+    }
+
+    @Test("A recovered cell follows the cell before it on its row")
+    func droppedCellOnRow() {
+        let left = OCRService.Line(text: "left cell", box: CGRect(x: 0.10, y: 0.50, width: 0.405, height: 0.03))
+        let right = OCRService.Line(text: "right cell", box: CGRect(x: 0.50, y: 0.502, width: 0.40, height: 0.03))
+        #expect(OCRService.merge([left], [left, right]).map(\.text) == ["left cell", "right cell"])
+        let previous = OCRService.Line(text: "previous row", box: CGRect(x: 0.10, y: 0.60, width: 0.80, height: 0.03))
+        #expect(OCRService.merge([previous, left], [previous, left, right]).map(\.text) == ["previous row", "left cell", "right cell"])
+    }
+
+    @Test("A recovered folio under two columns follows both")
+    func droppedFolioUnderColumns() {
+        let heading = OCRService.Line(text: "heading", box: CGRect(x: 0.10, y: 0.90, width: 0.80, height: 0.03))
+        let left = OCRService.Line(text: "left column", box: CGRect(x: 0.10, y: 0.60, width: 0.35, height: 0.03))
+        let right = OCRService.Line(text: "right column", box: CGRect(x: 0.55, y: 0.60, width: 0.35, height: 0.03))
+        let folio = OCRService.Line(text: "23", box: CGRect(x: 0.48, y: 0.10, width: 0.04, height: 0.03))
+        #expect(OCRService.merge([heading, left, right], [heading, left, right, folio]).map(\.text)
+                == ["heading", "left column", "right column", "23"])
+    }
+
+    @Test("A recovered folio follows a short last line pass2 missed")
+    func droppedFolioAfterMissedLine() {
+        let body = OCRService.Line(text: "body", box: CGRect(x: 0.10, y: 0.60, width: 0.80, height: 0.03))
+        let last = OCRService.Line(text: "short last line", box: CGRect(x: 0.10, y: 0.50, width: 0.20, height: 0.03))
+        let folio = OCRService.Line(text: "23", box: CGRect(x: 0.48, y: 0.10, width: 0.04, height: 0.03))
+        #expect(OCRService.merge([body, last], [body, folio]).map(\.text) == ["body", "short last line", "23"])
+    }
+
+    @Test("A recovered line after a row read in halves keeps its place")
+    func droppedAfterCoveredRow() {
+        let top = OCRService.Line(text: "top", box: CGRect(x: 0.10, y: 0.80, width: 0.80, height: 0.03))
+        let left = OCRService.Line(text: "left", box: CGRect(x: 0.10, y: 0.60, width: 0.35, height: 0.03))
+        let right = OCRService.Line(text: "right", box: CGRect(x: 0.55, y: 0.60, width: 0.35, height: 0.03))
+        let whole = OCRService.Line(text: "left right", box: CGRect(x: 0.10, y: 0.60, width: 0.80, height: 0.03))
+        let next = OCRService.Line(text: "next row", box: CGRect(x: 0.10, y: 0.50, width: 0.80, height: 0.03))
+        #expect(OCRService.merge([top, left, right], [top, whole, next]).map(\.text) == ["top", "left", "right", "next row"])
+    }
+
+    @Test("A recovered cell goes between the rows that replace a garbled line")
+    func droppedInsideGarbled() {
+        let garbled = OCRService.Line(text: "garbled A+C", box: CGRect(x: 0.10, y: 0.60, width: 0.30, height: 0.13))
+        let a = OCRService.Line(text: "upper left", box: CGRect(x: 0.10, y: 0.70, width: 0.30, height: 0.02))
+        let b = OCRService.Line(text: "upper right", box: CGRect(x: 0.60, y: 0.70, width: 0.30, height: 0.02))
+        let c = OCRService.Line(text: "lower left", box: CGRect(x: 0.10, y: 0.60, width: 0.30, height: 0.02))
+        #expect(OCRService.merge([garbled], [a, b, c]).map(\.text) == ["upper left", "upper right", "lower left"])
+    }
+
+    @Test("Where the passes read columns in different orders, a recovered line goes last")
+    func droppedWithColumnsCrossed() {
+        let l1 = OCRService.Line(text: "L1", box: CGRect(x: 0.10, y: 0.80, width: 0.35, height: 0.03))
+        let l2 = OCRService.Line(text: "L2", box: CGRect(x: 0.10, y: 0.50, width: 0.35, height: 0.03))
+        let r1 = OCRService.Line(text: "R1", box: CGRect(x: 0.55, y: 0.80, width: 0.35, height: 0.03))
+        let r2 = OCRService.Line(text: "R2", box: CGRect(x: 0.55, y: 0.60, width: 0.35, height: 0.03))
+        #expect(OCRService.merge([l1, l2, r1], [l1, r1, r2, l2]).map(\.text) == ["L1", "L2", "R1", "R2"])
+    }
+
+    @Test("A line pass2 read first, before any line pass1 has, stays first")
+    func droppedFirstLine() {
+        let all = column(["running head", "one", "two"])
+        #expect(OCRService.merge([all[1], all[2]], all).map(\.text) == ["running head", "one", "two"])
+    }
+
     // MARK: - Ghost lines
 
     /// A line from Vision's word boxes in pixels (top-left origin) on a 1101 × 1668 page.
