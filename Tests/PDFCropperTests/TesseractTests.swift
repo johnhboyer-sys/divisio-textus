@@ -167,6 +167,13 @@ struct TesseractTests {
         #expect(TesseractLanguage.downloadURL("grc").absoluteString == "https://github.com/tesseract-ocr/tessdata_best/raw/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/grc.traineddata")
     }
 
+    @Test("The Tesseract reader always reads English, plus the ticked packs it has")
+    func readerLanguages() {
+        #expect(TesseractService.readerLanguages(ticked: [], installed: ["eng"]) == ["eng"])
+        #expect(TesseractService.readerLanguages(ticked: ["grc", "heb"], installed: ["eng", "grc"]) == ["grc", "eng"])
+        #expect(TesseractService.readerLanguages(ticked: ["eng", "grc"], installed: ["eng", "grc"]) == ["grc", "eng"])
+    }
+
     @Test("Only traineddata files count as installed packs")
     func installedPacks() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

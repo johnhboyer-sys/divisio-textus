@@ -43,6 +43,12 @@ enum TesseractService {
         }
     }
 
+    /// What the Tesseract reader reads: the ticked packs on this Mac, then English.
+    /// A ticked pack that isn't installed would make Tesseract fail every page.
+    static func readerLanguages(ticked: [String], installed: Set<String>) -> [String] {
+        ticked.filter { $0 != "eng" && installed.contains($0) } + ["eng"]
+    }
+
     /// Lists the language codes present in a pack folder.
     static func installedPacks(in folder: URL = packFolder) -> Set<String> {
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey])) ?? []

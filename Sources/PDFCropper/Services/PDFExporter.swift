@@ -84,9 +84,8 @@ enum PDFExporter {
         func recognize(_ image: CGImage) -> OCRService.Recognition? {
             if settings.reader == .tesseract {
                 guard let tessdata else { return nil }
-                // A ticked pack that isn't installed would make Tesseract fail every page.
-                let usable = settings.packs.filter(installed.contains)
-                return TesseractService.recognize(image, languages: usable.isEmpty ? ["eng"] : usable,
+                let languages = TesseractService.readerLanguages(ticked: settings.packs, installed: installed)
+                return TesseractService.recognize(image, languages: languages,
                                                  tessdata: tessdata, executable: executable)
             }
             guard var apple = OCRService.recognizeLines(image, languages: settings.ocrLanguages) else { return nil }

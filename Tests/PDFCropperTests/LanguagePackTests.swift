@@ -75,6 +75,14 @@ struct LanguagePackTests {
         #expect(tess.count == TesseractLanguage.all.count + 1 && tess.contains { $0.code == "fra" } && tess.contains { $0.code == "zzz" })
     }
 
+    @Test("The list runs in name order")
+    func choicesByName() {
+        for reader in [OCRReader.apple, .tesseract] {
+            let names = LanguagePacksView.choices(reader: reader, installed: ["aaa", "zzz"]).map(\.name)
+            #expect(names == names.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        }
+    }
+
     @Test("The reader and ticked packs survive a new model")
     func defaultsRoundTrip() throws {
         let name = "LanguagePackTests-\(UUID().uuidString)"

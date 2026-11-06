@@ -132,12 +132,49 @@ private struct OutputGroup: View {
     }
 }
 
+/// The ⓘ beside Reader: what each reader does and how the Languages list fits in.
+private struct ReaderInfo: View {
+    private func reader(_ name: String, reads: String, bestFor: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(name).font(.headline)
+            Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 4) {
+                GridRow {
+                    Text("Reads").foregroundStyle(.secondary)
+                    Text(reads)
+                }
+                GridRow {
+                    Text("Best for").foregroundStyle(.secondary)
+                    Text(bestFor)
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            reader("Apple Vision",
+                   reads: "Every language Apple Vision knows. Tesseract reads any other languages ticked under Languages.",
+                   bestFor: "Most books, including pages that mix languages.")
+            reader("Tesseract",
+                   reads: "English, plus the languages ticked under Languages.",
+                   bestFor: "Books mostly in a script Apple Vision can't read, such as Greek or Hebrew.")
+            Divider()
+            Text("Apple Vision knows English, French, German, Italian, Spanish, Portuguese, Dutch, the Scandinavian languages, Polish, Czech, Turkish, Russian, Ukrainian, Arabic, Hindi, Thai, Vietnamese, Chinese, Japanese and Korean. It can't read Greek, Hebrew, Syriac, Armenian or some other scripts.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 340)
+        .padding(16)
+    }
+}
+
 /// How the exported PDF is made, the book's page size, and the Export PDF… button,
 /// which turns into the export's progress while it runs.
 private struct ExportOptions: View {
     @EnvironmentObject var model: AppModel
     // State(initialValue:) rather than @State, for Command Line Tools (see PageSizeRow).
     private let packsState = State(initialValue: false)
+    private let infoState = State(initialValue: false)
 
     /// The ticked packs the current reader uses.
     private var applicable: [String] {
@@ -152,22 +189,34 @@ private struct ExportOptions: View {
 
     /// The reader, its languages, and what is wrong with them.
     @ViewBuilder private var readerRows: some View {
-        Picker("Reader", selection: $model.ocrReader) {
-            Text("Apple").tag(OCRReader.apple)
-            Text("Tesseract").tag(OCRReader.tesseract)
-        }
-        .help("Apple reads accents and mixed languages best. Tesseract is for books mainly in a script Apple can't read.")
-        LabeledContent("Languages") {
-            HStack {
-                Text(applicable.isEmpty ? "None" : applicable.map(name).joined(separator: ", "))
-                    .multilineTextAlignment(.trailing)
-                Button("Choose…") { packsState.wrappedValue = true }
+        LabeledContent {
+            Picker("Reader", selection: $model.ocrReader) {
+                Text("Apple Vision").tag(OCRReader.apple)
+                Text("Tesseract").tag(OCRReader.tesseract)
             }
+            .labelsHidden()
+        } label: {
+            HStack(spacing: 4) {
+                Text("Reader")
+                Button { infoState.wrappedValue = true } label: { Image(systemName: "info.circle") }
+                    .buttonStyle(.borderless)
+                    .popover(isPresented: infoState.projectedValue, arrowEdge: .leading) { ReaderInfo() }
+            }
+            .fixedSize()
+        }
+        let names = model.ocrReader == .tesseract
+            ? ["English"] + applicable.filter { $0 != "eng" }.map(name)
+            : applicable.map(name)
+        let chosen = names.isEmpty ? "None" : names.joined(separator: ", ")
+        LabeledContent {
+            Button { packsState.wrappedValue = true } label: {
+                Text(chosen + "…").lineLimit(1).truncationMode(.middle)
+            }
+            .help(chosen)
+        } label: {
+            Text("Languages").fixedSize()
         }
         let missing = applicable.filter { !model.installedPacks.contains($0) && model.packDownloads[$0] != .downloading }
-        if model.ocrReader == .tesseract && applicable.isEmpty {
-            Text("No language chosen: Tesseract will read English.").font(.caption).foregroundStyle(.secondary)
-        }
         if !missing.isEmpty {
             Text("Not downloaded: \(missing.map(name).joined(separator: ", ")).")
                 .font(.caption).foregroundStyle(.orange)
