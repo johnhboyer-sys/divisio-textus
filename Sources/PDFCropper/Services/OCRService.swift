@@ -193,6 +193,105 @@ enum OCRService {
 
     private static let spellLock = NSLock()
 
+    /// Swaps in Tesseract's words in scripts Apple can't read (Greek, say) where
+    /// Apple read junk. A Tesseract word counts when it has two letters of those
+    /// scripts, or one with such a word on each side ("ὃν ἦ ὄν"). The Apple words
+    /// it covers by half their area give way to it, unless all of them pass `keep`
+    /// (Tesseract reads "is" as "ἐς", "n." as "τι.") and the Greek beside it on
+    /// Tesseract's line neither replaces junk ("regi airwv": "airwv" vouches for
+    /// "περὶ") nor runs long.
+    static func fillIn(_ apple: [Line], from tess: [Line], scripts: [Script],
+                       keep: (String) -> Bool) -> [Line] {
+        // Letters only: the Greek question mark ";" is in Greek's block too.
+        func letterCount(_ text: String) -> Int {
+            text.unicodeScalars.filter { s in s.properties.isAlphabetic && scripts.contains { $0.contains(s) } }.count
+        }
+        var candidates: [Word] = []
+        var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
+        for line in tess {
+            let n = line.words.map { letterCount($0.text) }
+            var previous: (k: Int, index: Int)?
+            for (k, word) in line.words.enumerated() {
+                let before = k > 0 ? n[k - 1] : 0, after = k + 1 < n.count ? n[k + 1] : 0
+                guard n[k] >= 2 || (n[k] == 1 && before >= 2 && after >= 2) else { continue }
+                candidates.append(word)
+                neighbours.append([])
+                let index = candidates.count - 1
+                if let previous, previous.k == k - 1 {
+                    neighbours[index].append(previous.index)
+                    neighbours[previous.index].append(index)
+                }
+                previous = (k, index)
+            }
+        }
+        guard !candidates.isEmpty else { return apple }
+        var covers = [Int](repeating: 0, count: candidates.count)
+        var kept = [Int](repeating: 0, count: candidates.count)
+        // Each Apple word belongs to just the candidate with the largest overlap.
+        let owners: [[Int?]] = apple.map { line in
+            line.words.map { word in
+                let area = word.box.width * word.box.height
+                guard !word.box.isNull, area > 0 else { return nil }
+                var owner: Int?
+                var largest: CGFloat = 0
+                for (i, candidate) in candidates.enumerated() {
+                    let intersection = word.box.intersection(candidate.box)
+                    guard !intersection.isNull else { continue }
+                    let overlap = intersection.width * intersection.height
+                    if overlap >= area * 0.5 && overlap > largest {
+                        owner = i
+                        largest = overlap
+                    }
+                }
+                if let owner {
+                    covers[owner] += 1
+                    if keep(word.text) { kept[owner] += 1 }
+                }
+                return owner
+            }
+        }
+        // Real words under it: Apple's stay, unless its run of Greek words beside one
+        // another replaces junk, or is two or more words of five letters or more in
+        // all ("πρὸς ἕν" over "roos &"; "ἐς τι." is four).
+        let real = candidates.indices.map { covers[$0] > 0 && kept[$0] == covers[$0] }
+        let letters = candidates.map { letterCount($0.text) }
+        var protected = Set<Int>()
+        var seen = Set<Int>()
+        for start in candidates.indices where !seen.contains(start) {
+            var run = [start]
+            seen.insert(start)
+            var i = 0
+            while i < run.count {
+                for n in neighbours[run[i]] where seen.insert(n).inserted { run.append(n) }
+                i += 1
+            }
+            let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
+            if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
+        }
+        var emitted = Set<Int>()
+        return apple.enumerated().map { i, line in
+            guard !line.words.isEmpty else { return line }
+            var words: [Word] = []
+            for (j, word) in line.words.enumerated() {
+                if let owner = owners[i][j], !protected.contains(owner) {
+                    if emitted.insert(owner).inserted { words.append(candidates[owner]) }
+                } else {
+                    words.append(word)
+                }
+            }
+            return Line(text: words.map(\.text).joined(separator: " "), box: line.box, words: words)
+        }
+    }
+
+    /// A word Apple read that is spelled right and cased like a word: the spell
+    /// checker passes mixed case, so junk like "alTON" or "newTov" would pass.
+    static func looksLikeWord(_ token: String, languages: [String]) -> Bool {
+        let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        let rest = String(w.dropFirst())
+        guard rest == rest.lowercased() || w == w.uppercased() else { return false }
+        return spelledRight(token, languages: languages)
+    }
+
     /// True unless every language the checker has flags `token` (punctuation
     /// aside). Tokens with digits pass, as does a word when the checker has
     /// none of `languages`.

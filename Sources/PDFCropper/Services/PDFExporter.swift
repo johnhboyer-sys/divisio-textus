@@ -19,8 +19,13 @@ enum PDFExporter {
         var direction: ReadingDirection = .leftToRight
         var ocr: Bool = true             // embed searchable text layer
         var ocrLanguages: [String] = ["en-US"]
+        var reader: OCRReader = .apple
+        var packs: [String] = []
         var enhanceMode: EnhanceMode = .color  // color or grayscale
     }
+
+    /// Lets tests read installed packs without changing the user's pack folder.
+    static var tessdataOverride: URL?
 
     enum ExportError: Error, LocalizedError {
         case noPages
@@ -40,7 +45,7 @@ enum PDFExporter {
     }
 
     /// What the export produced. `ocrFailedPages` are 1-based output page numbers
-    /// where Vision failed on all or part of the page, so it isn't fully searchable.
+    /// where the reader failed on all or part of the page, so it isn't fully searchable.
     struct Report {
         var pageCount = 0
         var ocrFailedPages: [Int] = []
@@ -64,6 +69,38 @@ enum PDFExporter {
         let todo = pages.filter { !$0.outputCrops(direction: settings.direction).isEmpty }
         let total = todo.reduce(0) { $0 + $1.outputCrops(direction: settings.direction).count }
         guard total > 0 else { throw ExportError.noPages }
+
+        if settings.reader == .tesseract || !settings.packs.isEmpty {
+            TesseractService.installBundledPacks()
+        }
+        let tessdata = settings.reader == .tesseract || !settings.packs.isEmpty
+            ? (tessdataOverride ?? TesseractService.packFolder) : nil
+        let executable = TesseractService.executableURL()
+        let installed = tessdata.map { TesseractService.installedPacks(in: $0) } ?? []
+        let extraPacks = TesseractLanguage.all.filter {
+            $0.fillsIn && settings.packs.contains($0.code) && installed.contains($0.code)
+        }
+        /// Reads one page with the chosen reader and optional script fill-in.
+        func recognize(_ image: CGImage) -> OCRService.Recognition? {
+            if settings.reader == .tesseract {
+                guard let tessdata else { return nil }
+                // A ticked pack that isn't installed would make Tesseract fail every page.
+                let usable = settings.packs.filter(installed.contains)
+                return TesseractService.recognize(image, languages: usable.isEmpty ? ["eng"] : usable,
+                                                 tessdata: tessdata, executable: executable)
+            }
+            guard var apple = OCRService.recognizeLines(image, languages: settings.ocrLanguages) else { return nil }
+            guard !extraPacks.isEmpty else { return apple }
+            if let tessdata, let tess = TesseractService.recognize(image, languages: extraPacks.map(\.code) + ["eng"],
+                                                                  tessdata: tessdata, executable: executable) {
+                apple.lines = OCRService.fillIn(apple.lines, from: tess.lines, scripts: extraPacks.compactMap(\.script)) {
+                    OCRService.looksLikeWord($0, languages: ["en", "fr", "de"])
+                }
+            } else {
+                apple.complete = false      // Apple's text stays, but the Greek (say) is missing
+            }
+            return apple
+        }
 
         // Each page's media box is its own crop (no padding, no resampling), sized at
         // its render DPI so the page keeps its physical size: a 300 DPI crop 2550 px
@@ -124,14 +161,14 @@ enum PDFExporter {
                 }
             }
 
-            // 2. OCR the batch in parallel. nil = Vision failed on the whole page;
+            // 2. OCR the batch in parallel. nil = the reader failed on the whole page;
             //    incomplete = it failed on part of it.
             let noText = OCRService.Recognition(lines: [], complete: true)
             var text = [OCRService.Recognition?](repeating: noText, count: images.count)
             if settings.ocr {
                 text.withUnsafeMutableBufferPointer { out in
                     DispatchQueue.concurrentPerform(iterations: images.count) { i in
-                        out[i] = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages)
+                        out[i] = recognize(images[i])
                         readLock.withLock {
                             pagesRead += 1
                             let shown = min(pagesRead, total - 1)
@@ -143,7 +180,7 @@ enum PDFExporter {
                 // failed or partly failed pages one more try now that the rest of
                 // the batch is done, keeping whichever result read more.
                 for i in text.indices where text[i]?.complete != true {
-                    guard let retry = OCRService.recognizeLines(images[i], languages: settings.ocrLanguages) else { continue }
+                    guard let retry = recognize(images[i]) else { continue }
                     if retry.complete || retry.lines.count > (text[i]?.lines.count ?? -1) { text[i] = retry }
                 }
             }

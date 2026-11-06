@@ -51,6 +51,14 @@ make_size 512  icon_512x512.png
 make_size 1024 icon_512x512@2x.png
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
+echo "==> Adding tesseract"
+"$PROJ_DIR/Tools/build_tesseract.sh"
+TESS_OUT="$PROJ_DIR/.build-tesseract/out"
+cp "$TESS_OUT/tesseract" "$APP/Contents/MacOS/tesseract"
+mkdir -p "$APP/Contents/Resources/tessdata" "$APP/Contents/Resources/Licenses"
+cp "$TESS_OUT"/tessdata/*.traineddata "$APP/Contents/Resources/tessdata/"
+cp "$TESS_OUT"/licenses/*.txt "$APP/Contents/Resources/Licenses/"
+
 echo "==> Writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -88,6 +96,7 @@ IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -o 
 if [ -n "$IDENTITY" ]; then
     echo "==> Signing as $IDENTITY"
     # Hardened runtime and a secure timestamp: notarization requires both.
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/tesseract"
     codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
     codesign --verify --strict --verbose "$APP"
 else

@@ -93,6 +93,15 @@ final class AppModel: ObservableObject {
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
     @Published var ocrEnabled = true
+    @Published var ocrReader: OCRReader = .apple
+    @Published var ocrPacks: [String] = []
+    enum PackDownloadState { case downloading, failed }
+    /// The language packs in the user's folder (see refreshPacks).
+    @Published private(set) var installedPacks: Set<String> = []
+    /// Downloads running or failed, by language code.
+    @Published private(set) var packDownloads: [String: PackDownloadState] = [:]
+    private let defaults: UserDefaults
+    private var prefsSinks: [AnyCancellable] = []
     /// The open PDF already has a text layer (see PDFExporter.hasText).
     @Published private(set) var sourceHasText = false
     /// The running check for it (see checkForText), so tests can wait for it.
@@ -217,7 +226,14 @@ final class AppModel: ObservableObject {
     /// Set while an export runs; cancelExport() trips it.
     private var exportCancel: CancelFlag?
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let raw = defaults.string(forKey: "ocrReader"), let r = OCRReader(rawValue: raw) { ocrReader = r }
+        ocrPacks = defaults.stringArray(forKey: "ocrPacks") ?? []
+        prefsSinks = [
+            $ocrReader.dropFirst().sink { defaults.set($0.rawValue, forKey: "ocrReader") },
+            $ocrPacks.dropFirst().sink { defaults.set($0, forKey: "ocrPacks") },
+        ]
         // Save a moment after the last change, and immediately on quit.
         autosave = Publishers.CombineLatest4($pages, $direction, $pageSizeOverride, $stackExclusions)
             .dropFirst()
@@ -230,6 +246,40 @@ final class AppModel: ObservableObject {
                 self.saveEdits(self.pages, self.direction, wait: true)
             }
         }
+    }
+
+    /// Installs the bundled packs, then lists what the user's folder holds.
+    func refreshPacks() {
+        Task.detached {
+            TesseractService.installBundledPacks()
+            let found = TesseractService.installedPacks()
+            await MainActor.run { self.installedPacks = found }
+        }
+    }
+
+    /// Downloads a pack unless it is already coming.
+    func downloadPack(_ code: String) {
+        guard packDownloads[code] != .downloading else { return }
+        packDownloads[code] = .downloading
+        Task {
+            do {
+                try await TesseractService.download(code)
+                packDownloads[code] = nil
+            } catch {
+                packDownloads[code] = .failed
+            }
+            refreshPacks()
+        }
+    }
+
+    /// Copies chosen `.traineddata` files into the pack folder and ticks them.
+    func addPacks(from urls: [URL]) {
+        for url in urls {
+            if let code = try? TesseractService.addPack(from: url), !ocrPacks.contains(code) {
+                ocrPacks.append(code)
+            }
+        }
+        refreshPacks()
     }
 
     var selectedPage: BookPage? {
@@ -1984,7 +2034,8 @@ final class AppModel: ObservableObject {
         // rather than look stuck.
         statusText = ocrEnabled ? "Exporting… Text recognition can take a minute to start." : "Exporting…"
         let pagesSnapshot = pages
-        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled, enhanceMode: enhanceMode)
+        var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled,
+                                            reader: ocrReader, packs: ocrPacks, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         let cancel = CancelFlag()
         exportCancel = cancel

@@ -136,6 +136,46 @@ private struct OutputGroup: View {
 /// which turns into the export's progress while it runs.
 private struct ExportOptions: View {
     @EnvironmentObject var model: AppModel
+    // State(initialValue:) rather than @State, for Command Line Tools (see PageSizeRow).
+    private let packsState = State(initialValue: false)
+
+    /// The ticked packs the current reader uses.
+    private var applicable: [String] {
+        model.ocrPacks.filter { code in
+            model.ocrReader == .tesseract || TesseractLanguage.fillsIn(code)
+        }
+    }
+
+    private func name(_ code: String) -> String {
+        TesseractLanguage.all.first { $0.code == code }?.name ?? code
+    }
+
+    /// The reader, its languages, and what is wrong with them.
+    @ViewBuilder private var readerRows: some View {
+        Picker("Reader", selection: $model.ocrReader) {
+            Text("Apple").tag(OCRReader.apple)
+            Text("Tesseract").tag(OCRReader.tesseract)
+        }
+        .help("Apple reads accents and mixed languages best. Tesseract is for books mainly in a script Apple can't read.")
+        LabeledContent("Languages") {
+            HStack {
+                Text(applicable.isEmpty ? "None" : applicable.map(name).joined(separator: ", "))
+                    .multilineTextAlignment(.trailing)
+                Button("Choose…") { packsState.wrappedValue = true }
+            }
+        }
+        let missing = applicable.filter { !model.installedPacks.contains($0) && model.packDownloads[$0] != .downloading }
+        if model.ocrReader == .tesseract && applicable.isEmpty {
+            Text("No language chosen: Tesseract will read English.").font(.caption).foregroundStyle(.secondary)
+        }
+        if !missing.isEmpty {
+            Text("Not downloaded: \(missing.map(name).joined(separator: ", ")).")
+                .font(.caption).foregroundStyle(.orange)
+        }
+        if TesseractService.executableURL() == nil && (model.ocrReader == .tesseract || !applicable.isEmpty) {
+            Text("Tesseract is missing from this copy of the app.").font(.caption).foregroundStyle(.red)
+        }
+    }
 
     var body: some View {
         Form {
@@ -146,6 +186,7 @@ private struct ExportOptions: View {
                     }
                 }
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
+                if model.ocrEnabled { readerRows }
                 Picker("Reading order", selection: $model.direction) {
                     ForEach(ReadingDirection.allCases) { d in
                         Text(d.label).tag(d)
@@ -208,6 +249,8 @@ private struct ExportOptions: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { model.refreshPacks() }
+        .sheet(isPresented: packsState.projectedValue) { LanguagePacksView() }
     }
 }
 
