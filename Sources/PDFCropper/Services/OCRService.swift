@@ -22,8 +22,8 @@ enum OCRService {
     struct Word {
         let text: String
         let box: CGRect
-        /// The reader's confidence, 0-100. Tesseract reports one; 100 where none is known.
-        var conf: Double = 100
+        /// The reader's confidence, 0-100. nil where Tesseract gave none (empty, -1): unknown.
+        var conf: Double? = 100
     }
 
     private static let ciContext = CIContext(options: nil)
@@ -300,11 +300,16 @@ enum OCRService {
         func covered(_ box: CGRect) -> Bool {
             let area = box.width * box.height
             guard area > 0, !box.isNull else { return true }
-            let shared = appleBoxes.reduce(CGFloat(0)) { sum, other in
-                let overlap = other.intersection(box)
-                return overlap.isNull ? sum : sum + overlap.width * overlap.height
+            return unionArea(appleBoxes.map { $0.intersection(box) }) >= Double(area) * 0.3
+        }
+        // Lines across more than one column are no anchor for a line of one column.
+        let pageBox = result.map(\.box).filter { !$0.isNull }.reduce(CGRect.null) { $0.union($1) }
+        func spans(_ box: CGRect) -> Bool {
+            guard !box.isNull, box.width > 0.6 * pageBox.width else { return false }
+            let beside = result.map(\.box).filter { other in
+                !other.isNull && min(other.maxX, box.maxX) - max(other.minX, box.minX) > 0 && other.width <= 0.6 * pageBox.width
             }
-            return shared >= area * 0.3
+            return beside.contains { a in beside.contains { b in a.maxX <= b.minX } }
         }
         for index in Set(candidateLine).sorted() {
             let words = tess[index].words
@@ -317,19 +322,22 @@ enum OCRService {
                 k = end
                 let greek = span.filter { letterCount($0.text) >= 2 }.count
                 let total = span.reduce(0) { $0 + letterCount($1.text) }
-                let confidence = span.reduce(0) { $0 + $1.conf } / Double(span.count)
+                let confs = span.compactMap(\.conf)
                 let sizes = span.map(\.box.height).sorted()
                 let size = sizes[sizes.count / 2]
-                guard greek >= 2, total >= 6, confidence >= 80,
-                      textHeight.map({ size >= $0 * 0.6 && size <= $0 * 1.6 }) ?? true else { continue }
+                // No confidence is no evidence; no Apple text to size against means Vision saw no text.
+                guard greek >= 2, total >= 6, confs.count == span.count,
+                      confs.reduce(0, +) / Double(confs.count) >= 80,
+                      let textHeight, size >= textHeight * 0.6, size <= textHeight * 1.6 else { continue }
                 let box = span.reduce(CGRect.null) { $0.union($1.box) }
                 let added = Line(text: span.map(\.text).joined(separator: " "), box: box, words: span)
                 // Beside the lines in its own column: after the nearest one above it, else
                 // before the nearest one below. With no column to match, by height alone.
+                let wide = spans(box)
                 let column = result.indices.filter { i in
                     let other = result[i].box
                     let shared = min(other.maxX, box.maxX) - max(other.minX, box.minX)
-                    return !other.isNull && shared >= 0.5 * min(other.width, box.width)
+                    return !other.isNull && shared >= 0.5 * min(other.width, box.width) && (wide || !spans(other))
                 }
                 let above = column.filter { result[$0].box.midY >= box.midY }
                     .min { result[$0].box.midY - box.midY < result[$1].box.midY - box.midY }

@@ -196,6 +196,63 @@ struct TesseractTests {
         #expect(result.map { String($0.text.prefix(2)) } == ["L1", "L2", "L3", "R1", "ἄν", "R3"])
     }
 
+    @Test("A Tesseract word with no usable confidence cannot start a new line")
+    func fillInUnknownConfidence() {
+        let apple = [row(["English", "text", "above"], x: 0.1, y: 0.8), row(["English", "below"], x: 0.1, y: 0.2)]
+        func added(_ conf: String) -> Bool {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+            let rows = zip(["ἄνθρωπος", "φύσει", "πολιτικὸν"], [0, 300, 600]).enumerated().map { i, pair in
+                "5\t1\t1\t1\t1\t\(i + 1)\t\(pair.1)\t475\t250\t50\t\(conf)\t\(pair.0)"
+            }
+            let tess = TesseractService.parseTSV(([header] + rows).joined(separator: "\n"), imageSize: CGSize(width: 1000, height: 1000))
+            return OCRService.fillIn(apple, from: tess, scripts: [.greek], keep: { _ in true }).count == 3
+        }
+        #expect(added("95"))
+        #expect(added("95,3"))
+        #expect(!added(""))
+        #expect(!added("-1"))
+        #expect(!added("abc"))
+        #expect(TesseractService.parseTSV("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t95,3\tx",
+                                          imageSize: CGSize(width: 100, height: 100))[0].words[0].conf == 95.3)
+    }
+
+    @Test("With no Apple text to size against, no Greek line is added")
+    func fillInNoHeightReference() {
+        let tiny = row(["λόγος", "θεός"], x: 0.1, y: 0.5, w: 0.2, h: 0.001)
+        #expect(OCRService.fillIn([], from: [tiny], scripts: [.greek], keep: { _ in true }).isEmpty)
+        let page = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.5, w: 0.2)
+        #expect(OCRService.fillIn([], from: [page], scripts: [.greek], keep: { _ in true }).isEmpty)
+    }
+
+    @Test("Overlapping Apple boxes count their shared area once against a missing Greek word")
+    func fillInOverlappingCoverage() {
+        // Two identical Apple boxes each cover the same 20% of the Greek line's middle word:
+        // 20% covered, not 40%, so the line stays whole and goes in.
+        func box(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat = 0.05) -> OCRService.Word {
+            OCRService.Word(text: "x", box: CGRect(x: x, y: y, width: w, height: h))
+        }
+        // Each tall box overlaps the middle word's lower 20% and under half of itself.
+        let tall = box(0.62, 0.54, 0.1, 0.1)
+        let page = [line([box(0.1, 0.8, 0.1), box(0.25, 0.8, 0.1)]), line([tall, tall]),
+                    line([box(0.1, 0.2, 0.1), box(0.25, 0.2, 0.1)])]
+        let greek = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.5, y: 0.5, w: 0.1)
+        let result = OCRService.fillIn(page, from: [greek], scripts: [.greek], keep: { _ in true })
+        #expect(result.contains { $0.text == "ἄνθρωπος φύσει πολιτικὸν" })
+    }
+
+    @Test("A full-width heading does not anchor a missing line of one column")
+    func fillInHeadingNotAnAnchor() {
+        func col(_ t: String, x: CGFloat, y: CGFloat) -> OCRService.Line {
+            row([t, "word", "here"], x: x, y: y, w: 0.1, h: 0.05)
+        }
+        let heading = row(["A", "Chapter", "Heading", "Across", "The", "Whole", "Page", "Width", "Here"], x: 0.05, y: 0.9, w: 0.08, h: 0.05)
+        let apple = [heading, col("L1", x: 0.05, y: 0.75), col("L2", x: 0.05, y: 0.55), col("L3", x: 0.05, y: 0.35),
+                     col("R2", x: 0.55, y: 0.55), col("R3", x: 0.55, y: 0.35)]
+        let missing = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.55, y: 0.75, w: 0.1, h: 0.05)
+        let result = OCRService.fillIn(apple, from: [missing], scripts: [.greek], keep: { _ in true })
+        #expect(result.map { String($0.text.prefix(2)) } == ["A ", "L1", "L2", "L3", "ἄν", "R2", "R3"])
+    }
+
     @Test("A failed Greek pass leaves Apple's text but marks the page incomplete")
     func failedFillInIsIncomplete() throws {
         let previous = PDFExporter.tessdataOverride
