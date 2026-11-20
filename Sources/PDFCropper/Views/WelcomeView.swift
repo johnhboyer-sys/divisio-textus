@@ -20,8 +20,8 @@ struct WelcomeView: View {
             VStack(spacing: 0) {
                 Color.clear.frame(height: geo.size.height / 3)
 
-                VStack(spacing: 14) {
-                    Image(nsImage: NSApp.applicationIconImage)
+                VStack(spacing: 10) {
+                    Image(nsImage: model.appIcon ?? NSApp.applicationIconImage)
                         .resizable()
                         .frame(width: 116, height: 116)
                         .shadow(color: .black.opacity(0.35), radius: 14, y: 9)
@@ -42,11 +42,16 @@ struct WelcomeView: View {
                 .frame(height: geo.size.height / 3)
 
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130, maximum: 150), spacing: 12, alignment: .top)],
-                              alignment: .center, spacing: 12) {
-                        ForEach(model.recents) { RecentCard(recent: $0) }
+                    // Rows of as many cards as fit (at most 8), each row centred.
+                    let perRow = max(1, min(RecentFiles.shown, Int((geo.size.width - 80 + 12) / 144)))
+                    VStack(spacing: 12) {
+                        ForEach(Array(stride(from: 0, to: model.recents.count, by: perRow)), id: \.self) { start in
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(model.recents[start..<min(start + perRow, model.recents.count)]) { RecentCard(recent: $0) }
+                            }
+                        }
                     }
-                    .frame(maxWidth: 8 * 150 + 7 * 12)
+                    .frame(maxWidth: .infinity)
                     .padding(.top, 8)
                 }
                 .frame(height: geo.size.height / 3, alignment: .top)
@@ -73,7 +78,7 @@ struct WelcomeView: View {
 
     /// The name as on the product site: each word on its own side of a dashed split line.
     private var nameSplit: some View {
-        let word = Font.system(size: 72, weight: .heavy)
+        let word = Font.system(size: 64, weight: .heavy)
         return HStack(spacing: 0) {
             Text("Divisio").font(word).tracking(-2.5)
                 .frame(maxWidth: .infinity, alignment: .trailing)

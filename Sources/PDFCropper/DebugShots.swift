@@ -48,7 +48,7 @@ enum DebugShots {
         }
         // A debug build run from the build folder has no app icon: use the site's.
         if let icon = NSImage(contentsOfFile: "/Users/johnboyer/Developer/divisio-site/img/icon-256.png") {
-            NSApp.applicationIconImage = icon
+            model.appIcon = icon
         }
         model.refreshRecents()
         Task { @MainActor in

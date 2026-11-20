@@ -91,6 +91,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var pageSizeOverride: PageSize?
     /// The PDFs opened lately, for the Welcome screen.
     @Published private(set) var recents: [RecentPDF] = []
+    /// Replaces the app's icon on the Welcome screen (the DEBUG shots build has no bundle icon).
+    @Published var appIcon: NSImage?
     func refreshRecents() { recents = RecentFiles.list() }
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
