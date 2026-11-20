@@ -53,6 +53,9 @@ struct ThumbnailRail: View {
                     }
                     .padding(8)
                 }
+                // On first showing, and when a document loads, bring the selected page into view.
+                .onAppear { scrollToSelected(proxy) }
+                .onChange(of: model.pages.count) { _, _ in scrollToSelected(proxy) }
                 // Keep the selected page in view when ↑/↓ moves past the visible rows.
                 .onChange(of: model.selectedPageID) { _, id in
                     guard let id else { return }
@@ -66,6 +69,12 @@ struct ThumbnailRail: View {
             }
         }
         .frame(minWidth: 170)
+    }
+
+    private func scrollToSelected(_ proxy: ScrollViewProxy) {
+        guard let id = model.selectedPageID else { return }
+        // After the rows exist.
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
     }
 
     /// Trim All Pages: leave the chosen pages out, or put them back (the page
