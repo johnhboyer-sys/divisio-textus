@@ -60,6 +60,7 @@ struct ThumbnailRail: View {
                 .onChange(of: model.selectedPageID) { _, id in
                     guard let id else { return }
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
+                    scrollToSelected(proxy)   // again once the rows are laid out, for a far jump
                 }
                 // And the page chosen for Trim All Pages, as ↑/↓ move it.
                 .onChange(of: model.trimSelection) { _, chosen in
@@ -74,7 +75,7 @@ struct ThumbnailRail: View {
     private func scrollToSelected(_ proxy: ScrollViewProxy) {
         guard let id = model.selectedPageID else { return }
         // After the rows exist.
-        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { proxy.scrollTo(id, anchor: .center) }
     }
 
     /// Trim All Pages: leave the chosen pages out, or put them back (the page
