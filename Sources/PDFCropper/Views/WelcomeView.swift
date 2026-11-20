@@ -15,35 +15,46 @@ struct WelcomeView: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 116, height: 116)
-                .shadow(color: .black.opacity(0.35), radius: 14, y: 9)
+        // Thirds: the logo block sits in the middle one, the recent PDFs in the last.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                Color.clear.frame(height: geo.size.height / 3)
 
-            nameSplit
+                VStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 116, height: 116)
+                        .shadow(color: .black.opacity(0.35), radius: 14, y: 9)
 
-            Button {
-                model.openPanel()
-            } label: {
-                Label("Open PDF…", systemImage: "folder")
-                    .font(.title3)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .keyboardShortcut("o")
+                    nameSplit
 
-            if !model.recents.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Recent").font(.headline).padding(.leading, 8)
-                    ForEach(model.recents) { RecentRow(recent: $0) }
+                    Button {
+                        model.openPanel()
+                    } label: {
+                        Label("Open PDF…", systemImage: "folder")
+                            .font(.title3)
+                            .padding(.horizontal, 10).padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut("o")
                 }
-                .frame(width: 380)
-                .padding(.top, 8)
+                .frame(height: geo.size.height / 3)
+
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130, maximum: 150), spacing: 12, alignment: .top)],
+                              alignment: .center, spacing: 12) {
+                        ForEach(model.recents) { RecentCard(recent: $0) }
+                    }
+                    .frame(maxWidth: 8 * 150 + 7 * 12)
+                    .padding(.top, 8)
+                }
+                .frame(height: geo.size.height / 3, alignment: .top)
+                .opacity(model.recents.isEmpty ? 0 : 1)
             }
+            .frame(maxWidth: .infinity)
         }
-        .padding(40)
+        .padding(.horizontal, 40).padding(.vertical, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)   // fills the window, incl. full screen
         .background(
             RoundedRectangle(cornerRadius: 16)
@@ -86,7 +97,7 @@ struct WelcomeView: View {
 }
 
 /// One recent PDF: first-page thumbnail, name, when it was opened. Click opens it.
-private struct RecentRow: View {
+private struct RecentCard: View {
     @EnvironmentObject var model: AppModel
     let recent: RecentPDF
     private let thumbnail = State<NSImage?>(initialValue: nil)
@@ -94,26 +105,26 @@ private struct RecentRow: View {
 
     var body: some View {
         Button { model.load(url: recent.url) } label: {
-            HStack(spacing: 10) {
+            VStack(spacing: 4) {
                 Group {
                     if let image = thumbnail.wrappedValue {
                         Image(nsImage: image).resizable().scaledToFit()
+                            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
                     } else {
-                        Color.secondary.opacity(0.15)
+                        Color.clear
                     }
                 }
-                .frame(width: 40, height: 52)
-                .background(.white)
-                .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+                .frame(width: 120, height: 110)
 
                 Text(recent.url.deletingPathExtension().lastPathComponent)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 8)
+                    .font(.caption)
+                    .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.center)
+                    .frame(width: 120, height: 30, alignment: .top)
                 Text(recent.opened, format: .relative(presentation: .named))
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(hover.wrappedValue ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .padding(6)
+            .background(hover.wrappedValue ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -121,12 +132,12 @@ private struct RecentRow: View {
         .help(recent.url.path)
         .task(id: recent.url) {
             let url = recent.url
-            thumbnail.wrappedValue = await Task.detached(priority: .utility) { RecentRow.firstPage(of: url) }.value
+            thumbnail.wrappedValue = await Task.detached(priority: .utility) { RecentCard.firstPage(of: url) }.value
         }
     }
 
     nonisolated private static func firstPage(of url: URL) -> NSImage? {
         guard let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
-        return page.thumbnail(of: CGSize(width: 80, height: 104), for: .mediaBox)
+        return page.thumbnail(of: CGSize(width: 240, height: 220), for: .mediaBox)
     }
 }
