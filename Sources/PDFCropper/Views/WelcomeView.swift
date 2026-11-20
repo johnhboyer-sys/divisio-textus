@@ -15,11 +15,11 @@ struct WelcomeView: View {
     }
 
     var body: some View {
-        // Thirds: the logo block sits in the middle one, the recent PDFs in the last.
+        // Rule of thirds: the logo block is centred on the upper third line, the recent PDFs below it.
         GeometryReader { geo in
-            VStack(spacing: 0) {
-                Color.clear.frame(height: geo.size.height / 3)
-
+            let recentsTop = max(geo.size.height * 0.56, geo.size.height / 3 + 170)
+            let recentsHeight = max(0, geo.size.height - recentsTop - 16)
+            ZStack(alignment: .topLeading) {
                 VStack(spacing: 10) {
                     Image(nsImage: model.appIcon ?? NSApp.applicationIconImage)
                         .resizable()
@@ -39,7 +39,7 @@ struct WelcomeView: View {
                     .controlSize(.large)
                     .keyboardShortcut("o")
                 }
-                .frame(height: geo.size.height / 3)
+                .position(x: geo.size.width / 2, y: geo.size.height / 3)
 
                 ScrollView {
                     // Rows of as many cards as fit (at most 8), each row centred.
@@ -54,10 +54,10 @@ struct WelcomeView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8)
                 }
-                .frame(height: geo.size.height / 3, alignment: .top)
+                .frame(width: geo.size.width, height: recentsHeight, alignment: .top)
+                .position(x: geo.size.width / 2, y: recentsTop + recentsHeight / 2)
                 .opacity(model.recents.isEmpty ? 0 : 1)
             }
-            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 40).padding(.vertical, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)   // fills the window, incl. full screen
