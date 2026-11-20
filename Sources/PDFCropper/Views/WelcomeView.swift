@@ -82,7 +82,7 @@ struct WelcomeView: View {
         return HStack(spacing: 0) {
             Text("Divisio").font(word).tracking(-2.5)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-            Rectangle().fill(.clear).frame(width: 24)
+            Color.clear.frame(width: 24, height: 1)
             Text("Textus").font(word).tracking(-2.5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
