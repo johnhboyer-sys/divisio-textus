@@ -33,25 +33,14 @@ struct CropBoxView: View {
                height: crop.height * imageFrame.height)
     }
 
-    #if DEBUG
-    /// DIVISIO_TAGSTYLE=dark: white text on darkened green and orange tags (for comparing).
-    private static let darkTags = ProcessInfo.processInfo.environment["DIVISIO_TAGSTYLE"] == "dark"
-    #endif
-    private var lightTag: Bool { color == .green || color == .orange }
+    /// Tags carry white text. Green and orange are darkened to 65% of the system colours
+    /// (52,199,89 and 255,149,0) so white on them passes WCAG AA: 4.9:1 and 4.85:1.
     private var tagFill: Color {
-        #if DEBUG
-        // 65% of the system green (52,199,89) and orange (255,149,0): white on them is 4.9:1 and 4.85:1 (WCAG AA is 4.5).
-        if Self.darkTags && color == .green { return Color(red: 34 / 255, green: 129 / 255, blue: 58 / 255) }
-        if Self.darkTags && color == .orange { return Color(red: 166 / 255, green: 97 / 255, blue: 0) }
-        #endif
+        if color == .green { return Color(red: 34 / 255, green: 129 / 255, blue: 58 / 255) }
+        if color == .orange { return Color(red: 166 / 255, green: 97 / 255, blue: 0) }
         return color
     }
-    private var tagText: Color {
-        #if DEBUG
-        if Self.darkTags { return .white }
-        #endif
-        return lightTag ? .black : .white
-    }
+    private var tagText: Color { .white }
 
     var body: some View {
         let r = viewRect
