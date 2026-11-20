@@ -14,7 +14,6 @@ struct ExportView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                     Spacer()
-                    Text("Esc goes back").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
@@ -74,7 +73,7 @@ private struct OutputGroup: View {
         HStack(alignment: .top, spacing: 4) {
             switch page.classification {
             case .skip:
-                leftOut(aspect: aspect(of: nil), caption: "Scan \(page.sourceIndex + 1)")
+                leftOut(aspect: aspect(of: nil), caption: "Page \(page.sourceIndex + 1)")
             case .single:
                 if let image = images.first {
                     shown(image, number: first, flag: !flagged.isEmpty)
@@ -84,7 +83,7 @@ private struct OutputGroup: View {
                 let kept = sides.filter { $0 != page.omittedSide }
                 ForEach(sides, id: \.self) { side in
                     if side == page.omittedSide {
-                        leftOut(aspect: aspect(of: side), caption: "Scan \(page.sourceIndex + 1) \(side.rawValue)")
+                        leftOut(aspect: aspect(of: side), caption: "Page \(page.sourceIndex + 1) \(side.rawValue)")
                     } else if let k = kept.firstIndex(of: side), images.indices.contains(k) {
                         shown(images[k], number: first + k,
                               flag: flagged.contains(.whole) || flagged.contains(side == .left ? .left : .right))
@@ -382,7 +381,7 @@ struct PageSizeRow: View {
     private var note: String? {
         if size.override != nil { return nil }
         if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
-        return "Measured on \(size.measured) of \(size.total) pages."
+        return nil
     }
 
     private func apply() {
