@@ -145,6 +145,7 @@ enum HillClimb {
 struct HCRandom {
     var state: UInt64
     init(_ seed: UInt64) { state = seed &+ 0x9E37_79B9_7F4A_7C15 }
+    init(seed: UInt64) { self.init(seed) }      // the OCR harness's spelling
     mutating func next() -> UInt64 {
         state = state &+ 0x9E37_79B9_7F4A_7C15
         var z = state
