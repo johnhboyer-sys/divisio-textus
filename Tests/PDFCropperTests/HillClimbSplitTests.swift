@@ -195,7 +195,7 @@ struct HillClimbSplitTests {
 
     private func scoreReal(into records: inout [[String: Any]]) async -> [String: Any] {
         var books: [[String: Any]] = []
-        var total = (pages: 0, glyphs: 0, split: 0, crop: 0)
+        var total = (pages: 0, glyphs: 0, split: 0, crop: 0, splitAll: 0, cropAll: 0)
         for url in HillClimb.bookURLs() {
             let t0 = HillClimb.now()
             let bytes = HillClimb.fileSize(url)
@@ -213,7 +213,7 @@ struct HillClimbSplitTests {
                 continue
             }
             let tAnalysis = HillClimb.now() - t0
-            var counts = (glyphs: 0, split: 0, crop: 0)
+            var counts = (glyphs: 0, split: 0, crop: 0, splitAll: 0, cropAll: 0)
             var classes: [String: Int] = [:]
             for (n, page) in m.pages.enumerated() {
                 let original = n * step
@@ -231,23 +231,35 @@ struct HillClimbSplitTests {
                     let size = PDFRenderer.displaySize(of: pdfPage)
                     let dpi = min(110.0, 1600.0 / Double(max(size.width, size.height)) * 72)
                     guard let raw = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return }
-                    var splitCuts = 0
+                    var splitCuts = 0, splitCutsAll = 0
                     let straight = ImageTransform.deskewedComposite(raw, splitX: page.splitX,
                         leftDegrees: page.leftSkew, rightDegrees: page.rightSkew, isSpread: page.isSpread)
                     let w = raw.width, h = raw.height
-                    let straightGlyphs = HCGlyphDetector.glyphs(HillClimb.gray(straight), width: w, height: h)
+                    // Counted: glyphs less the pieces of vertical marks (fold crease, fold-shadow speckle).
+                    // `...All` keeps the finder's whole list, as runs before split-r3 counted it.
+                    let straightGray = HillClimb.gray(straight)
+                    let straightAll = HCGlyphDetector.glyphs(straightGray, width: w, height: h)
+                    let straightGlyphs = HCGlyphDetector.withoutVerticalMarks(straightAll, gray: straightGray, width: w, height: h)
                     if page.isSpread {
-                        let rawGlyphs = page.leftSkew == 0 && page.rightSkew == 0
-                            ? straightGlyphs : HCGlyphDetector.glyphs(HillClimb.gray(raw), width: w, height: h)
+                        let unturned = page.leftSkew == 0 && page.rightSkew == 0
+                        let rawGray = unturned ? straightGray : HillClimb.gray(raw)
+                        let rawAll = unturned ? straightAll : HCGlyphDetector.glyphs(rawGray, width: w, height: h)
+                        let rawGlyphs = unturned
+                            ? straightGlyphs : HCGlyphDetector.withoutVerticalMarks(rawAll, gray: rawGray, width: w, height: h)
                         let splitPx = max(1, min(w - 1, Int(page.splitX * Double(w))))
                         splitCuts = HCGlyphDetector.cutBySplit(rawGlyphs, atPixel: splitPx)
+                        splitCutsAll = HCGlyphDetector.cutBySplit(rawAll, atPixel: splitPx)
                     }
                     let rects = page.outputCrops(direction: .leftToRight).map { pixelRect($0, w, h) }
                     let cropCuts = HCGlyphDetector.cutByCrops(straightGlyphs, rects)
+                    let cropCutsAll = HCGlyphDetector.cutByCrops(straightAll, rects)
                     record["glyphs"] = straightGlyphs.count
                     record["splitCutsGlyphs"] = splitCuts
                     record["cropCutsGlyphs"] = cropCuts
+                    record["splitCutsGlyphsAll"] = splitCutsAll
+                    record["cropCutsGlyphsAll"] = cropCutsAll
                     counts.glyphs += straightGlyphs.count; counts.split += splitCuts; counts.crop += cropCuts
+                    counts.splitAll += splitCutsAll; counts.cropAll += cropCutsAll
                 }
                 records.append(record)
             }
@@ -257,14 +269,17 @@ struct HillClimbSplitTests {
                 "pagesScored": m.pages.count, "sampled": step > 1, "sampleEvery": step,
                 "classes": classes, "glyphs": counts.glyphs,
                 "splitCutsGlyphs": counts.split, "cropCutsGlyphs": counts.crop,
+                "splitCutsGlyphsAll": counts.splitAll, "cropCutsGlyphsAll": counts.cropAll,
                 "analysisSeconds": HillClimb.r(tAnalysis, 1),
             ])
             total.pages += m.pages.count; total.glyphs += counts.glyphs
             total.split += counts.split; total.crop += counts.crop
+            total.splitAll += counts.splitAll; total.cropAll += counts.cropAll
             if step > 1 { try? FileManager.default.removeItem(at: source) }
         }
         return ["books": books,
                 "totals": ["pages": total.pages, "glyphs": total.glyphs,
-                           "splitCutsGlyphs": total.split, "cropCutsGlyphs": total.crop]]
+                           "splitCutsGlyphs": total.split, "cropCutsGlyphs": total.crop,
+                           "splitCutsGlyphsAll": total.splitAll, "cropCutsGlyphsAll": total.cropAll]]
     }
 }

@@ -78,6 +78,17 @@ through (`cropCutsGlyphs`, in the straightened frame, as exported). There is no 
 truth, so the counts only show change: a lower number is better, but compare pages with
 `diff_split.py`.
 
+From split-r3 the counts leave out pieces of vertical marks (`verticalMarks` in
+`HillClimbGlyphs.swift`): a fold's crease line broken into dashes, the speckle of a
+binarized fold shadow, the striped edges of the page stack. A piece is left out only when
+it sits in no text line, is at least twice as tall as wide, is one of 3 or more such pieces
+stacked one under the next over at least 5% of the page height with gray, not paper, in
+every row between them, is no wider than the stack's usual piece, and has no row neighbour
+outside the stack. In split-r1b the 45 pages with the most split cuts and the 40 with the
+most crop cuts held no cut print, only such marks, comb teeth (still counted) and page
+edges. `splitCutsGlyphsAll` and `cropCutsGlyphsAll` keep the old count; `glyphs` counts
+after the marks are left out.
+
 ## Diff two runs
 
     Tools/hillclimb/diff_split.py $HILLCLIMB_DIR/results/baseline $HILLCLIMB_DIR/results/new /tmp/diff

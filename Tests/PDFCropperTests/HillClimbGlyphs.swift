@@ -96,6 +96,113 @@ enum HCGlyphDetector {
         return out
     }
 
+    /// Pieces of a vertical mark (a fold's crease line, the speckle of a fold shadow) that the
+    /// size rule lets through as glyphs. Print sits in text lines; these pieces are thin and
+    /// sit in a column, one under the next. A piece is left out when all hold:
+    /// * it is in no text line: chained to its neighbours in the row (they overlap it by half
+    ///   the smaller height, are at most 2.5 times as tall, and are no further off than the
+    ///   taller one is tall), it and they span less than 3 times their middle height;
+    /// * it is at least twice as tall as it is wide;
+    /// * it is in a stack of such pieces: chained to them above and below (sharing a column,
+    ///   no further off than half the shorter one's height or 3 px, and every row of the gap
+    ///   gray, not paper, in the columns they share), 3 or more pieces over at least 5% of
+    ///   the page height;
+    /// * it is no wider than its stack's middle width plus max(2 px, a quarter), and has no
+    ///   row neighbour outside its stack (print fused to a mark, or set beside it, stays).
+    /// So a folio, a word, a column of page or line numbers (clean paper between them), an
+    /// arrow between two numbers are all still counted. On the 312 synthetic pages no piece
+    /// left out touches drawn print (`HillClimbTriage`, HILLCLIMB_TRIAGE=synth).
+    static func verticalMarks(_ gs: [HCGlyph], gray g: [UInt8], width w: Int, height h: Int) -> Set<Int> {
+        let n = gs.count
+        guard n > 2 else { return [] }
+        // A mark runs on through the gap between its pieces: every row of the gap, in the columns
+        // the two pieces share, holds a pixel darker than two thirds of the way from the ink
+        // threshold to white. Between lines of print some row of the gap is clean paper.
+        let t = otsu(g), markGray = t + (255 - t) * 2 / 3
+        func bridged(_ a: HCGlyph, _ b: HCGlyph) -> Bool {
+            let x0 = max(a.x0, b.x0), x1 = min(a.x1, b.x1)
+            guard b.y0 > a.y1 + 1, x1 >= x0 else { return true }
+            return (a.y1 + 1 ..< b.y0).allSatisfy { y in Int(g[(y * w + x0)...(y * w + x1)].min()!) <= markGray }
+        }
+        var parent = Array(0..<n)
+        func find(_ i: Int) -> Int {
+            var r = i
+            while parent[r] != r { r = parent[r] }
+            var c = i
+            while parent[c] != r { let x = parent[c]; parent[c] = r; c = x }
+            return r
+        }
+        func union(_ a: Int, _ b: Int) { let ra = find(a), rb = find(b); if ra != rb { parent[max(ra, rb)] = min(ra, rb) } }
+        func ht(_ g: HCGlyph) -> Int { g.y1 - g.y0 + 1 }
+        // Text lines: walk glyphs left to right.
+        let byX = (0..<n).sorted { gs[$0].x0 < gs[$1].x0 }
+        let maxH = gs.map(ht).max() ?? 0
+        var mates = [[Int]](repeating: [], count: n)
+        for (k, i) in byX.enumerated() {
+            let a = gs[i]
+            var m = k + 1
+            while m < n, gs[byX[m]].x0 <= a.x1 + 1 + maxH {
+                let j = byX[m], b = gs[j]
+                m += 1
+                let ha = ht(a), hb = ht(b), lo = min(ha, hb), hi = max(ha, hb)
+                guard Double(hi) <= 2.5 * Double(lo) else { continue }
+                let overlap = min(a.y1, b.y1) - max(a.y0, b.y0) + 1
+                guard 2 * overlap >= lo else { continue }
+                let gap = max(0, b.x0 - a.x1 - 1, a.x0 - b.x1 - 1)
+                if gap <= hi { union(i, j); mates[i].append(j); mates[j].append(i) }
+            }
+        }
+        var lineLo = [Int: Int](), lineHi = [Int: Int](), lineHeights = [Int: [Int]]()
+        for i in 0..<n {
+            let r = find(i)
+            lineLo[r] = min(lineLo[r] ?? Int.max, gs[i].x0)
+            lineHi[r] = max(lineHi[r] ?? Int.min, gs[i].x1)
+            lineHeights[r, default: []].append(ht(gs[i]))
+        }
+        let lineless = (0..<n).filter { i in
+            let r = find(i)
+            let hs = lineHeights[r]!.sorted()
+            return lineHi[r]! - lineLo[r]! + 1 < 3 * hs[hs.count / 2] && 2 * (gs[i].x1 - gs[i].x0 + 1) <= ht(gs[i])
+        }
+        // Stacks of thin line-less pieces: walk them top to bottom.
+        parent = Array(0..<n)
+        let byY = lineless.sorted { gs[$0].y0 < gs[$1].y0 }
+        for (k, i) in byY.enumerated() {
+            let a = gs[i]
+            var m = k + 1
+            while m < byY.count, gs[byY[m]].y0 <= a.y1 + 1 + maxH {
+                let j = byY[m], b = gs[j]
+                m += 1
+                guard b.x0 <= a.x1, b.x1 >= a.x0 else { continue }
+                let gap = max(0, b.y0 - a.y1 - 1)
+                if gap <= max(3, min(ht(a), ht(b)) / 2), bridged(a, b) { union(i, j) }
+            }
+        }
+        var count = [Int: Int](), top = [Int: Int](), bottom = [Int: Int](), widths = [Int: [Int]]()
+        for i in lineless {
+            let r = find(i)
+            count[r, default: 0] += 1
+            top[r] = min(top[r] ?? Int.max, gs[i].y0)
+            bottom[r] = max(bottom[r] ?? Int.min, gs[i].y1)
+            widths[r, default: []].append(gs[i].x1 - gs[i].x0 + 1)
+        }
+        let isLineless = Set(lineless)
+        return Set(lineless.filter { i in
+            let r = find(i)
+            guard count[r]! >= 3, Double(bottom[r]! - top[r]! + 1) >= 0.05 * Double(h) else { return false }
+            // A piece wider than its stack, or with a row neighbour outside the stack, has print fused to it or beside it.
+            let ws = widths[r]!.sorted(), med = ws[ws.count / 2]
+            guard gs[i].x1 - gs[i].x0 + 1 <= med + max(2, med / 4) else { return false }
+            return mates[i].allSatisfy { isLineless.contains($0) && find($0) == r }
+        })
+    }
+
+    /// `gs` less the pieces of vertical marks.
+    static func withoutVerticalMarks(_ gs: [HCGlyph], gray g: [UInt8], width w: Int, height h: Int) -> [HCGlyph] {
+        let marks = verticalMarks(gs, gray: g, width: w, height: h)
+        return gs.indices.filter { !marks.contains($0) }.map { gs[$0] }
+    }
+
     /// Glyphs the vertical line between pixel columns `x - 1` and `x` runs through.
     static func cutBySplit(_ glyphs: [HCGlyph], atPixel x: Int) -> Int {
         glyphs.filter { $0.x0 <= x - 1 && $0.x1 >= x }.count
