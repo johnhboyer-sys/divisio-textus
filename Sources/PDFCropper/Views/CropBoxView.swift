@@ -33,6 +33,26 @@ struct CropBoxView: View {
                height: crop.height * imageFrame.height)
     }
 
+    #if DEBUG
+    /// DIVISIO_TAGSTYLE=dark: white text on darkened green and orange tags (for comparing).
+    private static let darkTags = ProcessInfo.processInfo.environment["DIVISIO_TAGSTYLE"] == "dark"
+    #endif
+    private var lightTag: Bool { color == .green || color == .orange }
+    private var tagFill: Color {
+        #if DEBUG
+        // 65% of the system green (52,199,89) and orange (255,149,0): white on them is 4.9:1 and 4.85:1 (WCAG AA is 4.5).
+        if Self.darkTags && color == .green { return Color(red: 34 / 255, green: 129 / 255, blue: 58 / 255) }
+        if Self.darkTags && color == .orange { return Color(red: 166 / 255, green: 97 / 255, blue: 0) }
+        #endif
+        return color
+    }
+    private var tagText: Color {
+        #if DEBUG
+        if Self.darkTags { return .white }
+        #endif
+        return lightTag ? .black : .white
+    }
+
     var body: some View {
         let r = viewRect
         ZStack(alignment: .topLeading) {
@@ -48,8 +68,8 @@ struct CropBoxView: View {
             Text(label)
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(color, in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(color == .green || color == .orange ? Color.black : Color.white)
+                .background(tagFill, in: RoundedRectangle(cornerRadius: 4))
+                .foregroundStyle(tagText)
                 .fixedSize()
                 // A zero-height frame along the top edge; the chip stands on it.
                 .frame(width: max(0, r.width - handle * 2), height: 0,
