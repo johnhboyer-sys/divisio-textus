@@ -51,13 +51,23 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
 ## Your call
 
 1. Crop to the fold band (parked branch above): keep a sliver of print safe, or a clean edge?
+   **John, 2026-11-20:** the page runs to the fold; the shadow at the fold is part of the
+   page, so a crop that keeps it is right. Not done yet: every page's fold-side edge runs to
+   the split (not only when ink touches it), then check the measured page size and exports.
 2. Smith's scan is a mixed PDF (sharp text layer over a 75 dpi background), 50 KB a page;
    export flattens it to about 690 KB a page. Rebuilding pages that way is a big change.
+   **John, 2026-11-20:** no ballooning exports. For scans stored this way, export the 300 dpi
+   black-and-white text layer alone (prints clean: no grey page on a b/w printer, no wasted
+   ink), but keep the colour layer on pages where it holds a picture, not just shadow.
+   Not done yet.
 3. Codex proposed and I held back, as they touch your earlier choices: Match ▾ and
    Apply crop menus as buttons; Languages label wording; fainter Stack outlines;
    no angles under Grid pages; a note when Stack pages are left out.
 4. Wording I chose: "Resolution if unknown", "Keep page resolution", hover tips say
    "image" where "page" would read "the page is on the page".
+   **John, 2026-11-20:** hide the resolution slider while "Keep page resolution" is on (pages
+   with no scanned image then export at 300 DPI); switch off shows it as "Export resolution".
+   Not done yet. Hover tips keep "image" (John, 2026-11-20).
 
 ## Known limits
 
@@ -65,3 +75,15 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   get no protection against Greek; French "y" can still become Greek ἦ; a small Greek
   piece under one Apple word can drop.
 - Synthetic pages still cut: comb binding and soft-shadow cases (10 pages, 183 px).
+
+## John's review of the on-screen changes (2026-11-20)
+
+- Page view: rail scroll good; Type/Export alignment good; straighten sliders: keep thin but
+  bring back the tick marks (they show precision) — not done yet; crop tags: black text stays
+  for now, try a darker green/orange tag with white text instead — not done yet.
+- New feature asked for: remove the fold shadow on export (export setting, off by default;
+  never wash out print in the shadow). After the current calls are built.
+- Trim, Stack, Export: all good as changed.
+- Welcome: notes cut is fine, but the screen is too blank (before and after). No explanatory
+  notes; fill it with something useful instead. John chose: app icon above the name, and a
+  recent-books list (first-page thumbnail, date; click reopens with saved edits). Not done yet.
