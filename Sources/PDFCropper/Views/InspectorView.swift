@@ -445,13 +445,8 @@ private struct StackSections: View {
                 }
             }
         } header: {
-            Text(model.isAnalyzing ? "Flagged" : "Flagged (\(stack.outliers.count))")
-        } footer: {
-            if !model.isAnalyzing, !stack.outliers.isEmpty {
-                Text(stack.id == .spreads ? "Their splits are far from the usual split."
-                                          : "Their crops differ in size from the rest of the stack.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            let reason = stack.id == .spreads ? "Splits differ" : "Crop sizes differ"
+            Text(model.isAnalyzing ? reason : "\(reason) (\(stack.outliers.count))")
         }
     }
 
