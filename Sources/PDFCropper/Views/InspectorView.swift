@@ -177,6 +177,7 @@ private struct PageSections: View {
                 model.perform("Straighten") { value.wrappedValue = min(8, max(-8, ((value.wrappedValue + step) * 10).rounded() / 10)) }
             }
             .labelsHidden()     // else the Form gives it only the value column
+            .skewTicks()
             Text(String(format: "%+.1f°", value.wrappedValue))
                 .monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
@@ -329,6 +330,7 @@ private struct SelectionSections: View {
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()
+            .skewTicks()
             .accessibilityAdjustableAction { direction in
                 let step = direction == .increment ? 0.1 : -0.1
                 model.perform("Straighten") {
@@ -652,5 +654,29 @@ private struct CropTargetPicker: View {
         .pickerStyle(.segmented)
         .disabled(model.isBusy)
         .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+    }
+}
+
+extension View {
+    /// Tick marks under a -8...8° slider. A slider with `step:` draws its own, but
+    /// then macOS uses the thick style, so these are drawn here: one a degree, the
+    /// zero and the ends longer.
+    fileprivate func skewTicks() -> some View {
+        overlay(alignment: .bottom) {
+            Canvas { context, size in
+                let inset: CGFloat = 7          // half the thumb: where the track starts
+                let width = size.width - inset * 2
+                for degree in -8...8 {
+                    let x = inset + width * CGFloat(degree + 8) / 16
+                    let long = degree == 0 || abs(degree) == 8
+                    var path = Path()
+                    path.move(to: CGPoint(x: x, y: size.height - (long ? 5 : 3)))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    context.stroke(path, with: .color(.secondary.opacity(0.7)), lineWidth: 1)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
