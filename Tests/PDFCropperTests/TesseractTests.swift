@@ -397,6 +397,41 @@ struct TesseractTests {
         }
     }
 
+    @Test("A short Greek run beside a Latin word never replaces it")
+    func fillInShortRunKeepsLatin() {
+        let langs = ["en", "fr", "de"]
+        let keep: (String) -> Bool = { OCRService.looksLikeWord($0, languages: langs) }
+        // Tesseract reads English "says" as "σαys" beside a Greek word.
+        let apple = row(["λόγος", "says"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["λόγος", "σαys"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)[0].text == "λόγος says")
+        // A lone capital Greek iota for English "I".
+        let apple2 = row(["λόγος", "ψυχή", "νοῦς", "I", "think"], x: 0.02, y: 0.5, w: 0.08)
+        let tess2 = row(["λόγος", "ψυχή", "νοῦς", "Ἰ", "think"], x: 0.02, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple2], from: [tess2], scripts: [.greek], keep: keep)[0].text == "λόγος ψυχή νοῦς I think")
+    }
+
+    @Test("Scholarly transliteration with macrons is a word, look-alike junk is not")
+    func fillInTransliteration() {
+        let langs = ["en", "fr", "de"]
+        let keep: (String) -> Bool = { OCRService.looksLikeWord($0, languages: langs) }
+        for word in ["sōma", "ēthos", "logōn", "psūchē,"] {
+            #expect(keep(word), "\(word)")
+        }
+        let apple = row(["the", "sōma", "of"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["the", "σῶμα", "of"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)[0].text == "the sōma of")
+    }
+
+    @Test("A replacement group with one protected Apple word leaves that word alone")
+    func fillInProtectedGroup() {
+        let apple = line([word("λόγος", 0, 0.1), word("nous", 0.12, 0.1), word("ψυχή", 0.24, 0.1), word("ἀρετή", 0.36, 0.1)])
+        let tess = line([word("λόγος", 0, 0.1), word("νο", 0.12, 0.055), word("υs", 0.175, 0.04),
+                         word("ψυχή", 0.24, 0.1), word("ἀρετή", 0.36, 0.1)])
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { $0 == "nous" })
+        #expect(result[0].text == "λόγος nous ψυχή ἀρετή")
+    }
+
     @Test("Language codes are unique and script flags match the pack table")
     func languages() {
         let all = TesseractLanguage.all

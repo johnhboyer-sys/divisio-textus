@@ -204,6 +204,7 @@ enum OCRService {
     /// "περὶ") nor runs long.
     static func fillIn(_ apple: [Line], from tess: [Line], scripts: [Script],
                        keep: (String) -> Bool) -> [Line] {
+        func letterIsScript(_ s: Unicode.Scalar) -> Bool { scripts.contains { $0.contains(s) } }
         // Letters only: the Greek question mark ";" is in Greek's block too.
         func letterCount(_ text: String) -> Int {
             text.unicodeScalars.filter { s in s.properties.isAlphabetic && scripts.contains { $0.contains(s) } }.count
@@ -242,6 +243,7 @@ enum OCRService {
         guard !candidates.isEmpty else { return apple }
         var covers = [Int](repeating: 0, count: candidates.count)
         var kept = [Int](repeating: 0, count: candidates.count)
+        var oneLetter = [Bool](repeating: false, count: candidates.count)  // covers a kept Apple "I" or "a"
         // Each Apple word belongs to just the candidate with the largest overlap.
         var group: [Int: [Int]] = [:]      // owner -> every candidate lying inside the same Apple box
         let owners: [[Int?]] = apple.map { line in
@@ -278,7 +280,11 @@ enum OCRService {
                     let vouches = keep(word.text)
                     for g in all {
                         covers[g] += 1
-                        if vouches { kept[g] += 1 }
+                        if vouches {
+                            kept[g] += 1
+                            let t = word.text.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+                            if ["a", "A", "I"].contains(t) { oneLetter[g] = true }
+                        }
                     }
                 }
                 return owner
@@ -310,12 +316,20 @@ enum OCRService {
             let free = greekWord[i] && neighbours[i].contains { greekWord[$0] }
             if free { protected.remove(i) } else if real[i] { protected.insert(i) }
         }
+        // Greek neighbours never unprotect a real Latin word: a candidate with Latin letters in it
+        // ("σαys"), or over a one-letter Apple word ("I" for "Ἰ"), keeps Apple's reading. Only a
+        // candidate wholly of Greek letters replaces a real word, and only as the rules above allow.
+        for i in candidates.indices where real[i] {
+            let mixed = candidates[i].text.unicodeScalars.contains { $0.properties.isAlphabetic && !letterIsScript($0) }
+            if mixed || oneLetter[i] { protected.insert(i) }
+        }
         var emitted = Set<Int>()
         var result: [Line] = apple.enumerated().map { i, line in
             guard !line.words.isEmpty else { return line }
             var words: [Word] = []
             for (j, word) in line.words.enumerated() {
-                if let owner = owners[i][j], !protected.contains(owner) {
+                // One protected member keeps Apple's word for the whole group ("nous" over "νο" "υs").
+                if let owner = owners[i][j], !(group[owner] ?? [owner]).contains(where: protected.contains) {
                     for g in group[owner] ?? [owner] where emitted.insert(g).inserted { words.append(candidates[g]) }
                 } else {
                     words.append(word)
@@ -396,7 +410,13 @@ enum OCRService {
         let letters = Array(w.unicodeScalars.filter(\.properties.isAlphabetic))
         func latin(_ s: Unicode.Scalar) -> Bool { s.value < 0x250 || (0x1E00...0x1EFF).contains(s.value) }
         guard !w.isEmpty, letters.allSatisfy(latin) else { return false }
-        if letters.contains(where: { $0.value >= 0x100 && $0.value != 0x152 && $0.value != 0x153 }),
+        // A lowercase word may carry the macron or breve of scholarly transliteration ("sōma",
+        // "ēthos") or a dot or tilde from Extended Additional ("ṣ", "ḥ"); other letters past
+        // Latin-1 ("čpi", "ơ", "ı") are Vision's look-alikes for Greek.
+        let scholarly: Set<UInt32> = [0x100, 0x101, 0x102, 0x103, 0x112, 0x113, 0x114, 0x115, 0x12A, 0x12B, 0x12C, 0x12D,
+                                      0x14C, 0x14D, 0x14E, 0x14F, 0x16A, 0x16B, 0x16C, 0x16D, 0x232, 0x233]
+        func transliterated(_ s: Unicode.Scalar) -> Bool { scholarly.contains(s.value) || (0x1E00...0x1EFF).contains(s.value) }
+        if letters.contains(where: { $0.value >= 0x100 && $0.value != 0x152 && $0.value != 0x153 && !transliterated($0) }),
            !(w.unicodeScalars.first?.properties.isUppercase ?? false) { return false }
         if letters.count == 1 && w.unicodeScalars.count == 1 {
             let single: [String: String] = ["en": "aAI", "fr": "aAàÀyYôÔ", "de": ""]
@@ -405,6 +425,8 @@ enum OCRService {
         }
         let rest = String(w.dropFirst())
         guard rest == rest.lowercased() || w == w.uppercased() else { return false }
+        // No spell checker has "ēthos" or "logōn"; a macron or breve on a Latin word is transliteration.
+        if letters.contains(where: { $0.value >= 0x100 && transliterated($0) }) { return true }
         return spelledRight(token, languages: languages)
     }
 
