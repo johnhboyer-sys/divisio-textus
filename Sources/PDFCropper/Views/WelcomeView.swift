@@ -22,10 +22,6 @@ struct WelcomeView: View {
             Text("Divisio Textus")
                 .font(.largeTitle.weight(.semibold))
 
-            Text("Turn scanned two-page spreads into a clean PDF —\none book page per page, cropped to the content.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-
             Button {
                 model.openPanel()
             } label: {
@@ -36,10 +32,6 @@ struct WelcomeView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .keyboardShortcut("o")
-
-            Text("or drag a PDF anywhere in this window")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)   // fills the window, incl. full screen
