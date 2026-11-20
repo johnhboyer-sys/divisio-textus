@@ -536,8 +536,8 @@ private struct TrimSection: View {
         let count = model.pages.count - model.trimExcluded.count
         LabeledContent("Pages to trim") { Text("\(count) of \(model.pages.count)").monospacedDigit() }
         HStack {
-            Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out").frame(maxWidth: .infinity) }
-            Button { model.leaveOutOfTrim(false) } label: { Text("Include").frame(maxWidth: .infinity) }
+            Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out Selected").frame(maxWidth: .infinity) }
+            Button { model.leaveOutOfTrim(false) } label: { Text("Include Selected").frame(maxWidth: .infinity) }
         }
         .disabled(model.trimSelection.isEmpty)
         HStack {
