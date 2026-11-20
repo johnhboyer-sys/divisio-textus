@@ -525,6 +525,42 @@ struct AnalysisTests {
         #expect(r.splitX > 360.0 / 800 && r.splitX < 440.0 / 800, "split \(r.splitX * 800) px")
     }
 
+    @Test("Folios or a spiral's marks cutting the gutter into pieces: the split is the piece at the gap's middle, not the widest (hill climb)",
+          arguments: ["folios", "spiral", "toc"])
+    func gapInPieces(kind: String) {
+        // At analysis size: the pages' text ends at 360 and starts at 440, so
+        // the fold is near 400. Folios on the bottom line (or a spiral's holes
+        // down the whole height, beside the fold) cut the white gap in three,
+        // and the widest piece lies on the right page's side of a folio. A
+        // narrow column of numbers on the right page (a table of contents)
+        // stops short of the page's top and bottom: it is print, not a band
+        // of marks, and the gap does not reach past it.
+        let image = Fixtures.image(800, 560) { c in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 60, to: 500, by: 12) {
+                c.fill(CGRect(x: 40, y: y, width: 320, height: 5))
+                if kind == "toc" {
+                    c.fill(CGRect(x: 440, y: y, width: 8, height: 5))        // pieces 360-440, 448-521, 529-600
+                    c.fill(CGRect(x: 521, y: y, width: 8, height: 5))
+                    c.fill(CGRect(x: 600, y: y, width: 160, height: 5))
+                } else {
+                    c.fill(CGRect(x: 440, y: y, width: 320, height: 5))
+                }
+            }
+            if kind == "toc" {
+            } else if kind == "folios" {
+                c.fill(CGRect(x: 372, y: 40, width: 9, height: 6))       // pieces 360-372, 381-404, 413-440
+                c.fill(CGRect(x: 404, y: 40, width: 9, height: 6))
+            } else if kind == "spiral" {
+                for y in stride(from: 10, to: 550, by: 12) { c.fill(CGRect(x: 380, y: y, width: 13, height: 6)) }
+                c.fill(CGRect(x: 412, y: 40, width: 7, height: 6))       // pieces 360-380, 393-412, 419-440
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        let piece = kind == "folios" ? 381.0...404.0 : kind == "spiral" ? 393.0...412.0 : 390.0...410.0
+        #expect(piece.contains(r.splitX * 800), "split \(r.splitX * 800) px")
+    }
+
     @Test("A grey panel beside a white gutter is not the fold, and the text before it is kept (Codex review)")
     func greyPanelBesideGutter() {
         let image = Fixtures.image(Self.width, Self.height) { c in

@@ -324,8 +324,56 @@ enum PageAnalyzer {
         // Widest gap wins; on a tie, the one nearer the middle.
         let mid = Double(across(0.5))
         func center(_ gap: (start: Int, length: Int, fold: Int?)) -> Double { Double(gap.start) + Double(gap.length) / 2 }
-        let widest = gaps.max { a, b in
+        var widest = gaps.max { a, b in
             a.length < b.length || (a.length == b.length && abs(center(a) - mid) > abs(center(b) - mid))
+        }
+        // Folios and running heads close to the fold, or a spiral's marks
+        // beside it, cut the gap into pieces, and the widest piece can lie
+        // beside the fold. Pieces parted only by a line or two of print, or by
+        // a narrow band of marks running the page's whole height (a text
+        // column stops short of its top and bottom), are one gap. It reaches
+        // out to the pages' text: past the few lines of a head or folio
+        // sticking into it, not into the lines of a page. The piece nearest its
+        // middle, wider than a space between letters, is the fold's. With no
+        // text within reach on a side, or the middle on the band of marks
+        // itself, the widest piece stays.
+        if let w = widest, let i = gaps.firstIndex(where: { $0.start == w.start }) {
+            func rows(_ xs: Range<Int>) -> Set<Int> {
+                Set((y0..<y1).filter { y in xs.contains { Double(g.value($0, y)) < inkLevel } })
+            }
+            let few = max(3, (y1 - y0) / 25), narrow = max(3, rw / 32), end = (y1 - y0) / 20 + 1
+            func band(_ xs: Range<Int>) -> Bool {
+                let inked = rows(xs)
+                return inked.count > few && xs.count <= narrow
+                    && inked.contains { $0 < y0 + end } && inked.contains { $0 >= y1 - end }
+            }
+            func parts(_ xs: Range<Int>) -> Bool { rows(xs).count <= few || band(xs) }
+            func between(_ k: Int) -> Range<Int> { (gaps[k].start + gaps[k].length)..<gaps[k + 1].start }
+            var a = i, b = i
+            while a > 0, parts(between(a - 1)) { a -= 1 }
+            while b < gaps.count - 1, parts(between(b)) { b += 1 }
+            func edge(from x: Int, _ step: Int) -> Int? {
+                var seen = Set<Int>(), cx = x
+                while cx >= lo, cx < hi {
+                    seen.formUnion(rows(cx..<cx + 1))
+                    if seen.count > few { return step < 0 ? cx + 1 : cx }
+                    cx += step
+                }
+                return nil
+            }
+            if a < b, let left = edge(from: gaps[a].start - 1, -1), let right = edge(from: gaps[b].start + gaps[b].length, 1) {
+                let m = Double(left + right) / 2
+                let onBand = (a..<b).contains { k in
+                    Double(between(k).lowerBound) <= m && m < Double(between(k).upperBound) && band(between(k))
+                }
+                func off(_ gap: (start: Int, length: Int, fold: Int?)) -> Double {
+                    max(0, Double(gap.start) - m, m - Double(gap.start + gap.length))
+                }
+                if !onBand, let nearest = gaps[a...b].filter({ $0.length > 3 })
+                    .min(by: { off($0) < off($1) || (off($0) == off($1) && $0.length > $1.length) }) {
+                    widest = nearest
+                }
+            }
         }
         if let fold = widest?.fold { return Double(fold) / Double(g.width) }
         let best = widest.map { (start: $0.start, length: $0.length) }
