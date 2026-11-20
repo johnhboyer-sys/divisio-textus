@@ -207,13 +207,14 @@ private struct ExportOptions: View {
             ? ["English"] + applicable.filter { $0 != "eng" }.map(name)
             : applicable.map(name)
         let chosen = names.isEmpty ? "None" : names.joined(separator: ", ")
+        let apple = model.ocrReader != .tesseract
         LabeledContent {
             Button { packsState.wrappedValue = true } label: {
-                Text(chosen + "…").lineLimit(1).truncationMode(.middle)
+                Text(names.isEmpty ? "Choose…" : chosen + "…").lineLimit(1).truncationMode(.middle)
             }
             .help(chosen)
         } label: {
-            Text("Languages").fixedSize()
+            Text(apple ? "Extra languages" : "Languages").fixedSize()
         }
         let missing = applicable.filter { !model.installedPacks.contains($0) && model.packDownloads[$0] != .downloading }
         if !missing.isEmpty {
