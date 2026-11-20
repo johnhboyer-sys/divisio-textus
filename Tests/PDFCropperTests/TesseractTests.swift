@@ -94,6 +94,36 @@ struct TesseractTests {
         #expect(OCRService.fillIn([real], from: [greek], scripts: [.greek], keep: { _ in true })[0].text == "among πρὸς ἕν")
     }
 
+    @Test("A lone Greek word of four letters or more replaces a real-looking Latin word")
+    func fillInLongLoneWord() {
+        // Apple reads "ψυχή" as "vox." and "δίκη" as "Sin.": real words, but Tesseract's Greek is long.
+        let apple = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("vox.", 0.4, 0.06)])
+        let tess = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("ψυχή.", 0.4, 0.06)])
+        let real: (String) -> Bool = { ["inward", "at", "the", "vox."].contains($0) }
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: real)[0].text == "inward at the ψυχή.")
+        // Two letters stay Apple's: Tesseract reads "is" as "ἐς".
+        let short = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("ἐς", 0.4, 0.06)])
+        #expect(OCRService.fillIn([apple], from: [short], scripts: [.greek], keep: real)[0].text == apple.text)
+    }
+
+    @Test("A Tesseract line with Greek where Apple found no line is added in its place")
+    func fillInMissingLine() {
+        func row(_ text: String, y: CGFloat) -> OCRService.Line {
+            let w = OCRService.Word(text: text, box: CGRect(x: 0.1, y: y, width: 0.6, height: 0.05))
+            return OCRService.Line(text: text, box: w.box, words: [w])
+        }
+        let apple = [row("above", y: 0.8), row("below", y: 0.2)]
+        let tess = [row("above", y: 0.8), row("ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον, is often", y: 0.5), row("below", y: 0.2)]
+        let result = OCRService.fillIn(apple, from: tess, scripts: [.greek], keep: { _ in true })
+        #expect(result.map(\.text) == ["above", "ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον, is often", "below"])
+        // A Tesseract line over an Apple line stays out: no duplicate.
+        let over = [row("Apple line", y: 0.8)]
+        #expect(OCRService.fillIn(over, from: [row("ἄνθρωπος φύσει", y: 0.8)], scripts: [.greek], keep: { _ in true }).count == 1)
+        // A line with no Greek is not added.
+        #expect(OCRService.fillIn(apple, from: [row("ἄνθρωπος φύσει", y: 0.8), row("plain English", y: 0.5)],
+                                  scripts: [.greek], keep: { _ in false }).count == 2)
+    }
+
     @Test("A failed Greek pass leaves Apple's text but marks the page incomplete")
     func failedFillInIsIncomplete() throws {
         let previous = PDFExporter.tessdataOverride
