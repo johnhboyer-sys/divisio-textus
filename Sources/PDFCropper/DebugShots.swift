@@ -223,6 +223,14 @@ enum DebugShots {
 
             model.showsStack = true
             await shoot("stack", also: { self.model.stackImageReady })
+            // The same stack with its first three pages unticked (for the "left out" line).
+            if let stack = model.stacks.first(where: { $0.id == model.stackKind }) {
+                for member in stack.allMembers.prefix(3) {
+                    model.setStackPage(member.id, included: false, in: stack.id)
+                }
+            }
+            await shoot("stack-leftout", also: { self.model.stackImageReady })
+            model.setAllStackPages(included: true, in: model.stacks.first(where: { $0.id == model.stackKind })!)
             model.showsStack = false
 
             model.viewMode = .grid
