@@ -485,9 +485,6 @@ private struct StackSections: View {
             .frame(height: min(180, Double(pages.count) * 24 + 4))
         } header: {
             Text("Pages in this stack")
-        } footer: {
-            Text("A page left out is not drawn here, counted or changed by Apply. It is still in Page view and the export.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -538,7 +535,6 @@ private struct TrimSection: View {
     private var pagesToTrim: some View {
         let count = model.pages.count - model.trimExcluded.count
         LabeledContent("Pages to trim") { Text("\(count) of \(model.pages.count)").monospacedDigit() }
-        Text("Choose pages in the list on the left.").font(.caption).foregroundStyle(.secondary)
         HStack {
             Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out").frame(maxWidth: .infinity) }
             Button { model.leaveOutOfTrim(false) } label: { Text("Include").frame(maxWidth: .infinity) }

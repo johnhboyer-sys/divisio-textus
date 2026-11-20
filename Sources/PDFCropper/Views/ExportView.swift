@@ -14,7 +14,6 @@ struct ExportView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                     Spacer()
-                    Text("Esc goes back").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
@@ -382,7 +381,7 @@ struct PageSizeRow: View {
     private var note: String? {
         if size.override != nil { return nil }
         if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
-        return "Measured on \(size.measured) of \(size.total) pages."
+        return nil
     }
 
     private func apply() {
