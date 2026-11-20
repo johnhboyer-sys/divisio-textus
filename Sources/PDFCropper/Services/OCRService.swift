@@ -207,14 +207,16 @@ enum OCRService {
             text.unicodeScalars.filter { s in s.properties.isAlphabetic && scripts.contains { $0.contains(s) } }.count
         }
         var candidates: [Word] = []
+        var candidateLine: [Int] = []     // the Tesseract line each candidate is on
         var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
-        for line in tess {
+        for (lineIndex, line) in tess.enumerated() {
             let n = line.words.map { letterCount($0.text) }
             var previous: (k: Int, index: Int)?
             for (k, word) in line.words.enumerated() {
                 let before = k > 0 ? n[k - 1] : 0, after = k + 1 < n.count ? n[k + 1] : 0
                 guard n[k] >= 2 || (n[k] == 1 && before >= 2 && after >= 2) else { continue }
                 candidates.append(word)
+                candidateLine.append(lineIndex)
                 neighbours.append([])
                 let index = candidates.count - 1
                 if let previous, previous.k == k - 1 {
@@ -265,11 +267,15 @@ enum OCRService {
                 for n in neighbours[run[i]] where seen.insert(n).inserted { run.append(n) }
                 i += 1
             }
-            let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
+            // A word of four letters or more over one Apple word is no misread of a short
+            // Latin word ("ψυχή" over "vox."); two-letter ones are ("ἐς" for "is"). Two
+            // real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two.
+            let long = (run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5)
+                || run.contains { letters[$0] >= 4 && covers[$0] <= 1 }
             if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
         }
         var emitted = Set<Int>()
-        return apple.enumerated().map { i, line in
+        var result: [Line] = apple.enumerated().map { i, line in
             guard !line.words.isEmpty else { return line }
             var words: [Word] = []
             for (j, word) in line.words.enumerated() {
@@ -281,6 +287,21 @@ enum OCRService {
             }
             return Line(text: words.map(\.text).joined(separator: " "), box: line.box, words: words)
         }
+        // A Tesseract line with Greek on it that Apple found no line for (Vision drops
+        // a line of mostly Greek) goes in whole, above the first line that lies lower.
+        for index in Set(candidateLine).sorted() {
+            let line = tess[index]
+            let area = line.box.width * line.box.height
+            guard area > 0, !line.box.isNull else { continue }
+            let covered = apple.contains { other in
+                let overlap = other.box.intersection(line.box)
+                return !overlap.isNull && overlap.width * overlap.height >= area * 0.3
+            }
+            guard !covered else { continue }
+            let at = result.firstIndex { $0.box.midY < line.box.midY } ?? result.count
+            result.insert(line, at: at)
+        }
+        return result
     }
 
     /// A word Apple read that is spelled right and cased like a word: the spell
