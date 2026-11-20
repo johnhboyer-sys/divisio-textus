@@ -426,23 +426,29 @@ private struct StackSections: View {
                 Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(stack.outliers) { member in
-                    LabeledContent {
-                        Button("Show") {
-                            model.selectedPageID = member.id
-                            model.showsStack = false
-                        }
-                        .help("Open this page in Page view")
-                    } label: {
-                        Label {
-                            Text(member.side == .whole || member.side == .single
-                                 ? "p. \(member.page.sourceIndex + 1)"
-                                 : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
-                        } icon: {
-                            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(stack.outliers) { member in
+                            LabeledContent {
+                                Button("Show") {
+                                    model.selectedPageID = member.id
+                                    model.showsStack = false
+                                }
+                                .help("Open this page in Page view")
+                            } label: {
+                                Label {
+                                    Text(member.side == .whole || member.side == .single
+                                         ? "p. \(member.page.sourceIndex + 1)"
+                                         : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                                } icon: {
+                                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                                }
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: min(220, Double(stack.outliers.count) * 28 + 4))
             }
         } header: {
             let reason = stack.id == .spreads ? "Splits differ" : "Crop sizes differ"
