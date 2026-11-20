@@ -132,9 +132,9 @@ private struct PageSections: View {
                 Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
             }
             .help("Auto-detect this page: its type, split and crops, found again.")
-            if page.isSpread {
-                MatchMenu(differs: readout?.same == false) { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) }
-            }
+        }
+        if page.isSpread {
+            MatchMenu(differs: readout?.same == false) { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) }
         }
         if page.isSpread {
             if let readout { SpreadSizeControls(readout: readout) }
@@ -294,9 +294,9 @@ private struct SelectionSections: View {
                         Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
                     }
                     .help("Auto-detect each chosen page")
-                    if !spreads.isEmpty {
-                        MatchMenu(differs: difference.differs) { model.matchCropSizes(of: ids, rightMatchesLeft: $0) }
-                    }
+                }
+                if !spreads.isEmpty {
+                    MatchMenu(differs: difference.differs) { model.matchCropSizes(of: ids, rightMatchesLeft: $0) }
                 }
                 if !readouts.isEmpty {
                     SizeRows(left: readouts.map { $0.lengths[0] }.shared ?? "mixed",
