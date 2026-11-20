@@ -116,13 +116,13 @@ struct MatchMenu: View {
     let match: (Bool) -> Void
 
     var body: some View {
-        Menu {
-            Button("Make Right Match Left") { match(true) }
-            Button("Make Left Match Right") { match(false) }
-        } label: {
-            Text("Match").frame(maxWidth: .infinity)
+        HStack(spacing: 6) {
+            Text("Match size")
+            Spacer(minLength: 0)
+            Button("Right → Left") { match(true) }
+            Button("Left → Right") { match(false) }
         }
-        .menuStyle(.button)
+        .controlSize(.small)
         .disabled(!differs)
         .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the image's edge, the split moves to make room.")
     }
