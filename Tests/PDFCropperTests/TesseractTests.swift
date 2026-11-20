@@ -310,62 +310,6 @@ struct TesseractTests {
         #expect(OCRService.fillIn([apple], from: [small], scripts: [.greek], keep: { _ in false })[0].text == "junk")
     }
 
-    @Test("A Greek word set inside a wider Apple box takes its word, a sliver does not")
-    func fillInWordInsideBox() {
-        // Apple's box for "te" is wider than the printed "τε" Tesseract boxes (it was 40 % of it).
-        let apple = line([word("before", 0, 0.1), word("te", 0.2, 0.1)])
-        let inside = line([word("τε", 0.22, 0.04)])
-        #expect(OCRService.fillIn([apple], from: [inside], scripts: [.greek], keep: { _ in false })[0].text == "before τε")
-        let sliver = line([word("τε", 0.2, 0.025)])
-        #expect(OCRService.fillIn([apple], from: [sliver], scripts: [.greek], keep: { _ in false })[0].text == "before te")
-        // A real word stays, as ever.
-        #expect(OCRService.fillIn([apple], from: [inside], scripts: [.greek], keep: { _ in true })[0].text == "before te")
-    }
-
-    @Test("On a line that is nearly all Greek, Tesseract's Greek replaces every Apple word it covers")
-    func fillInGreekLine() {
-        // Printed "οἰωνοῖσί δ᾽ ἡ πᾶσι τε Διὸς": Apple's readings include "8" and "ý", which pass as real.
-        let tess = row(["οἰωνοῖσί", "δ᾽", "ἡ", "πᾶσι", "τε", "Διὸς"], x: 0.1, y: 0.5, w: 0.08)
-        let apple = row(["oiwvoiot", "8", "ý", "mao", "te", "Atos"], x: 0.1, y: 0.5, w: 0.08)
-        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { ["8", "ý", "te"].contains($0) })
-        #expect(result[0].text == tess.text)
-        // The same words among English are not: one Greek word and a letter or two.
-        let mixed = row(["the", "ἡ", "ἡ", "mao"], x: 0.1, y: 0.5, w: 0.08)
-        let english = row(["the", "n", "ý", "mao"], x: 0.1, y: 0.5, w: 0.08)
-        #expect(OCRService.fillIn([english], from: [mixed], scripts: [.greek], keep: { $0 != "mao" })[0].text == english.text)
-    }
-
-    @Test("A sure, accented Greek word beats a Latin word Apple made of it, on a page with other Greek")
-    func fillInAccentedWord() {
-        // "ἔρις, δίκη." read "čpi, Sin."; "Sin." is a word, so the checker keeps it.
-        let apple = [row(["the", "Sin.", "flow"], x: 0.1, y: 0.5, w: 0.08), row(["bog", "foo"], x: 0.1, y: 0.2, w: 0.08)]
-        // Elsewhere two Greek words of four letters or more replace junk: this page has Greek.
-        let elsewhere = row(["ἀρετή", "ἄδικον"], x: 0.1, y: 0.2, w: 0.08)
-        let keep: (String) -> Bool = { ["the", "Sin.", "flow"].contains($0) }
-        func read(_ words: [String], conf: Double = 95, page: Bool = true) -> String {
-            let tess = row(words, x: 0.1, y: 0.5, w: 0.08, conf: conf)
-            return OCRService.fillIn(page ? apple : [apple[0]], from: page ? [tess, elsewhere] : [tess], scripts: [.greek], keep: keep)[0].text
-        }
-        #expect(read(["the", "δίκη.", "flow"]) == "the δίκη. flow")
-        // Tesseract unsure of it, no accent (printed "nous" or "sin"), or no Greek elsewhere: Apple's stays.
-        #expect(read(["the", "δίκη.", "flow"], conf: 60) == "the Sin. flow")
-        #expect(read(["the", "δικη.", "flow"]) == "the Sin. flow")
-        #expect(read(["the", "δίκη.", "flow"], page: false) == "the Sin. flow")
-        // Under four letters stays: "ἐς" for "is".
-        #expect(read(["the", "ἐς", "flow"]) == "the Sin. flow")
-    }
-
-    @Test("Letters outside Western Latin make no word, and one letter is a word only as a, A or I")
-    func looksLikeWordLetters() {
-        // Apple's readings of Greek: "ἱστορίης", "ἔρις,", "ἄδικον,", "ὁ".
-        for junk in ["iơtoping", "čpi,", "aıv,", "ń", "ó", "o", "&"] {
-            #expect(!OCRService.looksLikeWord(junk, languages: ["en", "fr", "de"]), "\(junk)")
-        }
-        for word in ["a", "A", "I", "été", "œuvre", "naïve,", "1957", "(a)"] {
-            #expect(OCRService.looksLikeWord(word, languages: ["en", "fr", "de"]), "\(word)")
-        }
-    }
-
     @Test("Language codes are unique and script flags match the pack table")
     func languages() {
         let all = TesseractLanguage.all

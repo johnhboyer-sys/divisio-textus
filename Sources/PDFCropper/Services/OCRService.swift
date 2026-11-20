@@ -212,19 +212,13 @@ enum OCRService {
         var candidateLine: [Int] = []     // the Tesseract line each candidate is on
         var candidateSlot: [Int] = []     // its place on that line
         var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
-        var onGreekLine: [Bool] = []      // the candidate's Tesseract line is nearly all Greek
         for (lineIndex, line) in tess.enumerated() {
             let n = line.words.map { letterCount($0.text) }
-            // Three Greek words and seven in ten of the line's letters: there's no English
-            // here for Apple to have right ("TE" over "τε", "8" over "δ᾽").
-            let letters = line.words.reduce(0) { $0 + $1.text.unicodeScalars.filter(\.properties.isAlphabetic).count }
-            let greekLine = n.filter { $0 >= 2 }.count >= 3 && n.reduce(0, +) * 10 >= letters * 7
             var previous: (k: Int, index: Int)?
             for (k, word) in line.words.enumerated() {
                 let before = k > 0 ? n[k - 1] : 0, after = k + 1 < n.count ? n[k + 1] : 0
-                guard n[k] >= 2 || (n[k] == 1 && (greekLine || (before >= 2 && after >= 2))) else { continue }
+                guard n[k] >= 2 || (n[k] == 1 && before >= 2 && after >= 2) else { continue }
                 candidates.append(word)
-                onGreekLine.append(greekLine)
                 candidateLine.append(lineIndex)
                 candidateSlot.append(k)
                 neighbours.append([])
@@ -250,11 +244,7 @@ enum OCRService {
                     let intersection = word.box.intersection(candidate.box)
                     guard !intersection.isNull else { continue }
                     let overlap = intersection.width * intersection.height
-                    // Half of Apple's box, or a Greek word lying whole in a wider box of
-                    // Apple's that it fills by a third ("TE" over "τε").
-                    let candidateArea = candidate.box.width * candidate.box.height
-                    let within = overlap >= area * 0.35 && candidateArea > 0 && overlap >= candidateArea * 0.8
-                    if (overlap >= area * 0.5 || within) && overlap > largest {
+                    if overlap >= area * 0.5 && overlap > largest {
                         owner = i
                         largest = overlap
                     }
@@ -271,15 +261,6 @@ enum OCRService {
         // all ("πρὸς ἕν" over "roos &"; "ἐς τι." is four).
         let real = candidates.indices.map { covers[$0] > 0 && kept[$0] == covers[$0] }
         let letters = candidates.map { letterCount($0.text) }
-        // A word of four letters or more with accents, and Tesseract sure of it, outweighs a
-        // real-looking Latin word Apple made of it ("δίκη." read "Sin.") when the page has
-        // Greek of four letters or more elsewhere where Apple's words are junk. Printed
-        // transliteration ("nous") has no accents.
-        let accented = candidates.indices.map { i in
-            letters[i] >= 4 && (candidates[i].conf ?? 0) >= 75
-                && candidates[i].text.decomposedStringWithCanonicalMapping.unicodeScalars.contains { (0x300...0x36F).contains($0.value) }
-        }
-        let pageHasGreek = candidates.indices.filter { letters[$0] >= 4 && covers[$0] > 0 && !real[$0] }.count >= 2
         var protected = Set<Int>()
         var seen = Set<Int>()
         for start in candidates.indices where !seen.contains(start) {
@@ -293,8 +274,7 @@ enum OCRService {
             // Two real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two. A
             // lone Greek word over a real Latin word stays Apple's: printed "nous" is no "νους".
             let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
-            if run.allSatisfy({ real[$0] }) && !long && !onGreekLine[start]
-                && !(pageHasGreek && run.contains { accented[$0] }) { protected.formUnion(run) }
+            if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
         }
         var emitted = Set<Int>()
         var result: [Line] = apple.enumerated().map { i, line in
@@ -375,11 +355,6 @@ enum OCRService {
     /// checker passes mixed case, so junk like "alTON" or "newTov" would pass.
     static func looksLikeWord(_ token: String, languages: [String]) -> Bool {
         let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        // The checker passes any word with a letter it has no list for ("iơtoping",
-        // "čpi"), and a lone letter is no word unless English has it ("ó" is Greek "ὁ").
-        let letters = Array(w.unicodeScalars.filter(\.properties.isAlphabetic))
-        guard !w.isEmpty, letters.allSatisfy({ $0.value < 0x100 || $0.value == 0x152 || $0.value == 0x153 }),
-              letters.count != 1 || w.unicodeScalars.count != 1 || "aAI".unicodeScalars.contains(letters[0]) else { return false }
         let rest = String(w.dropFirst())
         guard rest == rest.lowercased() || w == w.uppercased() else { return false }
         return spelledRight(token, languages: languages)

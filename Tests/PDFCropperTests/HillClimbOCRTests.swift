@@ -165,11 +165,6 @@ struct HillClimbOCRTests {
         var perPage: [[String: Any]] = []
         for (i, page) in pages.enumerated() {
             let reading = doc.page(at: i)?.string ?? ""
-            if let dir = HCEnv.dir, HCEnv.flag("HILLCLIMB_DUMP") {
-                let d = URL(fileURLWithPath: dir).appendingPathComponent("results/\(HCEnv.label)/text/\(job.name)", isDirectory: true)
-                try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
-                try? reading.write(to: d.appendingPathComponent(String(format: "page%02d.txt", page.spec.number)), atomically: true, encoding: .utf8)
-            }
             let s = HCScore.score(truth: page.truth, reading: reading)
             scores.append(s)
             perPage.append(["page": page.spec.number, "kind": page.spec.kind,
