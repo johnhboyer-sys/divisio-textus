@@ -426,32 +426,33 @@ private struct StackSections: View {
                 Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(stack.outliers) { member in
-                    LabeledContent {
-                        Button("Show") {
-                            model.selectedPageID = member.id
-                            model.showsStack = false
-                        }
-                        .help("Open this page in Page view")
-                    } label: {
-                        Label {
-                            Text(member.side == .whole || member.side == .single
-                                 ? "p. \(member.page.sourceIndex + 1)"
-                                 : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
-                        } icon: {
-                            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(stack.outliers) { member in
+                            LabeledContent {
+                                Button("Show") {
+                                    model.selectedPageID = member.id
+                                    model.showsStack = false
+                                }
+                                .help("Open this page in Page view")
+                            } label: {
+                                Label {
+                                    Text(member.side == .whole || member.side == .single
+                                         ? "p. \(member.page.sourceIndex + 1)"
+                                         : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                                } icon: {
+                                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                                }
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: min(220, Double(stack.outliers.count) * 28 + 4))
             }
         } header: {
-            Text(model.isAnalyzing ? "Flagged" : "Flagged (\(stack.outliers.count))")
-        } footer: {
-            if !model.isAnalyzing, !stack.outliers.isEmpty {
-                Text(stack.id == .spreads ? "Their splits are far from the usual split."
-                                          : "Their crops differ in size from the rest of the stack.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            let reason = stack.id == .spreads ? "Splits differ" : "Crop sizes differ"
+            Text(model.isAnalyzing ? reason : "\(reason) (\(stack.outliers.count))")
         }
     }
 
@@ -502,10 +503,10 @@ private struct TrimSection: View {
             if model.trimmingPage != nil {
                 if allPages && model.trimmingAllPages { pagesToTrim }
                 HStack {
-                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
-                        .keyboardShortcut(.defaultAction)
                     Button { model.cancelTrim() } label: { Text("Cancel").frame(maxWidth: .infinity) }
                         .keyboardShortcut(.cancelAction)
+                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
+                        .keyboardShortcut(.defaultAction)
                 }
             } else if allPages {
                 HStack {
