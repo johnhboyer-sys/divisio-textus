@@ -120,13 +120,24 @@ enum PageAnalyzer {
         // down the column has its ends looked at (a lighter row or two bridged),
         // not just the first and last ink in it: a strip of scanner bed at the
         // scan's edge, or a heading set above a box, can share the column
-        // beyond the box's corners.
+        // beyond the box's corners. A short stretch in a break of the line,
+        // with the line going on just above and below it (a head's underline
+        // touching the fold), is no side; nor is a rule running off both ways
+        // where the line goes on just past it (one crossing a broken fold).
         func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
             let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
-            var ends: [Int] = []
-            for (i, y) in inked.enumerated() {
-                if i == 0 || y - inked[i - 1] > 3 { ends.append(y) }                         // a stretch's top
-                if i == inked.count - 1 || inked[i + 1] - y > 3 { ends.append(y) }           // and bottom
+            let long = max(3, (ry1 - ry0) / 25), near = max(4, (ry1 - ry0) / 50)
+            var ends: [(row: Int, onward: Bool)] = []          // onward: the line goes on just past this end
+            var start = 0
+            for i in inked.indices where i == inked.count - 1 || inked[i + 1] - inked[i] > 3 {
+                let top = inked[start], bottom = inked[i]
+                let above = start > 0 && top - inked[start - 1] <= near
+                let below = i < inked.count - 1 && inked[i + 1] - bottom <= near
+                if bottom - top + 1 >= long || !(above && below) {
+                    ends.append((top, above))
+                    ends.append((bottom, below))
+                }
+                start = i + 1
             }
             let reach = max(3, rw * 3 / 100)
             func rule(_ y: Int, _ step: Int) -> Bool {
@@ -134,8 +145,10 @@ enum PageAnalyzer {
                 while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
                 return n >= reach
             }
-            return ends.filter { $0 > rows0 && $0 < rows1 }.contains { end in
-                (max(0, end - 2)...min(g.height - 1, end + 2)).contains { rule($0, -1) || rule($0, 1) }
+            return ends.filter { $0.row > rows0 && $0.row < rows1 }.contains { end in
+                let by = max(0, end.row - 2)...min(g.height - 1, end.row + 2)
+                return by.contains { rule($0, -1) || rule($0, 1) }
+                    && !(end.onward && by.contains { rule($0, -1) && rule($0, 1) })
             }
         }
         // Facing pages have much the same inner margins, so the fold lies about
