@@ -335,24 +335,55 @@ struct TesseractTests {
         #expect(OCRService.fillIn([english], from: [mixed], scripts: [.greek], keep: { $0 != "mao" })[0].text == english.text)
     }
 
-    @Test("A sure, accented Greek word beats a Latin word Apple made of it, on a page with other Greek")
+    @Test("An accented Greek word never beats a real Latin word, printed nous or French nous")
     func fillInAccentedWord() {
-        // "ἔρις, δίκη." read "čpi, Sin."; "Sin." is a word, so the checker keeps it.
-        let apple = [row(["the", "Sin.", "flow"], x: 0.1, y: 0.5, w: 0.08), row(["bog", "foo"], x: 0.1, y: 0.2, w: 0.08)]
-        // Elsewhere two Greek words of four letters or more replace junk: this page has Greek.
+        // Printed italic "nous" (or French "nous"): Tesseract reads νοῦς at 95, the page has Greek elsewhere.
+        let apple = [row(["the", "nous"], x: 0.1, y: 0.5, w: 0.08), row(["bog", "foo"], x: 0.1, y: 0.2, w: 0.08)]
         let elsewhere = row(["ἀρετή", "ἄδικον"], x: 0.1, y: 0.2, w: 0.08)
-        let keep: (String) -> Bool = { ["the", "Sin.", "flow"].contains($0) }
-        func read(_ words: [String], conf: Double = 95, page: Bool = true) -> String {
-            let tess = row(words, x: 0.1, y: 0.5, w: 0.08, conf: conf)
-            return OCRService.fillIn(page ? apple : [apple[0]], from: page ? [tess, elsewhere] : [tess], scripts: [.greek], keep: keep)[0].text
+        let tess = row(["the", "νοῦς"], x: 0.1, y: 0.5, w: 0.08, conf: 95)
+        #expect(OCRService.fillIn(apple, from: [tess, elsewhere], scripts: [.greek], keep: { ["the", "nous"].contains($0) })[0].text == "the nous")
+        let french = [row(["il", "nous", "voit"], x: 0.1, y: 0.5, w: 0.08), apple[1]]
+        let tessFr = row(["il", "νοῦς", "voit"], x: 0.1, y: 0.5, w: 0.08, conf: 95)
+        #expect(OCRService.fillIn(french, from: [tessFr, elsewhere], scripts: [.greek], keep: { ["il", "nous", "voit"].contains($0) })[0].text == "il nous voit")
+    }
+
+    @Test("English after Greek on a Greek line keeps Apple's word")
+    func fillInGreekLineEnglishTail() {
+        let apple = row(["o", "avOpwnos", "pvoet", "moAITIKOV", "(wov", "eoti,", "as", "Aristotle", "says"], x: 0.02, y: 0.5, w: 0.08)
+        let tess = row(["ὁ", "ἄνθρωπος", "φύσει", "πολιτικὸν", "ζῷον", "ἐστί,", "as", "Aristotle", "σαys"], x: 0.02, y: 0.5, w: 0.08)
+        let keep: (String) -> Bool = { ["as", "Aristotle", "says"].contains($0) }
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)
+        #expect(result[0].text == "ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον ἐστί, as Aristotle says")
+    }
+
+    @Test("Apple's one token over a split compound takes both halves")
+    func fillInSplitCompound() {
+        // Apple boxed "λόγος-λόγου" as one junk token; Tesseract has two words, each 40 % of its box.
+        let apple = line([word("before", 0, 0.1), word("junkjunk", 0.2, 0.1)])
+        let tess = line([word("λόγος-", 0.2, 0.04), word("λόγου", 0.26, 0.04)])
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { _ in false })[0].text == "before λόγος- λόγου")
+    }
+
+    @Test("Names and words in any Latin letters keep their dictionary protection, mixed scripts do not")
+    func looksLikeWordLatinScripts() {
+        let langs = ["en", "fr", "de"]
+        for word in ["Paříž", "Kraków", "Ångström", "Straße", "œuvre", "à", "y", "ô"] {
+            #expect(OCRService.looksLikeWord(word, languages: langs), "\(word)")
         }
-        #expect(read(["the", "δίκη.", "flow"]) == "the δίκη. flow")
-        // Tesseract unsure of it, no accent (printed "nous" or "sin"), or no Greek elsewhere: Apple's stays.
-        #expect(read(["the", "δίκη.", "flow"], conf: 60) == "the Sin. flow")
-        #expect(read(["the", "δικη.", "flow"]) == "the Sin. flow")
-        #expect(read(["the", "δίκη.", "flow"], page: false) == "the Sin. flow")
-        // Under four letters stays: "ἐς" for "is".
-        #expect(read(["the", "ἐς", "flow"]) == "the Sin. flow")
+        // Latin look-alikes mixed with Greek or Cyrillic in one token are not a word.
+        for junk in ["Caρek", "Cаpek", "Čaρek"] {
+            #expect(!OCRService.looksLikeWord(junk, languages: langs), "\(junk)")
+        }
+        // The checker flags names it has no list for ("Čapek", "Dvořák"), so only words it passes can stay.
+        // A word it passes stays over Tesseract's Greek look-alike, whatever its letters.
+        let apple = row(["by", "Paříž", "wrote"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["by", "Παρίζ", "wrote"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { OCRService.looksLikeWord($0, languages: langs) })[0].text == "by Paříž wrote")
+        // German has no one-letter word; English has a and I; French has a, à, y, ô.
+        #expect(!OCRService.looksLikeWord("y", languages: ["de"]))
+        #expect(!OCRService.looksLikeWord("à", languages: ["en"]))
+        #expect(OCRService.looksLikeWord("I", languages: ["en"]))
+        #expect(!OCRService.looksLikeWord("I", languages: ["fr"]))
     }
 
     @Test("Letters outside Western Latin make no word, and one letter is a word only as a, A or I")

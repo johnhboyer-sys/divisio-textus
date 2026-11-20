@@ -213,6 +213,7 @@ enum OCRService {
         var candidateSlot: [Int] = []     // its place on that line
         var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
         var onGreekLine: [Bool] = []      // the candidate's Tesseract line is nearly all Greek
+        var greekWord: [Bool] = []        // and the candidate itself is mostly Greek letters
         for (lineIndex, line) in tess.enumerated() {
             let n = line.words.map { letterCount($0.text) }
             // Three Greek words and seven in ten of the line's letters: there's no English
@@ -225,6 +226,8 @@ enum OCRService {
                 guard n[k] >= 2 || (n[k] == 1 && (greekLine || (before >= 2 && after >= 2))) else { continue }
                 candidates.append(word)
                 onGreekLine.append(greekLine)
+                let total = word.text.unicodeScalars.filter(\.properties.isAlphabetic).count
+                greekWord.append(n[k] * 3 >= total * 2)
                 candidateLine.append(lineIndex)
                 candidateSlot.append(k)
                 neighbours.append([])
@@ -240,12 +243,14 @@ enum OCRService {
         var covers = [Int](repeating: 0, count: candidates.count)
         var kept = [Int](repeating: 0, count: candidates.count)
         // Each Apple word belongs to just the candidate with the largest overlap.
+        var group: [Int: [Int]] = [:]      // owner -> every candidate lying inside the same Apple box
         let owners: [[Int?]] = apple.map { line in
             line.words.map { word in
                 let area = word.box.width * word.box.height
                 guard !word.box.isNull, area > 0 else { return nil }
                 var owner: Int?
                 var largest: CGFloat = 0
+                var inside: [Int] = []
                 for (i, candidate) in candidates.enumerated() {
                     let intersection = word.box.intersection(candidate.box)
                     guard !intersection.isNull else { continue }
@@ -254,14 +259,27 @@ enum OCRService {
                     // Apple's that it fills by a third ("TE" over "τε").
                     let candidateArea = candidate.box.width * candidate.box.height
                     let within = overlap >= area * 0.35 && candidateArea > 0 && overlap >= candidateArea * 0.8
+                    if within { inside.append(i) }
                     if (overlap >= area * 0.5 || within) && overlap > largest {
                         owner = i
                         largest = overlap
                     }
                 }
                 if let owner {
-                    covers[owner] += 1
-                    if keep(word.text) { kept[owner] += 1 }
+                    // Two Greek words inside one Apple box (a split compound) go in together.
+                    // Words that lie over one another are rivals for the box, not parts of it.
+                    var all = [owner]
+                    for i in inside.sorted(by: { candidates[$0].box.minX < candidates[$1].box.minX }) where i != owner {
+                        let box = candidates[i].box
+                        if all.allSatisfy({ min(candidates[$0].box.maxX, box.maxX) - max(candidates[$0].box.minX, box.minX) <= 0.2 * box.width }) { all.append(i) }
+                    }
+                    all.sort { candidates[$0].box.minX < candidates[$1].box.minX }
+                    if all.count > 1 { group[owner] = all }
+                    let vouches = keep(word.text)
+                    for g in all {
+                        covers[g] += 1
+                        if vouches { kept[g] += 1 }
+                    }
                 }
                 return owner
             }
@@ -271,15 +289,6 @@ enum OCRService {
         // all ("πρὸς ἕν" over "roos &"; "ἐς τι." is four).
         let real = candidates.indices.map { covers[$0] > 0 && kept[$0] == covers[$0] }
         let letters = candidates.map { letterCount($0.text) }
-        // A word of four letters or more with accents, and Tesseract sure of it, outweighs a
-        // real-looking Latin word Apple made of it ("δίκη." read "Sin.") when the page has
-        // Greek of four letters or more elsewhere where Apple's words are junk. Printed
-        // transliteration ("nous") has no accents.
-        let accented = candidates.indices.map { i in
-            letters[i] >= 4 && (candidates[i].conf ?? 0) >= 75
-                && candidates[i].text.decomposedStringWithCanonicalMapping.unicodeScalars.contains { (0x300...0x36F).contains($0.value) }
-        }
-        let pageHasGreek = candidates.indices.filter { letters[$0] >= 4 && covers[$0] > 0 && !real[$0] }.count >= 2
         var protected = Set<Int>()
         var seen = Set<Int>()
         for start in candidates.indices where !seen.contains(start) {
@@ -293,8 +302,13 @@ enum OCRService {
             // Two real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two. A
             // lone Greek word over a real Latin word stays Apple's: printed "nous" is no "νους".
             let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
-            if run.allSatisfy({ real[$0] }) && !long && !onGreekLine[start]
-                && !(pageHasGreek && run.contains { accented[$0] }) { protected.formUnion(run) }
+            if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
+        }
+        // On a Greek line a word replaces its Apple word freely only when it is mostly Greek and
+        // has a Greek word beside it. English in the line's tail ("σαys") keeps Apple's reading.
+        for i in candidates.indices where onGreekLine[i] {
+            let free = greekWord[i] && neighbours[i].contains { greekWord[$0] }
+            if free { protected.remove(i) } else if real[i] { protected.insert(i) }
         }
         var emitted = Set<Int>()
         var result: [Line] = apple.enumerated().map { i, line in
@@ -302,7 +316,7 @@ enum OCRService {
             var words: [Word] = []
             for (j, word) in line.words.enumerated() {
                 if let owner = owners[i][j], !protected.contains(owner) {
-                    if emitted.insert(owner).inserted { words.append(candidates[owner]) }
+                    for g in group[owner] ?? [owner] where emitted.insert(g).inserted { words.append(candidates[g]) }
                 } else {
                     words.append(word)
                 }
@@ -376,10 +390,19 @@ enum OCRService {
     static func looksLikeWord(_ token: String, languages: [String]) -> Bool {
         let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
         // The checker passes any word with a letter it has no list for ("iơtoping",
-        // "čpi"), and a lone letter is no word unless English has it ("ó" is Greek "ὁ").
+        // "čpi"), so a letter past Latin-1 vouches for a capitalised name only ("Čapek",
+        // "Dvořák"). Latin mixed with another script in one token is junk. A lone letter
+        // is a word only where a configured language has it ("ó" is Greek "ὁ").
         let letters = Array(w.unicodeScalars.filter(\.properties.isAlphabetic))
-        guard !w.isEmpty, letters.allSatisfy({ $0.value < 0x100 || $0.value == 0x152 || $0.value == 0x153 }),
-              letters.count != 1 || w.unicodeScalars.count != 1 || "aAI".unicodeScalars.contains(letters[0]) else { return false }
+        func latin(_ s: Unicode.Scalar) -> Bool { s.value < 0x250 || (0x1E00...0x1EFF).contains(s.value) }
+        guard !w.isEmpty, letters.allSatisfy(latin) else { return false }
+        if letters.contains(where: { $0.value >= 0x100 && $0.value != 0x152 && $0.value != 0x153 }),
+           !(w.unicodeScalars.first?.properties.isUppercase ?? false) { return false }
+        if letters.count == 1 && w.unicodeScalars.count == 1 {
+            let single: [String: String] = ["en": "aAI", "fr": "aAàÀyYôÔ", "de": ""]
+            guard languages.contains(where: { single[String($0.prefix(2))]?.unicodeScalars.contains(letters[0]) ?? false })
+            else { return false }
+        }
         let rest = String(w.dropFirst())
         guard rest == rest.lowercased() || w == w.uppercased() else { return false }
         return spelledRight(token, languages: languages)
