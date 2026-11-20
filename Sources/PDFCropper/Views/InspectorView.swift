@@ -151,7 +151,9 @@ private struct PageSections: View {
     private func skewControl(_ title: String, _ value: Binding<Double>, row: StraightenFocus.Row) -> some View {
         HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: value, in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { value.wrappedValue },
+                                  set: { value.wrappedValue = ($0 * 10).rounded() / 10 }),
+                   in: -8...8) { editing in
                 if editing {
                     model.straightenFocus.beginDrag(row)
                 } else {
@@ -295,8 +297,8 @@ private struct SelectionSections: View {
         let anchor = pages.firstIndex { $0.id == model.selectedPageID }.map { values[$0] } ?? values.first ?? 0
         return HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: Binding(get: { anchor }, set: { model.setSkew($0, side: side, for: ids) }),
-                   in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { anchor }, set: { model.setSkew(($0 * 10).rounded() / 10, side: side, for: ids) }),
+                   in: -8...8) { editing in
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()
