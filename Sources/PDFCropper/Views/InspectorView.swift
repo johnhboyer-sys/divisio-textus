@@ -518,6 +518,11 @@ private struct StackSections: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: min(180, Double(pages.count) * 24 + 4))
+            let left = stack.excludedMembers.count
+            if left > 0 {
+                Text("\(left) \(left == 1 ? "page" : "pages") left out of Apply; still exported.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         } header: {
             Text("Pages in this stack")
         }
