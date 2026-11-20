@@ -236,6 +236,11 @@ enum DebugShots {
             await shoot("page-trim", also: { self.model.trimmingPage != nil })
             model.cancelTrim()
 
+            // The same page as a single page, for the "Apply crop" row.
+            model.setClassification(.single, for: spread.id)
+            await shoot("page-single")
+            model.setClassification(.spread, for: spread.id)
+
             model.showsStack = true
             await shoot("stack", also: { self.model.stackImageReady })
             // The same stack with its first three pages unticked (for the "left out" line).
