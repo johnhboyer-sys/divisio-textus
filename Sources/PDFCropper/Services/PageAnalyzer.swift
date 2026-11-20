@@ -116,17 +116,25 @@ enum PageAnalyzer {
         func inkedRows(_ x: Int) -> Int { (rows0..<rows1).filter { Double(g.value(x, $0)) < paper * 0.75 }.count }
         // A box's side has rules running off from its ends; a fold has none,
         // and runs on to the scan's edge, where a dark edge line can meet it
-        // (so ends in the top and bottom 5% don't count).
+        // (so ends in the top and bottom 5% don't count). Every stretch of ink
+        // down the column has its ends looked at (a lighter row or two bridged),
+        // not just the first and last ink in it: a strip of scanner bed at the
+        // scan's edge, or a heading set above a box, can share the column
+        // beyond the box's corners.
         func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
             let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
-            guard let top = inked.first, let bottom = inked.last else { return false }
+            var ends: [Int] = []
+            for (i, y) in inked.enumerated() {
+                if i == 0 || y - inked[i - 1] > 3 { ends.append(y) }                         // a stretch's top
+                if i == inked.count - 1 || inked[i + 1] - y > 3 { ends.append(y) }           // and bottom
+            }
             let reach = max(3, rw * 3 / 100)
             func rule(_ y: Int, _ step: Int) -> Bool {
                 var n = 0, cx = x + 2 * step
                 while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
                 return n >= reach
             }
-            return [top, bottom].filter { $0 > rows0 && $0 < rows1 }.contains { end in
+            return ends.filter { $0 > rows0 && $0 < rows1 }.contains { end in
                 (max(0, end - 2)...min(g.height - 1, end + 2)).contains { rule($0, -1) || rule($0, 1) }
             }
         }

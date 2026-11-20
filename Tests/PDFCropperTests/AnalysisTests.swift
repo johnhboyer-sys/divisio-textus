@@ -271,6 +271,35 @@ struct AnalysisTests {
         #expect(r.splitX > (both ? 935.0 : 882.0) / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
     }
 
+    /// The frame's side is told by its own corners, wherever other ink in its
+    /// column ends: a strip of scanner bed along the scan's edges, or a running
+    /// head set above the frame and crossing its side's column.
+    @Test("A frame's side is not the fold when bed or a heading lies beyond its corners (hill climb)",
+          arguments: ["bed at both edges", "heading above, bed below"])
+    func frameSideBeyondItsCorners(kind: String) {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 200, 880)
+            Self.text(c, 1120, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            for (x0, x1) in [(150, 933), (1070, 1853)] {                          // each frame: sides,
+                c.fill(CGRect(x: x0, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x1 - 3, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x0, y: 100, width: x1 - x0, height: 3))          // bottom
+                c.fill(CGRect(x: x0, y: Self.height - 103, width: x1 - x0, height: 3))  // and top
+            }
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))                           // y up
+            c.fill(CGRect(x: 0, y: 0, width: Self.width, height: kind.hasPrefix("bed") ? 4 : 40))
+            if kind.hasPrefix("bed") {
+                c.fill(CGRect(x: 0, y: Self.height - 4, width: Self.width, height: 4))
+            } else {                                                              // the left page's head, in letters
+                c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+                for x in stride(from: 760, to: 960, by: 16) { c.fill(CGRect(x: x, y: Self.height - 80, width: 8, height: 14)) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 935.0 / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX * 2000) px")
+    }
+
     @Test("A black fold band meeting a dark line along the scan's bottom edge is still the fold")
     func foldMeetsBottomEdgeLine() {
         // As on Cherniss 1935: the fold is a black band, and the scan ends in a
