@@ -147,7 +147,7 @@ private struct PageSections: View {
         } else {
             if let readout { LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() } }
             HStack(spacing: 6) {
-                Text("Copy crop")
+                Text("Apply crop")
                 Spacer(minLength: 0)
                 Button("All single pages") { model.applySingleCrop(alternate: false) }
                 Button("Alternate pages") { model.applySingleCrop(alternate: true) }
