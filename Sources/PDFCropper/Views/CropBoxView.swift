@@ -49,7 +49,7 @@ struct CropBoxView: View {
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(color, in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(.white)
+                .foregroundStyle(color == .green || color == .orange ? Color.black : Color.white)
                 .fixedSize()
                 // A zero-height frame along the top edge; the chip stands on it.
                 .frame(width: max(0, r.width - handle * 2), height: 0,

@@ -52,25 +52,37 @@ private struct PageSections: View {
     var body: some View {
         if let page = model.selectedPage, let idx = model.selectedIndex {
             Section {
-                Picker("Type", selection: Binding(
-                    get: { model.pages[idx].classification },
-                    set: { model.setClassification($0, for: page.id) })
-                ) {
-                    ForEach(PageClassification.allCases) { c in
-                        Text(c.label).tag(c)
-                    }
-                }
-                .pickerStyle(.segmented)
-                if page.classification == .spread {
-                    Picker("Export", selection: Binding(
-                        get: { model.pages[idx].omittedSide },
-                        set: { model.setOmittedSide($0, for: page.id) })
+                HStack {
+                    Text("Type").frame(width: 48, alignment: .leading)
+                    Picker("Type", selection: Binding(
+                        get: { model.pages[idx].classification },
+                        set: { model.setClassification($0, for: page.id) })
                     ) {
-                        Text("Both").tag(BookPage.Side?.none)
-                        Text("Left").tag(BookPage.Side?.some(.right))     // leaves the right out
-                        Text("Right").tag(BookPage.Side?.some(.left))
+                        ForEach(PageClassification.allCases) { c in
+                            Text(c.label).tag(c)
+                        }
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Type")
+                }
+                if page.classification == .spread {
+                    HStack {
+                        Text("Export").frame(width: 48, alignment: .leading)
+                        Picker("Export", selection: Binding(
+                            get: { model.pages[idx].omittedSide },
+                            set: { model.setOmittedSide($0, for: page.id) })
+                        ) {
+                            Text("Both").tag(BookPage.Side?.none)
+                            Text("Left").tag(BookPage.Side?.some(.right))     // leaves the right out
+                            Text("Right").tag(BookPage.Side?.some(.left))
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("Export")
+                    }
                     .help("Choose which page or pages of this spread go in the export: both, the left only or the right only. The page left out keeps its crop.")
                 }
                 if page.classification == .skip {
@@ -151,7 +163,9 @@ private struct PageSections: View {
     private func skewControl(_ title: String, _ value: Binding<Double>, row: StraightenFocus.Row) -> some View {
         HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: value, in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { value.wrappedValue },
+                                  set: { value.wrappedValue = ($0 * 10).rounded() / 10 }),
+                   in: -8...8) { editing in
                 if editing {
                     model.straightenFocus.beginDrag(row)
                 } else {
@@ -201,25 +215,37 @@ private struct SelectionSections: View {
         let spreads = chosen.filter(\.isSpread)
         let flagged = chosen.filter { model.flaggedSides[$0.id] != nil }.count
         Section {
-            Picker("Type", selection: Binding<PageClassification?>(
-                get: { chosen.map(\.classification).shared },
-                set: { if let c = $0 { model.setClassification(c, for: ids) } })
-            ) {
-                ForEach(PageClassification.allCases) { c in
-                    Text(c.label).tag(PageClassification?.some(c))
-                }
-            }
-            .pickerStyle(.segmented)
-            if !spreads.isEmpty {
-                Picker("Export", selection: Binding<BookPage.Side??>(
-                    get: { spreads.map(\.omittedSide).shared.map { .some($0) } ?? nil },
-                    set: { if let side = $0 { model.setOmittedSide(side, for: ids) } })
+            HStack {
+                Text("Type").frame(width: 48, alignment: .leading)
+                Picker("Type", selection: Binding<PageClassification?>(
+                    get: { chosen.map(\.classification).shared },
+                    set: { if let c = $0 { model.setClassification(c, for: ids) } })
                 ) {
-                    Text("Both").tag(BookPage.Side??.some(nil))
-                    Text("Left").tag(BookPage.Side??.some(.right))     // leaves the right out
-                    Text("Right").tag(BookPage.Side??.some(.left))
+                    ForEach(PageClassification.allCases) { c in
+                        Text(c.label).tag(PageClassification?.some(c))
+                    }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Type")
+            }
+            if !spreads.isEmpty {
+                HStack {
+                    Text("Export").frame(width: 48, alignment: .leading)
+                    Picker("Export", selection: Binding<BookPage.Side??>(
+                        get: { spreads.map(\.omittedSide).shared.map { .some($0) } ?? nil },
+                        set: { if let side = $0 { model.setOmittedSide(side, for: ids) } })
+                    ) {
+                        Text("Both").tag(BookPage.Side??.some(nil))
+                        Text("Left").tag(BookPage.Side??.some(.right))     // leaves the right out
+                        Text("Right").tag(BookPage.Side??.some(.left))
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Export")
+                }
                 .help("Choose which page or pages of each chosen spread go in the export.")
             }
             Text(Self.numbers(chosen)).font(.caption).foregroundStyle(.secondary)
@@ -295,8 +321,8 @@ private struct SelectionSections: View {
         let anchor = pages.firstIndex { $0.id == model.selectedPageID }.map { values[$0] } ?? values.first ?? 0
         return HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: Binding(get: { anchor }, set: { model.setSkew($0, side: side, for: ids) }),
-                   in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { anchor }, set: { model.setSkew(($0 * 10).rounded() / 10, side: side, for: ids) }),
+                   in: -8...8) { editing in
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()

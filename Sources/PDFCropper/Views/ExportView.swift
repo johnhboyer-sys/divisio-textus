@@ -322,6 +322,14 @@ struct PageSizeRow: View {
         Group {
             field("Width", widthState.projectedValue, measured: size.width)
             field("Height", heightState.projectedValue, measured: size.height)
+            HStack {
+                Spacer()
+                Button("Apply", action: apply)
+            }
+            .disabled(model.isBusy)
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(.red)
+            }
             if let suggested = size.suggested {
                 LabeledContent(size.width != nil && size.height != nil ? "Measured" : "Fits every page") {
                     Text("\(Self.describe(suggested)) in").monospacedDigit()
@@ -336,11 +344,7 @@ struct PageSizeRow: View {
                      + (size.fitsAll.map { " The largest size that fits every page is \(Self.describe($0)) in." } ?? ""))
                     .font(.caption).foregroundStyle(.orange)
             }
-            if let problem {
-                Text(problem).font(.caption).foregroundStyle(.red)
-            }
             HStack {
-                Button("Apply", action: apply)
                 Spacer()
                 Button("Use on All Pages") {
                     problem = nil
