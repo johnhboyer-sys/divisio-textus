@@ -276,7 +276,7 @@ enum PDFExporter {
     /// A 1-bit copy of an 8-bit gray image whose pixels are all 0 or 255, else nil.
     static func blackAndWhiteBits(_ image: CGImage) -> CGImage? {
         guard image.bitsPerPixel == 8, image.bitsPerComponent == 8,
-              image.colorSpace?.model == .monochrome,
+              image.colorSpace?.model == .monochrome, image.decode == nil,
               let data = image.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return nil }
         let w = image.width, h = image.height, stride = image.bytesPerRow
         guard CFDataGetLength(data) >= stride * h else { return nil }
