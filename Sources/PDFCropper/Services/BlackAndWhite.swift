@@ -304,30 +304,39 @@ enum BlackAndWhite {
         return out
     }
 
-    /// Each pixel's mean over a square of `radius`, by running sums.
+    /// Each pixel's mean over a square of `radius` (cut short at the page's
+    /// edges), by running sums: along each row, then down the columns a row at a
+    /// time, so memory is read in order.
     static func boxBlur(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
-        guard r > 0 else { return p }
-        var rows = [UInt32](repeating: 0, count: w * h)
-        for y in 0..<h {
-            var sum = 0
-            let base = y * w
-            for x in 0..<min(w, r + 1) { sum += Int(p[base + x]) }
-            for x in 0..<w {
-                let lo = max(0, x - r), hi = min(w - 1, x + r)
-                rows[base + x] = UInt32(sum * 16 / (hi - lo + 1))   // 4 bits of fraction
-                if x + r + 1 < w { sum += Int(p[base + x + r + 1]) }
-                if x - r >= 0 { sum -= Int(p[base + x - r]) }
+        guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
+        var rows = [Int](repeating: 0, count: w * h)     // row means, 4 bits of fraction
+        p.withUnsafeBufferPointer { src in
+            rows.withUnsafeMutableBufferPointer { dst in
+                for y in 0..<h {
+                    var sum = 0
+                    let base = y * w
+                    for x in 0..<min(w, r + 1) { sum += Int(src[base + x]) }
+                    for x in 0..<w {
+                        dst[base + x] = sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1)
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        if x - r >= 0 { sum -= Int(src[base + x - r]) }
+                    }
+                }
             }
         }
         var out = [UInt8](repeating: 0, count: w * h)
-        for x in 0..<w {
-            var sum = 0
-            for y in 0..<min(h, r + 1) { sum += Int(rows[y * w + x]) }
-            for y in 0..<h {
-                let lo = max(0, y - r), hi = min(h - 1, y + r)
-                out[y * w + x] = UInt8(min(255, (sum / (hi - lo + 1) + 8) / 16))
-                if y + r + 1 < h { sum += Int(rows[(y + r + 1) * w + x]) }
-                if y - r >= 0 { sum -= Int(rows[(y - r) * w + x]) }
+        var column = [Int](repeating: 0, count: w)
+        rows.withUnsafeBufferPointer { rows in
+            out.withUnsafeMutableBufferPointer { out in
+                column.withUnsafeMutableBufferPointer { col in
+                    for y in 0..<min(h, r + 1) { for x in 0..<w { col[x] += rows[y * w + x] } }
+                    for y in 0..<h {
+                        let n = min(h - 1, y + r) - max(0, y - r) + 1
+                        for x in 0..<w { out[y * w + x] = UInt8(min(255, (col[x] / n + 8) / 16)) }
+                        if y + r + 1 < h { for x in 0..<w { col[x] += rows[(y + r + 1) * w + x] } }
+                        if y - r >= 0 { for x in 0..<w { col[x] -= rows[(y - r) * w + x] } }
+                    }
+                }
             }
         }
         return out
