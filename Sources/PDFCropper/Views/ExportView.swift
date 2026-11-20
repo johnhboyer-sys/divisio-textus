@@ -20,7 +20,7 @@ struct ExportView: View {
                 Divider()
                 OutputPages()
                 Divider()
-                Text("\(model.outputPageCount) output pages from \(model.pages.count) scans.")
+                Text("\(model.outputPageCount) pages from \(model.pages.count).")
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(6)
             }
@@ -241,10 +241,10 @@ private struct ExportOptions: View {
                         Text(d.label).tag(d)
                     }
                 }
-                Toggle("Match scan resolution", isOn: $model.matchScanResolution)
-                    .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
+                Toggle("Keep page resolution", isOn: $model.matchScanResolution)
+                    .help("Each page keeps its own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
                 VStack(alignment: .leading) {
-                    LabeledContent(model.matchScanResolution ? "Pages without a scan" : "Export resolution") {
+                    LabeledContent(model.matchScanResolution ? "Resolution if unknown" : "Export resolution") {
                         Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
                     }
                     Slider(value: $model.exportDPI, in: 150...600, step: 50)
