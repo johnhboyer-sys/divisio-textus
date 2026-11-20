@@ -502,10 +502,10 @@ private struct TrimSection: View {
             if model.trimmingPage != nil {
                 if allPages && model.trimmingAllPages { pagesToTrim }
                 HStack {
-                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
-                        .keyboardShortcut(.defaultAction)
                     Button { model.cancelTrim() } label: { Text("Cancel").frame(maxWidth: .infinity) }
                         .keyboardShortcut(.cancelAction)
+                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
+                        .keyboardShortcut(.defaultAction)
                 }
             } else if allPages {
                 HStack {
