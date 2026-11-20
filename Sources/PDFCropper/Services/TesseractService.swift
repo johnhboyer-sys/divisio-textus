@@ -201,7 +201,8 @@ enum TesseractService {
             let index: Int
             if let found = indices[key] { index = found }
             else { index = groups.count; indices[key] = index; groups.append([]) }
-            groups[index].append(OCRService.Word(text: text, box: box))
+            let conf = Double(fields[10]).flatMap { $0.isFinite ? $0 : nil } ?? 100
+            groups[index].append(OCRService.Word(text: text, box: box, conf: conf))
         }
         return groups.map { words in
             OCRService.Line(text: words.map(\.text).joined(separator: " "),

@@ -22,6 +22,8 @@ enum OCRService {
     struct Word {
         let text: String
         let box: CGRect
+        /// The reader's confidence, 0-100. Tesseract reports one; 100 where none is known.
+        var conf: Double = 100
     }
 
     private static let ciContext = CIContext(options: nil)
@@ -208,6 +210,7 @@ enum OCRService {
         }
         var candidates: [Word] = []
         var candidateLine: [Int] = []     // the Tesseract line each candidate is on
+        var candidateSlot: [Int] = []     // its place on that line
         var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
         for (lineIndex, line) in tess.enumerated() {
             let n = line.words.map { letterCount($0.text) }
@@ -217,6 +220,7 @@ enum OCRService {
                 guard n[k] >= 2 || (n[k] == 1 && before >= 2 && after >= 2) else { continue }
                 candidates.append(word)
                 candidateLine.append(lineIndex)
+                candidateSlot.append(k)
                 neighbours.append([])
                 let index = candidates.count - 1
                 if let previous, previous.k == k - 1 {
@@ -267,11 +271,9 @@ enum OCRService {
                 for n in neighbours[run[i]] where seen.insert(n).inserted { run.append(n) }
                 i += 1
             }
-            // A word of four letters or more over one Apple word is no misread of a short
-            // Latin word ("ψυχή" over "vox."); two-letter ones are ("ἐς" for "is"). Two
-            // real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two.
-            let long = (run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5)
-                || run.contains { letters[$0] >= 4 && covers[$0] <= 1 }
+            // Two real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two. A
+            // lone Greek word over a real Latin word stays Apple's: printed "nous" is no "νους".
+            let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
             if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
         }
         var emitted = Set<Int>()
@@ -287,19 +289,56 @@ enum OCRService {
             }
             return Line(text: words.map(\.text).joined(separator: " "), box: line.box, words: words)
         }
-        // A Tesseract line with Greek on it that Apple found no line for (Vision drops
-        // a line of mostly Greek) goes in whole, above the first line that lies lower.
-        for index in Set(candidateLine).sorted() {
-            let line = tess[index]
-            let area = line.box.width * line.box.height
-            guard area > 0, !line.box.isNull else { continue }
-            let covered = apple.contains { other in
-                let overlap = other.box.intersection(line.box)
-                return !overlap.isNull && overlap.width * overlap.height >= area * 0.3
+        // Greek that Apple found no line for (Vision drops a line of mostly Greek) goes in,
+        // but only as a run of Tesseract words that no Apple box covers, and only when it
+        // is plainly text: two Greek words, six Greek letters, sure of itself, and the
+        // size of the page's other text. A rule, plate or speckle reads as "τι".
+        let owned = Set(owners.flatMap { $0 }.compactMap { $0 }.map { candidateLine[$0] * 100_000 + candidateSlot[$0] })
+        let appleBoxes: [CGRect] = apple.flatMap { $0.words.isEmpty ? [$0.box] : $0.words.map(\.box) }
+        let heights = appleBoxes.filter { !$0.isNull && $0.height > 0 }.map(\.height).sorted()
+        let textHeight = heights.isEmpty ? nil : heights[heights.count / 2]
+        func covered(_ box: CGRect) -> Bool {
+            let area = box.width * box.height
+            guard area > 0, !box.isNull else { return true }
+            let shared = appleBoxes.reduce(CGFloat(0)) { sum, other in
+                let overlap = other.intersection(box)
+                return overlap.isNull ? sum : sum + overlap.width * overlap.height
             }
-            guard !covered else { continue }
-            let at = result.firstIndex { $0.box.midY < line.box.midY } ?? result.count
-            result.insert(line, at: at)
+            return shared >= area * 0.3
+        }
+        for index in Set(candidateLine).sorted() {
+            let words = tess[index].words
+            var k = 0
+            while k < words.count {
+                guard !owned.contains(index * 100_000 + k), !covered(words[k].box) else { k += 1; continue }
+                var end = k
+                while end < words.count, !owned.contains(index * 100_000 + end), !covered(words[end].box) { end += 1 }
+                let span = Array(words[k..<end])
+                k = end
+                let greek = span.filter { letterCount($0.text) >= 2 }.count
+                let total = span.reduce(0) { $0 + letterCount($1.text) }
+                let confidence = span.reduce(0) { $0 + $1.conf } / Double(span.count)
+                let sizes = span.map(\.box.height).sorted()
+                let size = sizes[sizes.count / 2]
+                guard greek >= 2, total >= 6, confidence >= 80,
+                      textHeight.map({ size >= $0 * 0.6 && size <= $0 * 1.6 }) ?? true else { continue }
+                let box = span.reduce(CGRect.null) { $0.union($1.box) }
+                let added = Line(text: span.map(\.text).joined(separator: " "), box: box, words: span)
+                // Beside the lines in its own column: after the nearest one above it, else
+                // before the nearest one below. With no column to match, by height alone.
+                let column = result.indices.filter { i in
+                    let other = result[i].box
+                    let shared = min(other.maxX, box.maxX) - max(other.minX, box.minX)
+                    return !other.isNull && shared >= 0.5 * min(other.width, box.width)
+                }
+                let above = column.filter { result[$0].box.midY >= box.midY }
+                    .min { result[$0].box.midY - box.midY < result[$1].box.midY - box.midY }
+                let below = column.filter { result[$0].box.midY < box.midY }
+                    .min { box.midY - result[$0].box.midY < box.midY - result[$1].box.midY }
+                let at = above.map { $0 + 1 } ?? below
+                    ?? result.firstIndex { $0.box.midY < box.midY } ?? result.count
+                result.insert(added, at: at)
+            }
         }
         return result
     }
