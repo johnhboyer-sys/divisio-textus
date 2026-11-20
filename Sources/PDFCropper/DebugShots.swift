@@ -36,6 +36,21 @@ enum DebugShots {
         let scratch = URL(fileURLWithPath: plan.scratchDir, isDirectory: true)
         try? FileManager.default.removeItem(at: scratch)
         ProjectStore.directory = scratch
+        // The Welcome screen shows a realistic recent list, from the books folder,
+        // kept apart from the user's own.
+        UserDefaults.standard.removePersistentDomain(forName: "divisio-shots")
+        RecentFiles.defaults = UserDefaults(suiteName: "divisio-shots") ?? .standard
+        let books = URL(fileURLWithPath: plan.smith).deletingLastPathComponent()
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: books.path)) ?? []).filter { $0.hasSuffix(".pdf") }.sorted()
+        let now = Date()
+        for (i, name) in names.reversed().enumerated() {
+            RecentFiles.note(books.appendingPathComponent(name), at: now.addingTimeInterval(-Double(i) * 86_400 * 1.7 - 3_600))
+        }
+        // A debug build run from the build folder has no app icon: use the site's.
+        if let icon = NSImage(contentsOfFile: "/Users/johnboyer/Developer/divisio-site/img/icon-256.png") {
+            NSApp.applicationIconImage = icon
+        }
+        model.refreshRecents()
         Task { @MainActor in
             let run = Run(model: model, plan: plan)
             await run.go()
