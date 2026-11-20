@@ -252,6 +252,9 @@ enum PDFExporter {
         let source = ImageEnhancer.isEffectivelyGray(image)
             ? ImageEnhancer.apply(image, mode: .grayscale)
             : image
+        // Pure black and white (a bitonal scan drawn at its own resolution): one bit
+        // per pixel holds it exactly, and is far smaller than 8 bits.
+        if let bits = blackAndWhiteBits(source) { return bits }
         let jpeg = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(jpeg, UTType.jpeg.identifier as CFString, 1, nil) else {
             return source
@@ -268,6 +271,29 @@ enum PDFExporter {
               let embedded = CGImage(jpegDataProviderSource: provider, decode: nil,
                                      shouldInterpolate: true, intent: .defaultIntent) else { return source }
         return embedded
+    }
+
+    /// A 1-bit copy of an 8-bit gray image whose pixels are all 0 or 255, else nil.
+    static func blackAndWhiteBits(_ image: CGImage) -> CGImage? {
+        guard image.bitsPerPixel == 8, image.bitsPerComponent == 8,
+              image.colorSpace?.model == .monochrome, image.decode == nil,
+              let data = image.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return nil }
+        let w = image.width, h = image.height, stride = image.bytesPerRow
+        guard CFDataGetLength(data) >= stride * h else { return nil }
+        let rowBytes = (w + 7) / 8
+        var packed = [UInt8](repeating: 0, count: rowBytes * h)
+        for y in 0..<h {
+            let row = base + y * stride
+            for x in 0..<w {
+                let v = row[x]
+                if v == 255 { packed[y * rowBytes + (x >> 3)] |= UInt8(0x80 >> (x & 7)) }
+                else if v != 0 { return nil }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(packed) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
+                       space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 
     /// Size of the image's raw pixels after zlib, as Quartz would store them.

@@ -124,7 +124,7 @@ struct MatchMenu: View {
         }
         .menuStyle(.button)
         .disabled(!differs)
-        .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the scan's edge, the split moves to make room.")
+        .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the image's edge, the split moves to make room.")
     }
 }
 

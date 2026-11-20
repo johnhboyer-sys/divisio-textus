@@ -271,6 +271,74 @@ struct AnalysisTests {
         #expect(r.splitX > (both ? 935.0 : 882.0) / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX)")
     }
 
+    /// The frame's side is told by its own corners, wherever other ink in its
+    /// column ends: a strip of scanner bed along the scan's edges, or a running
+    /// head set above the frame and crossing its side's column.
+    @Test("A frame's side is not the fold when bed or a heading lies beyond its corners (hill climb)",
+          arguments: ["bed at both edges", "heading above, bed below"])
+    func frameSideBeyondItsCorners(kind: String) {
+        let image = Fixtures.image(Self.width, Self.height) { c in
+            Self.text(c, 200, 880)
+            Self.text(c, 1120, 1800)
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            for (x0, x1) in [(150, 933), (1070, 1853)] {                          // each frame: sides,
+                c.fill(CGRect(x: x0, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x1 - 3, y: 100, width: 3, height: Self.height - 200))
+                c.fill(CGRect(x: x0, y: 100, width: x1 - x0, height: 3))          // bottom
+                c.fill(CGRect(x: x0, y: Self.height - 103, width: x1 - x0, height: 3))  // and top
+            }
+            c.setFillColor(CGColor(gray: 0.05, alpha: 1))                           // y up
+            c.fill(CGRect(x: 0, y: 0, width: Self.width, height: kind.hasPrefix("bed") ? 4 : 40))
+            if kind.hasPrefix("bed") {
+                c.fill(CGRect(x: 0, y: Self.height - 4, width: Self.width, height: 4))
+            } else {                                                              // the left page's head, in letters
+                c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+                for x in stride(from: 760, to: 960, by: 16) { c.fill(CGRect(x: x, y: Self.height - 80, width: 8, height: 14)) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX > 935.0 / 2000 && r.splitX < 1068.0 / 2000, "split \(r.splitX * 2000) px")
+    }
+
+    /// An 800 x 560 spread (the analysis scale), drawn top-down: text on both
+    /// pages, and a thin fold at x = 400 down the rows `fold` gives. `marks` adds the rest.
+    static func brokenFold(_ fold: [Range<Int>], _ marks: @escaping (CGContext, (Int, Int, Int, Int) -> Void) -> Void) -> CGImage {
+        Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 300, 6); box(460, 40 + r * 32, 300, 6) }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for rows in fold { box(400, rows.lowerBound, 1, rows.count) }
+            marks(c, box)
+        }
+    }
+
+    /// A rule crossing the fold where the fold's line breaks is no frame's corner:
+    /// it runs off both sides, and the line goes on just past it.
+    @Test("A broken fold crossed by a table's rule is still the fold, not the table's divider (review r1b)")
+    func brokenFoldCrossedByRule() {
+        let image = Self.brokenFold([0..<200, 203..<560]) { c, box in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            box(370, 203, 71, 1)                                                     // the rule, both ways
+            c.setFillColor(CGColor(gray: 0.6, alpha: 1))
+            box(440, 10, 1, 540)                                                     // a lighter table divider
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 400) <= 3, "split \(r.splitX * 800) px")
+    }
+
+    /// A running head's underline touching the fold in a break of its line is
+    /// its own short stroke: only the ends of long strokes down the column are corners.
+    @Test("A head's underline in a break of the fold does not make the fold a frame's side (review r1b)")
+    func underlineInFoldBreak() {
+        let image = Self.brokenFold([0..<480, 490..<560]) { c, box in
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            box(370, 485, 32, 1)                                                     // the underline, leftward
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 400) <= 3, "split \(r.splitX * 800) px")
+    }
+
     @Test("A black fold band meeting a dark line along the scan's bottom edge is still the fold")
     func foldMeetsBottomEdgeLine() {
         // As on Cherniss 1935: the fold is a black band, and the scan ends in a

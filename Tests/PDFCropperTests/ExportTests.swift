@@ -156,4 +156,36 @@ struct ExportTests {
         let skipped = try #require(await exportAndOpen(m, "skip.pdf"))
         #expect(skipped.pageCount == 9)
     }
+
+    /// A w x h image, 8-bit gray or RGB, filled by `value(x, y)`.
+    private func image(_ w: Int, _ h: Int, gray: Bool, _ value: (Int, Int) -> [UInt8]) -> CGImage {
+        let n = gray ? 1 : 4
+        var px = [UInt8](repeating: 0, count: w * h * n)
+        for y in 0..<h { for x in 0..<w {
+            let v = value(x, y)
+            for c in 0..<n { px[(y * w + x) * n + c] = v[min(c, v.count - 1)] }
+        } }
+        let provider = CGDataProvider(data: Data(px) as CFData)!
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8 * n, bytesPerRow: w * n,
+                       space: gray ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: gray ? 0 : CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    }
+
+    @Test("A pure black-and-white gray page packs to 1 bit and draws the same")
+    func blackAndWhitePacks() throws {
+        let src = image(13, 5, gray: true) { x, y in [(x + y) % 3 == 0 ? 0 : 255] }   // width not a multiple of 8
+        let bits = try #require(PDFExporter.blackAndWhiteBits(src))
+        #expect(bits.bitsPerComponent == 1)
+        #expect(HillClimb.gray(bits) == HillClimb.gray(src))
+    }
+
+    @Test("A page with any other gray, or with color, is not packed")
+    func otherPagesNotPacked() {
+        let grayish = image(16, 4, gray: true) { x, y in [x == 3 && y == 2 ? 254 : 255] }
+        #expect(PDFExporter.blackAndWhiteBits(grayish) == nil)
+        // Red ink on white: color stays color.
+        let red = image(16, 4, gray: false) { x, y in x == 3 && y == 2 ? [255, 0, 0] : [255, 255, 255] }
+        #expect(PDFExporter.blackAndWhiteBits(red) == nil)
+    }
 }

@@ -14,13 +14,12 @@ struct ExportView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                     Spacer()
-                    Text("Esc goes back").font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
                 OutputPages()
                 Divider()
-                Text("\(model.outputPageCount) output pages from \(model.pages.count) scans.")
+                Text("\(model.outputPageCount) pages from \(model.pages.count).")
                     .font(.caption).foregroundStyle(.secondary)
                     .padding(6)
             }
@@ -74,7 +73,7 @@ private struct OutputGroup: View {
         HStack(alignment: .top, spacing: 4) {
             switch page.classification {
             case .skip:
-                leftOut(aspect: aspect(of: nil), caption: "Scan \(page.sourceIndex + 1)")
+                leftOut(aspect: aspect(of: nil), caption: "Page \(page.sourceIndex + 1)")
             case .single:
                 if let image = images.first {
                     shown(image, number: first, flag: !flagged.isEmpty)
@@ -84,7 +83,7 @@ private struct OutputGroup: View {
                 let kept = sides.filter { $0 != page.omittedSide }
                 ForEach(sides, id: \.self) { side in
                     if side == page.omittedSide {
-                        leftOut(aspect: aspect(of: side), caption: "Scan \(page.sourceIndex + 1) \(side.rawValue)")
+                        leftOut(aspect: aspect(of: side), caption: "Page \(page.sourceIndex + 1) \(side.rawValue)")
                     } else if let k = kept.firstIndex(of: side), images.indices.contains(k) {
                         shown(images[k], number: first + k,
                               flag: flagged.contains(.whole) || flagged.contains(side == .left ? .left : .right))
@@ -241,10 +240,10 @@ private struct ExportOptions: View {
                         Text(d.label).tag(d)
                     }
                 }
-                Toggle("Match scan resolution", isOn: $model.matchScanResolution)
-                    .help("Each page keeps its scan's own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
+                Toggle("Keep page resolution", isOn: $model.matchScanResolution)
+                    .help("Each page keeps its own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
                 VStack(alignment: .leading) {
-                    LabeledContent(model.matchScanResolution ? "Pages without a scan" : "Export resolution") {
+                    LabeledContent(model.matchScanResolution ? "Resolution if unknown" : "Export resolution") {
                         Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
                     }
                     Slider(value: $model.exportDPI, in: 150...600, step: 50)
@@ -323,6 +322,14 @@ struct PageSizeRow: View {
         Group {
             field("Width", widthState.projectedValue, measured: size.width)
             field("Height", heightState.projectedValue, measured: size.height)
+            HStack {
+                Spacer()
+                Button("Apply", action: apply)
+            }
+            .disabled(model.isBusy)
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(.red)
+            }
             if let suggested = size.suggested {
                 LabeledContent(size.width != nil && size.height != nil ? "Measured" : "Fits every page") {
                     Text("\(Self.describe(suggested)) in").monospacedDigit()
@@ -337,11 +344,7 @@ struct PageSizeRow: View {
                      + (size.fitsAll.map { " The largest size that fits every page is \(Self.describe($0)) in." } ?? ""))
                     .font(.caption).foregroundStyle(.orange)
             }
-            if let problem {
-                Text(problem).font(.caption).foregroundStyle(.red)
-            }
             HStack {
-                Button("Apply", action: apply)
                 Spacer()
                 Button("Use on All Pages") {
                     problem = nil
@@ -382,7 +385,7 @@ struct PageSizeRow: View {
     private var note: String? {
         if size.override != nil { return nil }
         if size.width == nil && size.height == nil { return "Not measured: too few pages show their sheet's edges." }
-        return "Measured on \(size.measured) of \(size.total) pages."
+        return nil
     }
 
     private func apply() {

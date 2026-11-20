@@ -13,6 +13,9 @@ struct PDFCropperApp: App {
                 .onAppear {
                     appDelegate.watch(model)
                     appDelegate.onOpenPDF { model.load(url: $0) }
+                    #if DEBUG
+                    DebugShots.startIfRequested(model)
+                    #endif
                 }
         }
         .windowStyle(.titleBar)

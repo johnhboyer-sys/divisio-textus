@@ -81,7 +81,7 @@ struct PageEditorView: View {
                 )
             }
             .overlay(alignment: .bottom) {
-                if let readout = sizeReadout(page) {
+                if !trimming, let readout = sizeReadout(page) {
                     CropSizeLabel(readout: readout)
                 }
             }

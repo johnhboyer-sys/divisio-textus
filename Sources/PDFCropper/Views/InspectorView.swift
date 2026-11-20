@@ -52,25 +52,37 @@ private struct PageSections: View {
     var body: some View {
         if let page = model.selectedPage, let idx = model.selectedIndex {
             Section {
-                Picker("Type", selection: Binding(
-                    get: { model.pages[idx].classification },
-                    set: { model.setClassification($0, for: page.id) })
-                ) {
-                    ForEach(PageClassification.allCases) { c in
-                        Text(c.label).tag(c)
-                    }
-                }
-                .pickerStyle(.segmented)
-                if page.classification == .spread {
-                    Picker("Export", selection: Binding(
-                        get: { model.pages[idx].omittedSide },
-                        set: { model.setOmittedSide($0, for: page.id) })
+                HStack {
+                    Text("Type").frame(width: 48, alignment: .leading)
+                    Picker("Type", selection: Binding(
+                        get: { model.pages[idx].classification },
+                        set: { model.setClassification($0, for: page.id) })
                     ) {
-                        Text("Both").tag(BookPage.Side?.none)
-                        Text("Left").tag(BookPage.Side?.some(.right))     // leaves the right out
-                        Text("Right").tag(BookPage.Side?.some(.left))
+                        ForEach(PageClassification.allCases) { c in
+                            Text(c.label).tag(c)
+                        }
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Type")
+                }
+                if page.classification == .spread {
+                    HStack {
+                        Text("Export").frame(width: 48, alignment: .leading)
+                        Picker("Export", selection: Binding(
+                            get: { model.pages[idx].omittedSide },
+                            set: { model.setOmittedSide($0, for: page.id) })
+                        ) {
+                            Text("Both").tag(BookPage.Side?.none)
+                            Text("Left").tag(BookPage.Side?.some(.right))     // leaves the right out
+                            Text("Right").tag(BookPage.Side?.some(.left))
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("Export")
+                    }
                     .help("Choose which page or pages of this spread go in the export: both, the left only or the right only. The page left out keeps its crop.")
                 }
                 if page.classification == .skip {
@@ -151,13 +163,19 @@ private struct PageSections: View {
     private func skewControl(_ title: String, _ value: Binding<Double>, row: StraightenFocus.Row) -> some View {
         HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: value, in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { value.wrappedValue },
+                                  set: { value.wrappedValue = ($0 * 10).rounded() / 10 }),
+                   in: -8...8) { editing in
                 if editing {
                     model.straightenFocus.beginDrag(row)
                 } else {
                     model.straightenFocus.endDrag(row, pointerInside: skewProbes.wrappedValue.pointerIsOn(row))
                 }
                 if editing { model.beginEdit() } else { model.endEdit("Straighten") }
+            }
+            .accessibilityAdjustableAction { direction in
+                let step = direction == .increment ? 0.1 : -0.1
+                model.perform("Straighten") { value.wrappedValue = min(8, max(-8, ((value.wrappedValue + step) * 10).rounded() / 10)) }
             }
             .labelsHidden()     // else the Form gives it only the value column
             Text(String(format: "%+.1f°", value.wrappedValue))
@@ -201,25 +219,37 @@ private struct SelectionSections: View {
         let spreads = chosen.filter(\.isSpread)
         let flagged = chosen.filter { model.flaggedSides[$0.id] != nil }.count
         Section {
-            Picker("Type", selection: Binding<PageClassification?>(
-                get: { chosen.map(\.classification).shared },
-                set: { if let c = $0 { model.setClassification(c, for: ids) } })
-            ) {
-                ForEach(PageClassification.allCases) { c in
-                    Text(c.label).tag(PageClassification?.some(c))
-                }
-            }
-            .pickerStyle(.segmented)
-            if !spreads.isEmpty {
-                Picker("Export", selection: Binding<BookPage.Side??>(
-                    get: { spreads.map(\.omittedSide).shared.map { .some($0) } ?? nil },
-                    set: { if let side = $0 { model.setOmittedSide(side, for: ids) } })
+            HStack {
+                Text("Type").frame(width: 48, alignment: .leading)
+                Picker("Type", selection: Binding<PageClassification?>(
+                    get: { chosen.map(\.classification).shared },
+                    set: { if let c = $0 { model.setClassification(c, for: ids) } })
                 ) {
-                    Text("Both").tag(BookPage.Side??.some(nil))
-                    Text("Left").tag(BookPage.Side??.some(.right))     // leaves the right out
-                    Text("Right").tag(BookPage.Side??.some(.left))
+                    ForEach(PageClassification.allCases) { c in
+                        Text(c.label).tag(PageClassification?.some(c))
+                    }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Type")
+            }
+            if !spreads.isEmpty {
+                HStack {
+                    Text("Export").frame(width: 48, alignment: .leading)
+                    Picker("Export", selection: Binding<BookPage.Side??>(
+                        get: { spreads.map(\.omittedSide).shared.map { .some($0) } ?? nil },
+                        set: { if let side = $0 { model.setOmittedSide(side, for: ids) } })
+                    ) {
+                        Text("Both").tag(BookPage.Side??.some(nil))
+                        Text("Left").tag(BookPage.Side??.some(.right))     // leaves the right out
+                        Text("Right").tag(BookPage.Side??.some(.left))
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("Export")
+                }
                 .help("Choose which page or pages of each chosen spread go in the export.")
             }
             Text(Self.numbers(chosen)).font(.caption).foregroundStyle(.secondary)
@@ -295,11 +325,17 @@ private struct SelectionSections: View {
         let anchor = pages.firstIndex { $0.id == model.selectedPageID }.map { values[$0] } ?? values.first ?? 0
         return HStack(spacing: 6) {
             Text(title).frame(width: 42, alignment: .leading)
-            Slider(value: Binding(get: { anchor }, set: { model.setSkew($0, side: side, for: ids) }),
-                   in: -8...8, step: 0.1) { editing in
+            Slider(value: Binding(get: { anchor }, set: { model.setSkew(($0 * 10).rounded() / 10, side: side, for: ids) }),
+                   in: -8...8) { editing in
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()
+            .accessibilityAdjustableAction { direction in
+                let step = direction == .increment ? 0.1 : -0.1
+                model.perform("Straighten") {
+                    model.setSkew(min(8, max(-8, ((anchor + step) * 10).rounded() / 10)), side: side, for: ids)
+                }
+            }
             Text(values.shared.map { String(format: "%+.1f°", $0) } ?? "mixed")
                 .monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
@@ -426,32 +462,33 @@ private struct StackSections: View {
                 Text(stack.id == .spreads ? "No split is far from the rest." : "No page differs in size.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(stack.outliers) { member in
-                    LabeledContent {
-                        Button("Show") {
-                            model.selectedPageID = member.id
-                            model.showsStack = false
-                        }
-                        .help("Open this page in Page view")
-                    } label: {
-                        Label {
-                            Text(member.side == .whole || member.side == .single
-                                 ? "p. \(member.page.sourceIndex + 1)"
-                                 : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
-                        } icon: {
-                            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(stack.outliers) { member in
+                            HStack {
+                                Label {
+                                    Text(member.side == .whole || member.side == .single
+                                         ? "p. \(member.page.sourceIndex + 1)"
+                                         : "p. \(member.page.sourceIndex + 1) · \(member.side.rawValue)")
+                                } icon: {
+                                    Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                                }
+                                Spacer()
+                                Button("Show") {
+                                    model.selectedPageID = member.id
+                                    model.showsStack = false
+                                }
+                                .help("Open this page in Page view")
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: min(220, Double(stack.outliers.count) * 28 + 4))
             }
         } header: {
-            Text(model.isAnalyzing ? "Flagged" : "Flagged (\(stack.outliers.count))")
-        } footer: {
-            if !model.isAnalyzing, !stack.outliers.isEmpty {
-                Text(stack.id == .spreads ? "Their splits are far from the usual split."
-                                          : "Their crops differ in size from the rest of the stack.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            let reason = stack.id == .spreads ? "Splits differ" : "Crop sizes differ"
+            Text(model.isAnalyzing ? reason : "\(reason) (\(stack.outliers.count))")
         }
     }
 
@@ -484,9 +521,6 @@ private struct StackSections: View {
             .frame(height: min(180, Double(pages.count) * 24 + 4))
         } header: {
             Text("Pages in this stack")
-        } footer: {
-            Text("A page left out is not drawn here, counted or changed by Apply. It is still in Page view and the export.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -502,10 +536,10 @@ private struct TrimSection: View {
             if model.trimmingPage != nil {
                 if allPages && model.trimmingAllPages { pagesToTrim }
                 HStack {
-                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
-                        .keyboardShortcut(.defaultAction)
                     Button { model.cancelTrim() } label: { Text("Cancel").frame(maxWidth: .infinity) }
                         .keyboardShortcut(.cancelAction)
+                    Button { model.finishTrim() } label: { Text("Done").frame(maxWidth: .infinity) }
+                        .keyboardShortcut(.defaultAction)
                 }
             } else if allPages {
                 HStack {
@@ -524,7 +558,7 @@ private struct TrimSection: View {
                         Label("Trim", systemImage: "crop").frame(maxWidth: .infinity)
                     }
                         .disabled(model.isBusy)
-                        .help("Draw the part of the scan the page is on")
+                        .help("Draw the part of the image the page is on")
                     Button { model.removeTrim() } label: { Text("Remove Trim").frame(maxWidth: .infinity) }
                         .disabled(model.selectedPage?.trim == nil || model.isBusy)
                 }
@@ -537,10 +571,9 @@ private struct TrimSection: View {
     private var pagesToTrim: some View {
         let count = model.pages.count - model.trimExcluded.count
         LabeledContent("Pages to trim") { Text("\(count) of \(model.pages.count)").monospacedDigit() }
-        Text("Choose pages in the list on the left.").font(.caption).foregroundStyle(.secondary)
         HStack {
-            Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out").frame(maxWidth: .infinity) }
-            Button { model.leaveOutOfTrim(false) } label: { Text("Include").frame(maxWidth: .infinity) }
+            Button { model.leaveOutOfTrim(true) } label: { Text("Leave Out Selected").frame(maxWidth: .infinity) }
+            Button { model.leaveOutOfTrim(false) } label: { Text("Include Selected").frame(maxWidth: .infinity) }
         }
         .disabled(model.trimSelection.isEmpty)
         HStack {

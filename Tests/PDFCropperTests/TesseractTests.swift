@@ -94,6 +94,165 @@ struct TesseractTests {
         #expect(OCRService.fillIn([real], from: [greek], scripts: [.greek], keep: { _ in true })[0].text == "among πρὸς ἕν")
     }
 
+    @Test("A lone Greek word replaces a Latin-looking word the dictionary fails, not one it passes")
+    func fillInLongLoneWord() {
+        // Apple reads "ψυχή" as "vox.": no word in English, French or German.
+        let apple = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("vox.", 0.4, 0.06)])
+        let tess = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("ψυχή.", 0.4, 0.06)])
+        let real: (String) -> Bool = { ["inward", "at", "the"].contains($0) }
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: real)[0].text == "inward at the ψυχή.")
+        // Two letters stay Apple's: Tesseract reads "is" as "ἐς".
+        let short = line([word("inward", 0.05, 0.1), word("at", 0.2, 0.05), word("the", 0.3, 0.05), word("ἐς", 0.4, 0.06)])
+        #expect(OCRService.fillIn([apple], from: [short], scripts: [.greek],
+                                  keep: { real($0) || $0 == "vox." })[0].text == apple.text)
+    }
+
+    @Test("A Tesseract line with Greek where Apple found no line is added in its place")
+    func fillInMissingLine() {
+        func row(_ text: String, y: CGFloat) -> OCRService.Line {
+            let parts = text.split(separator: " ").map(String.init)
+            return self.row(parts, x: 0.1, y: y, w: 0.1)
+        }
+        let apple = [row("above", y: 0.8), row("below", y: 0.2)]
+        let tess = [row("above", y: 0.8), row("ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον, is often", y: 0.5), row("below", y: 0.2)]
+        let result = OCRService.fillIn(apple, from: tess, scripts: [.greek], keep: { _ in true })
+        #expect(result.map(\.text) == ["above", "ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον, is often", "below"])
+        // A Tesseract line over an Apple line stays out: no duplicate.
+        let over = [row("Apple line", y: 0.8)]
+        #expect(OCRService.fillIn(over, from: [row("ἄνθρωπος φύσει", y: 0.8)], scripts: [.greek], keep: { _ in true }).count == 1)
+        // A line with no Greek is not added.
+        #expect(OCRService.fillIn(apple, from: [row("ἄνθρωπος φύσει", y: 0.8), row("plain English", y: 0.5)],
+                                  scripts: [.greek], keep: { _ in false }).count == 2)
+    }
+
+    /// A Tesseract word at an exact place, size and confidence.
+    private func tword(_ text: String, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat = 0.05,
+                       conf: Double = 95) -> OCRService.Word {
+        OCRService.Word(text: text, box: CGRect(x: x, y: y, width: w, height: h), conf: conf)
+    }
+
+    /// A line of words spaced along a row, each `w` wide.
+    private func row(_ texts: [String], x: CGFloat, y: CGFloat, w: CGFloat = 0.08, h: CGFloat = 0.05,
+                     conf: Double = 95) -> OCRService.Line {
+        line(texts.enumerated().map { i, t in tword(t, x: x + CGFloat(i) * (w + 0.02), y: y, w: w, h: h, conf: conf) })
+    }
+
+    @Test("An uncovered Tesseract line enters only with strong evidence of Greek text")
+    func fillInJunkLines() {
+        let apple = [row(["English", "text", "above"], x: 0.1, y: 0.8), row(["English", "below"], x: 0.1, y: 0.2)]
+        let none: (String) -> Bool = { _ in true }
+        func added(_ tess: OCRService.Line) -> Bool {
+            OCRService.fillIn(apple, from: [tess], scripts: [.greek], keep: none).count == 3
+        }
+        // A rule or plate Tesseract reads as "τι": too little Greek.
+        #expect(!added(row(["τι"], x: 0.1, y: 0.5)))
+        // One long Greek word is still one word.
+        #expect(!added(row(["ἄνθρωπος"], x: 0.1, y: 0.5, w: 0.2)))
+        // Plenty of Greek, but Tesseract is unsure of it: speckle.
+        #expect(!added(row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.5, w: 0.2, conf: 45)))
+        // Plenty of Greek and sure, but specks far smaller or larger than the page's text.
+        #expect(!added(row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.5, w: 0.2, h: 0.01)))
+        #expect(!added(row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.3, w: 0.2, h: 0.15)))
+        // The same line at the page's text size and sure of itself goes in.
+        #expect(added(row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.5, w: 0.2)))
+    }
+
+    @Test("A long Greek word never replaces a word Apple read that the dictionary passes")
+    func fillInKeepsRealLatin() {
+        // Printed italic transliteration "nous": Apple is right, Tesseract's Greek is not.
+        let apple = line([word("the", 0.05, 0.05), word("nous", 0.2, 0.08)])
+        let tess = line([word("the", 0.05, 0.05), tword("νους", x: 0.2, y: 0.5, w: 0.08, h: 0.1, conf: 96)])
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { ["the", "nous"].contains($0) })
+        #expect(result[0].text == "the nous")
+        // When Apple's word is no word, the long Greek one replaces it.
+        let junk = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { $0 == "the" })
+        #expect(junk[0].text == "the νους")
+    }
+
+    @Test("A Tesseract line that merges two Apple lines is not added again")
+    func fillInNoDuplicate() {
+        // Apple has the left and right pieces of one row; Tesseract reads the row as one line.
+        let left = row(["ἄνθρωπος", "φύσει"], x: 0.10, y: 0.5, w: 0.09, h: 0.05)
+        let right = row(["πολιτικὸν", "ζῷον"], x: 0.65, y: 0.5, w: 0.09, h: 0.05)
+        let merged = line(left.words + [tword("ἐστί", x: 0.4, y: 0.5, w: 0.08)] + right.words)
+        let apple = [left, right]
+        let result = OCRService.fillIn(apple, from: [merged], scripts: [.greek], keep: { _ in true })
+        #expect(result.map(\.text).joined(separator: " ").components(separatedBy: "ἄνθρωπος").count == 2)
+        #expect(result.map(\.text).joined(separator: " ").components(separatedBy: "ζῷον").count == 2)
+        // Only the uncovered middle word is missing, and it is too little Greek to add alone.
+        #expect(result.count == 2)
+    }
+
+    @Test("A line Apple missed goes into its own column, not by height alone")
+    func fillInKeepsColumnOrder() {
+        func col(_ t: String, x: CGFloat, y: CGFloat) -> OCRService.Line {
+            row([t, "word", "here"], x: x, y: y, w: 0.1, h: 0.05)
+        }
+        // Apple reads the left column, then the right one.
+        let apple = [col("L1", x: 0.05, y: 0.8), col("L2", x: 0.05, y: 0.6), col("L3", x: 0.05, y: 0.4),
+                     col("R1", x: 0.55, y: 0.8), col("R3", x: 0.55, y: 0.4)]
+        let missing = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.55, y: 0.6, w: 0.1, h: 0.05)
+        let result = OCRService.fillIn(apple, from: [missing], scripts: [.greek], keep: { _ in true })
+        #expect(result.map { String($0.text.prefix(2)) } == ["L1", "L2", "L3", "R1", "ἄν", "R3"])
+    }
+
+    @Test("A Tesseract word with no usable confidence cannot start a new line")
+    func fillInUnknownConfidence() {
+        let apple = [row(["English", "text", "above"], x: 0.1, y: 0.8), row(["English", "below"], x: 0.1, y: 0.2)]
+        func added(_ conf: String) -> Bool {
+            let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+            let rows = zip(["ἄνθρωπος", "φύσει", "πολιτικὸν"], [0, 300, 600]).enumerated().map { i, pair in
+                "5\t1\t1\t1\t1\t\(i + 1)\t\(pair.1)\t475\t250\t50\t\(conf)\t\(pair.0)"
+            }
+            let tess = TesseractService.parseTSV(([header] + rows).joined(separator: "\n"), imageSize: CGSize(width: 1000, height: 1000))
+            return OCRService.fillIn(apple, from: tess, scripts: [.greek], keep: { _ in true }).count == 3
+        }
+        #expect(added("95"))
+        #expect(added("95,3"))
+        #expect(!added(""))
+        #expect(!added("-1"))
+        #expect(!added("abc"))
+        #expect(TesseractService.parseTSV("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t95,3\tx",
+                                          imageSize: CGSize(width: 100, height: 100))[0].words[0].conf == 95.3)
+    }
+
+    @Test("With no Apple text to size against, no Greek line is added")
+    func fillInNoHeightReference() {
+        let tiny = row(["λόγος", "θεός"], x: 0.1, y: 0.5, w: 0.2, h: 0.001)
+        #expect(OCRService.fillIn([], from: [tiny], scripts: [.greek], keep: { _ in true }).isEmpty)
+        let page = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.1, y: 0.5, w: 0.2)
+        #expect(OCRService.fillIn([], from: [page], scripts: [.greek], keep: { _ in true }).isEmpty)
+    }
+
+    @Test("Overlapping Apple boxes count their shared area once against a missing Greek word")
+    func fillInOverlappingCoverage() {
+        // Two identical Apple boxes each cover the same 20% of the Greek line's middle word:
+        // 20% covered, not 40%, so the line stays whole and goes in.
+        func box(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat = 0.05) -> OCRService.Word {
+            OCRService.Word(text: "x", box: CGRect(x: x, y: y, width: w, height: h))
+        }
+        // Each tall box overlaps the middle word's lower 20% and under half of itself.
+        let tall = box(0.62, 0.54, 0.1, 0.1)
+        let page = [line([box(0.1, 0.8, 0.1), box(0.25, 0.8, 0.1)]), line([tall, tall]),
+                    line([box(0.1, 0.2, 0.1), box(0.25, 0.2, 0.1)])]
+        let greek = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.5, y: 0.5, w: 0.1)
+        let result = OCRService.fillIn(page, from: [greek], scripts: [.greek], keep: { _ in true })
+        #expect(result.contains { $0.text == "ἄνθρωπος φύσει πολιτικὸν" })
+    }
+
+    @Test("A full-width heading does not anchor a missing line of one column")
+    func fillInHeadingNotAnAnchor() {
+        func col(_ t: String, x: CGFloat, y: CGFloat) -> OCRService.Line {
+            row([t, "word", "here"], x: x, y: y, w: 0.1, h: 0.05)
+        }
+        let heading = row(["A", "Chapter", "Heading", "Across", "The", "Whole", "Page", "Width", "Here"], x: 0.05, y: 0.9, w: 0.08, h: 0.05)
+        let apple = [heading, col("L1", x: 0.05, y: 0.75), col("L2", x: 0.05, y: 0.55), col("L3", x: 0.05, y: 0.35),
+                     col("R2", x: 0.55, y: 0.55), col("R3", x: 0.55, y: 0.35)]
+        let missing = row(["ἄνθρωπος", "φύσει", "πολιτικὸν"], x: 0.55, y: 0.75, w: 0.1, h: 0.05)
+        let result = OCRService.fillIn(apple, from: [missing], scripts: [.greek], keep: { _ in true })
+        #expect(result.map { String($0.text.prefix(2)) } == ["A ", "L1", "L2", "L3", "ἄν", "R2", "R3"])
+    }
+
     @Test("A failed Greek pass leaves Apple's text but marks the page incomplete")
     func failedFillInIsIncomplete() throws {
         let previous = PDFExporter.tessdataOverride
@@ -149,6 +308,128 @@ struct TesseractTests {
         #expect(OCRService.fillIn([apple], from: [half], scripts: [.greek], keep: { _ in false })[0].text == "λόγος")
         let small = line([word("λόγος", 0.31, 0.2)])
         #expect(OCRService.fillIn([apple], from: [small], scripts: [.greek], keep: { _ in false })[0].text == "junk")
+    }
+
+    @Test("A Greek word set inside a wider Apple box takes its word, a sliver does not")
+    func fillInWordInsideBox() {
+        // Apple's box for "te" is wider than the printed "τε" Tesseract boxes (it was 40 % of it).
+        let apple = line([word("before", 0, 0.1), word("te", 0.2, 0.1)])
+        let inside = line([word("τε", 0.22, 0.04)])
+        #expect(OCRService.fillIn([apple], from: [inside], scripts: [.greek], keep: { _ in false })[0].text == "before τε")
+        let sliver = line([word("τε", 0.2, 0.025)])
+        #expect(OCRService.fillIn([apple], from: [sliver], scripts: [.greek], keep: { _ in false })[0].text == "before te")
+        // A real word stays, as ever.
+        #expect(OCRService.fillIn([apple], from: [inside], scripts: [.greek], keep: { _ in true })[0].text == "before te")
+    }
+
+    @Test("On a line that is nearly all Greek, Tesseract's Greek replaces every Apple word it covers")
+    func fillInGreekLine() {
+        // Printed "οἰωνοῖσί δ᾽ ἡ πᾶσι τε Διὸς": Apple's readings include "8" and "ý", which pass as real.
+        let tess = row(["οἰωνοῖσί", "δ᾽", "ἡ", "πᾶσι", "τε", "Διὸς"], x: 0.1, y: 0.5, w: 0.08)
+        let apple = row(["oiwvoiot", "8", "ý", "mao", "te", "Atos"], x: 0.1, y: 0.5, w: 0.08)
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { ["8", "ý", "te"].contains($0) })
+        #expect(result[0].text == tess.text)
+        // The same words among English are not: one Greek word and a letter or two.
+        let mixed = row(["the", "ἡ", "ἡ", "mao"], x: 0.1, y: 0.5, w: 0.08)
+        let english = row(["the", "n", "ý", "mao"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([english], from: [mixed], scripts: [.greek], keep: { $0 != "mao" })[0].text == english.text)
+    }
+
+    @Test("An accented Greek word never beats a real Latin word, printed nous or French nous")
+    func fillInAccentedWord() {
+        // Printed italic "nous" (or French "nous"): Tesseract reads νοῦς at 95, the page has Greek elsewhere.
+        let apple = [row(["the", "nous"], x: 0.1, y: 0.5, w: 0.08), row(["bog", "foo"], x: 0.1, y: 0.2, w: 0.08)]
+        let elsewhere = row(["ἀρετή", "ἄδικον"], x: 0.1, y: 0.2, w: 0.08)
+        let tess = row(["the", "νοῦς"], x: 0.1, y: 0.5, w: 0.08, conf: 95)
+        #expect(OCRService.fillIn(apple, from: [tess, elsewhere], scripts: [.greek], keep: { ["the", "nous"].contains($0) })[0].text == "the nous")
+        let french = [row(["il", "nous", "voit"], x: 0.1, y: 0.5, w: 0.08), apple[1]]
+        let tessFr = row(["il", "νοῦς", "voit"], x: 0.1, y: 0.5, w: 0.08, conf: 95)
+        #expect(OCRService.fillIn(french, from: [tessFr, elsewhere], scripts: [.greek], keep: { ["il", "nous", "voit"].contains($0) })[0].text == "il nous voit")
+    }
+
+    @Test("English after Greek on a Greek line keeps Apple's word")
+    func fillInGreekLineEnglishTail() {
+        let apple = row(["o", "avOpwnos", "pvoet", "moAITIKOV", "(wov", "eoti,", "as", "Aristotle", "says"], x: 0.02, y: 0.5, w: 0.08)
+        let tess = row(["ὁ", "ἄνθρωπος", "φύσει", "πολιτικὸν", "ζῷον", "ἐστί,", "as", "Aristotle", "σαys"], x: 0.02, y: 0.5, w: 0.08)
+        let keep: (String) -> Bool = { ["as", "Aristotle", "says"].contains($0) }
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)
+        #expect(result[0].text == "ὁ ἄνθρωπος φύσει πολιτικὸν ζῷον ἐστί, as Aristotle says")
+    }
+
+    @Test("Apple's one token over a split compound takes both halves")
+    func fillInSplitCompound() {
+        // Apple boxed "λόγος-λόγου" as one junk token; Tesseract has two words, each 40 % of its box.
+        let apple = line([word("before", 0, 0.1), word("junkjunk", 0.2, 0.1)])
+        let tess = line([word("λόγος-", 0.2, 0.04), word("λόγου", 0.26, 0.04)])
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { _ in false })[0].text == "before λόγος- λόγου")
+    }
+
+    @Test("Names and words in any Latin letters keep their dictionary protection, mixed scripts do not")
+    func looksLikeWordLatinScripts() {
+        let langs = ["en", "fr", "de"]
+        for word in ["Paříž", "Kraków", "Ångström", "Straße", "œuvre", "à", "y", "ô"] {
+            #expect(OCRService.looksLikeWord(word, languages: langs), "\(word)")
+        }
+        // Latin look-alikes mixed with Greek or Cyrillic in one token are not a word.
+        for junk in ["Caρek", "Cаpek", "Čaρek"] {
+            #expect(!OCRService.looksLikeWord(junk, languages: langs), "\(junk)")
+        }
+        // The checker flags names it has no list for ("Čapek", "Dvořák"), so only words it passes can stay.
+        // A word it passes stays over Tesseract's Greek look-alike, whatever its letters.
+        let apple = row(["by", "Paříž", "wrote"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["by", "Παρίζ", "wrote"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { OCRService.looksLikeWord($0, languages: langs) })[0].text == "by Paříž wrote")
+        // German has no one-letter word; English has a and I; French has a, à, y, ô.
+        #expect(!OCRService.looksLikeWord("y", languages: ["de"]))
+        #expect(!OCRService.looksLikeWord("à", languages: ["en"]))
+        #expect(OCRService.looksLikeWord("I", languages: ["en"]))
+        #expect(!OCRService.looksLikeWord("I", languages: ["fr"]))
+    }
+
+    @Test("Letters outside Western Latin make no word, and one letter is a word only as a, A or I")
+    func looksLikeWordLetters() {
+        // Apple's readings of Greek: "ἱστορίης", "ἔρις,", "ἄδικον,", "ὁ".
+        for junk in ["iơtoping", "čpi,", "aıv,", "ń", "ó", "o", "&"] {
+            #expect(!OCRService.looksLikeWord(junk, languages: ["en", "fr", "de"]), "\(junk)")
+        }
+        for word in ["a", "A", "I", "été", "œuvre", "naïve,", "1957", "(a)"] {
+            #expect(OCRService.looksLikeWord(word, languages: ["en", "fr", "de"]), "\(word)")
+        }
+    }
+
+    @Test("A short Greek run beside a Latin word never replaces it")
+    func fillInShortRunKeepsLatin() {
+        let langs = ["en", "fr", "de"]
+        let keep: (String) -> Bool = { OCRService.looksLikeWord($0, languages: langs) }
+        // Tesseract reads English "says" as "σαys" beside a Greek word.
+        let apple = row(["λόγος", "says"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["λόγος", "σαys"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)[0].text == "λόγος says")
+        // A lone capital Greek iota for English "I".
+        let apple2 = row(["λόγος", "ψυχή", "νοῦς", "I", "think"], x: 0.02, y: 0.5, w: 0.08)
+        let tess2 = row(["λόγος", "ψυχή", "νοῦς", "Ἰ", "think"], x: 0.02, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple2], from: [tess2], scripts: [.greek], keep: keep)[0].text == "λόγος ψυχή νοῦς I think")
+    }
+
+    @Test("Scholarly transliteration with macrons is a word, look-alike junk is not")
+    func fillInTransliteration() {
+        let langs = ["en", "fr", "de"]
+        let keep: (String) -> Bool = { OCRService.looksLikeWord($0, languages: langs) }
+        for word in ["sōma", "ēthos", "logōn", "psūchē,"] {
+            #expect(keep(word), "\(word)")
+        }
+        let apple = row(["the", "sōma", "of"], x: 0.1, y: 0.5, w: 0.08)
+        let tess = row(["the", "σῶμα", "of"], x: 0.1, y: 0.5, w: 0.08)
+        #expect(OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: keep)[0].text == "the sōma of")
+    }
+
+    @Test("A replacement group with one protected Apple word leaves that word alone")
+    func fillInProtectedGroup() {
+        let apple = line([word("λόγος", 0, 0.1), word("nous", 0.12, 0.1), word("ψυχή", 0.24, 0.1), word("ἀρετή", 0.36, 0.1)])
+        let tess = line([word("λόγος", 0, 0.1), word("νο", 0.12, 0.055), word("υs", 0.175, 0.04),
+                         word("ψυχή", 0.24, 0.1), word("ἀρετή", 0.36, 0.1)])
+        let result = OCRService.fillIn([apple], from: [tess], scripts: [.greek], keep: { $0 == "nous" })
+        #expect(result[0].text == "λόγος nous ψυχή ἀρετή")
     }
 
     @Test("Language codes are unique and script flags match the pack table")

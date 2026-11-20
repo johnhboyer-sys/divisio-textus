@@ -22,6 +22,8 @@ enum OCRService {
     struct Word {
         let text: String
         let box: CGRect
+        /// The reader's confidence, 0-100. nil where Tesseract gave none (empty, -1): unknown.
+        var conf: Double? = 100
     }
 
     private static let ciContext = CIContext(options: nil)
@@ -202,19 +204,33 @@ enum OCRService {
     /// "περὶ") nor runs long.
     static func fillIn(_ apple: [Line], from tess: [Line], scripts: [Script],
                        keep: (String) -> Bool) -> [Line] {
+        func letterIsScript(_ s: Unicode.Scalar) -> Bool { scripts.contains { $0.contains(s) } }
         // Letters only: the Greek question mark ";" is in Greek's block too.
         func letterCount(_ text: String) -> Int {
             text.unicodeScalars.filter { s in s.properties.isAlphabetic && scripts.contains { $0.contains(s) } }.count
         }
         var candidates: [Word] = []
+        var candidateLine: [Int] = []     // the Tesseract line each candidate is on
+        var candidateSlot: [Int] = []     // its place on that line
         var neighbours: [[Int]] = []      // adjacent candidates on the same Tesseract line
-        for line in tess {
+        var onGreekLine: [Bool] = []      // the candidate's Tesseract line is nearly all Greek
+        var greekWord: [Bool] = []        // and the candidate itself is mostly Greek letters
+        for (lineIndex, line) in tess.enumerated() {
             let n = line.words.map { letterCount($0.text) }
+            // Three Greek words and seven in ten of the line's letters: there's no English
+            // here for Apple to have right ("TE" over "τε", "8" over "δ᾽").
+            let letters = line.words.reduce(0) { $0 + $1.text.unicodeScalars.filter(\.properties.isAlphabetic).count }
+            let greekLine = n.filter { $0 >= 2 }.count >= 3 && n.reduce(0, +) * 10 >= letters * 7
             var previous: (k: Int, index: Int)?
             for (k, word) in line.words.enumerated() {
                 let before = k > 0 ? n[k - 1] : 0, after = k + 1 < n.count ? n[k + 1] : 0
-                guard n[k] >= 2 || (n[k] == 1 && before >= 2 && after >= 2) else { continue }
+                guard n[k] >= 2 || (n[k] == 1 && (greekLine || (before >= 2 && after >= 2))) else { continue }
                 candidates.append(word)
+                onGreekLine.append(greekLine)
+                let total = word.text.unicodeScalars.filter(\.properties.isAlphabetic).count
+                greekWord.append(n[k] * 3 >= total * 2)
+                candidateLine.append(lineIndex)
+                candidateSlot.append(k)
                 neighbours.append([])
                 let index = candidates.count - 1
                 if let previous, previous.k == k - 1 {
@@ -227,25 +243,49 @@ enum OCRService {
         guard !candidates.isEmpty else { return apple }
         var covers = [Int](repeating: 0, count: candidates.count)
         var kept = [Int](repeating: 0, count: candidates.count)
+        var oneLetter = [Bool](repeating: false, count: candidates.count)  // covers a kept Apple "I" or "a"
         // Each Apple word belongs to just the candidate with the largest overlap.
+        var group: [Int: [Int]] = [:]      // owner -> every candidate lying inside the same Apple box
         let owners: [[Int?]] = apple.map { line in
             line.words.map { word in
                 let area = word.box.width * word.box.height
                 guard !word.box.isNull, area > 0 else { return nil }
                 var owner: Int?
                 var largest: CGFloat = 0
+                var inside: [Int] = []
                 for (i, candidate) in candidates.enumerated() {
                     let intersection = word.box.intersection(candidate.box)
                     guard !intersection.isNull else { continue }
                     let overlap = intersection.width * intersection.height
-                    if overlap >= area * 0.5 && overlap > largest {
+                    // Half of Apple's box, or a Greek word lying whole in a wider box of
+                    // Apple's that it fills by a third ("TE" over "τε").
+                    let candidateArea = candidate.box.width * candidate.box.height
+                    let within = overlap >= area * 0.35 && candidateArea > 0 && overlap >= candidateArea * 0.8
+                    if within { inside.append(i) }
+                    if (overlap >= area * 0.5 || within) && overlap > largest {
                         owner = i
                         largest = overlap
                     }
                 }
                 if let owner {
-                    covers[owner] += 1
-                    if keep(word.text) { kept[owner] += 1 }
+                    // Two Greek words inside one Apple box (a split compound) go in together.
+                    // Words that lie over one another are rivals for the box, not parts of it.
+                    var all = [owner]
+                    for i in inside.sorted(by: { candidates[$0].box.minX < candidates[$1].box.minX }) where i != owner {
+                        let box = candidates[i].box
+                        if all.allSatisfy({ min(candidates[$0].box.maxX, box.maxX) - max(candidates[$0].box.minX, box.minX) <= 0.2 * box.width }) { all.append(i) }
+                    }
+                    all.sort { candidates[$0].box.minX < candidates[$1].box.minX }
+                    if all.count > 1 { group[owner] = all }
+                    let vouches = keep(word.text)
+                    for g in all {
+                        covers[g] += 1
+                        if vouches {
+                            kept[g] += 1
+                            let t = word.text.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+                            if ["a", "A", "I"].contains(t) { oneLetter[g] = true }
+                        }
+                    }
                 }
                 return owner
             }
@@ -265,30 +305,128 @@ enum OCRService {
                 for n in neighbours[run[i]] where seen.insert(n).inserted { run.append(n) }
                 i += 1
             }
+            // Two real-looking Apple pieces ("Ao" "yoc") are one Greek word cut in two. A
+            // lone Greek word over a real Latin word stays Apple's: printed "nous" is no "νους".
             let long = run.count >= 2 && run.reduce(0) { $0 + letters[$1] } >= 5
             if run.allSatisfy({ real[$0] }) && !long { protected.formUnion(run) }
         }
+        // On a Greek line a word replaces its Apple word freely only when it is mostly Greek and
+        // has a Greek word beside it. English in the line's tail ("σαys") keeps Apple's reading.
+        for i in candidates.indices where onGreekLine[i] {
+            let free = greekWord[i] && neighbours[i].contains { greekWord[$0] }
+            if free { protected.remove(i) } else if real[i] { protected.insert(i) }
+        }
+        // Greek neighbours never unprotect a real Latin word: a candidate with Latin letters in it
+        // ("σαys"), or over a one-letter Apple word ("I" for "Ἰ"), keeps Apple's reading. Only a
+        // candidate wholly of Greek letters replaces a real word, and only as the rules above allow.
+        for i in candidates.indices where real[i] {
+            let mixed = candidates[i].text.unicodeScalars.contains { $0.properties.isAlphabetic && !letterIsScript($0) }
+            if mixed || oneLetter[i] { protected.insert(i) }
+        }
         var emitted = Set<Int>()
-        return apple.enumerated().map { i, line in
+        var result: [Line] = apple.enumerated().map { i, line in
             guard !line.words.isEmpty else { return line }
             var words: [Word] = []
             for (j, word) in line.words.enumerated() {
-                if let owner = owners[i][j], !protected.contains(owner) {
-                    if emitted.insert(owner).inserted { words.append(candidates[owner]) }
+                // One protected member keeps Apple's word for the whole group ("nous" over "νο" "υs").
+                if let owner = owners[i][j], !(group[owner] ?? [owner]).contains(where: protected.contains) {
+                    for g in group[owner] ?? [owner] where emitted.insert(g).inserted { words.append(candidates[g]) }
                 } else {
                     words.append(word)
                 }
             }
             return Line(text: words.map(\.text).joined(separator: " "), box: line.box, words: words)
         }
+        // Greek that Apple found no line for (Vision drops a line of mostly Greek) goes in,
+        // but only as a run of Tesseract words that no Apple box covers, and only when it
+        // is plainly text: two Greek words, six Greek letters, sure of itself, and the
+        // size of the page's other text. A rule, plate or speckle reads as "τι".
+        let owned = Set(owners.flatMap { $0 }.compactMap { $0 }.map { candidateLine[$0] * 100_000 + candidateSlot[$0] })
+        let appleBoxes: [CGRect] = apple.flatMap { $0.words.isEmpty ? [$0.box] : $0.words.map(\.box) }
+        let heights = appleBoxes.filter { !$0.isNull && $0.height > 0 }.map(\.height).sorted()
+        let textHeight = heights.isEmpty ? nil : heights[heights.count / 2]
+        func covered(_ box: CGRect) -> Bool {
+            let area = box.width * box.height
+            guard area > 0, !box.isNull else { return true }
+            return unionArea(appleBoxes.map { $0.intersection(box) }) >= Double(area) * 0.3
+        }
+        // Lines across more than one column are no anchor for a line of one column.
+        let pageBox = result.map(\.box).filter { !$0.isNull }.reduce(CGRect.null) { $0.union($1) }
+        func spans(_ box: CGRect) -> Bool {
+            guard !box.isNull, box.width > 0.6 * pageBox.width else { return false }
+            let beside = result.map(\.box).filter { other in
+                !other.isNull && min(other.maxX, box.maxX) - max(other.minX, box.minX) > 0 && other.width <= 0.6 * pageBox.width
+            }
+            return beside.contains { a in beside.contains { b in a.maxX <= b.minX } }
+        }
+        for index in Set(candidateLine).sorted() {
+            let words = tess[index].words
+            var k = 0
+            while k < words.count {
+                guard !owned.contains(index * 100_000 + k), !covered(words[k].box) else { k += 1; continue }
+                var end = k
+                while end < words.count, !owned.contains(index * 100_000 + end), !covered(words[end].box) { end += 1 }
+                let span = Array(words[k..<end])
+                k = end
+                let greek = span.filter { letterCount($0.text) >= 2 }.count
+                let total = span.reduce(0) { $0 + letterCount($1.text) }
+                let confs = span.compactMap(\.conf)
+                let sizes = span.map(\.box.height).sorted()
+                let size = sizes[sizes.count / 2]
+                // No confidence is no evidence; no Apple text to size against means Vision saw no text.
+                guard greek >= 2, total >= 6, confs.count == span.count,
+                      confs.reduce(0, +) / Double(confs.count) >= 80,
+                      let textHeight, size >= textHeight * 0.6, size <= textHeight * 1.6 else { continue }
+                let box = span.reduce(CGRect.null) { $0.union($1.box) }
+                let added = Line(text: span.map(\.text).joined(separator: " "), box: box, words: span)
+                // Beside the lines in its own column: after the nearest one above it, else
+                // before the nearest one below. With no column to match, by height alone.
+                let wide = spans(box)
+                let column = result.indices.filter { i in
+                    let other = result[i].box
+                    let shared = min(other.maxX, box.maxX) - max(other.minX, box.minX)
+                    return !other.isNull && shared >= 0.5 * min(other.width, box.width) && (wide || !spans(other))
+                }
+                let above = column.filter { result[$0].box.midY >= box.midY }
+                    .min { result[$0].box.midY - box.midY < result[$1].box.midY - box.midY }
+                let below = column.filter { result[$0].box.midY < box.midY }
+                    .min { box.midY - result[$0].box.midY < box.midY - result[$1].box.midY }
+                let at = above.map { $0 + 1 } ?? below
+                    ?? result.firstIndex { $0.box.midY < box.midY } ?? result.count
+                result.insert(added, at: at)
+            }
+        }
+        return result
     }
 
     /// A word Apple read that is spelled right and cased like a word: the spell
     /// checker passes mixed case, so junk like "alTON" or "newTov" would pass.
     static func looksLikeWord(_ token: String, languages: [String]) -> Bool {
         let w = token.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        // The checker passes any word with a letter it has no list for ("iơtoping",
+        // "čpi"), so a letter past Latin-1 vouches for a capitalised name only ("Čapek",
+        // "Dvořák"). Latin mixed with another script in one token is junk. A lone letter
+        // is a word only where a configured language has it ("ó" is Greek "ὁ").
+        let letters = Array(w.unicodeScalars.filter(\.properties.isAlphabetic))
+        func latin(_ s: Unicode.Scalar) -> Bool { s.value < 0x250 || (0x1E00...0x1EFF).contains(s.value) }
+        guard !w.isEmpty, letters.allSatisfy(latin) else { return false }
+        // A lowercase word may carry the macron or breve of scholarly transliteration ("sōma",
+        // "ēthos") or a dot or tilde from Extended Additional ("ṣ", "ḥ"); other letters past
+        // Latin-1 ("čpi", "ơ", "ı") are Vision's look-alikes for Greek.
+        let scholarly: Set<UInt32> = [0x100, 0x101, 0x102, 0x103, 0x112, 0x113, 0x114, 0x115, 0x12A, 0x12B, 0x12C, 0x12D,
+                                      0x14C, 0x14D, 0x14E, 0x14F, 0x16A, 0x16B, 0x16C, 0x16D, 0x232, 0x233]
+        func transliterated(_ s: Unicode.Scalar) -> Bool { scholarly.contains(s.value) || (0x1E00...0x1EFF).contains(s.value) }
+        if letters.contains(where: { $0.value >= 0x100 && $0.value != 0x152 && $0.value != 0x153 && !transliterated($0) }),
+           !(w.unicodeScalars.first?.properties.isUppercase ?? false) { return false }
+        if letters.count == 1 && w.unicodeScalars.count == 1 {
+            let single: [String: String] = ["en": "aAI", "fr": "aAàÀyYôÔ", "de": ""]
+            guard languages.contains(where: { single[String($0.prefix(2))]?.unicodeScalars.contains(letters[0]) ?? false })
+            else { return false }
+        }
         let rest = String(w.dropFirst())
         guard rest == rest.lowercased() || w == w.uppercased() else { return false }
+        // No spell checker has "ēthos" or "logōn"; a macron or breve on a Latin word is transliteration.
+        if letters.contains(where: { $0.value >= 0x100 && transliterated($0) }) { return true }
         return spelledRight(token, languages: languages)
     }
 
