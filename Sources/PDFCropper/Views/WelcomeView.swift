@@ -20,7 +20,7 @@ struct WelcomeView: View {
             let recentsTop = max(geo.size.height * 0.56, geo.size.height / 3 + 170)
             let recentsHeight = max(0, geo.size.height - recentsTop - 16)
             ZStack(alignment: .topLeading) {
-                VStack(spacing: 10) {
+                VStack(spacing: 20) {
                     Image(nsImage: model.appIcon ?? NSApp.applicationIconImage)
                         .resizable()
                         .frame(width: 116, height: 116)
@@ -88,12 +88,14 @@ struct WelcomeView: View {
         }
         .frame(maxWidth: 760)
         .overlay {
-            Path { p in
-                p.move(to: CGPoint(x: 0, y: 0))
-                p.addLine(to: CGPoint(x: 0, y: 100))
+            // Only as tall as the words, so it clears the icon above and the button below.
+            GeometryReader { g in
+                Path { p in
+                    p.move(to: CGPoint(x: g.size.width / 2, y: 0))
+                    p.addLine(to: CGPoint(x: g.size.width / 2, y: g.size.height))
+                }
+                .stroke(Color.orange, style: StrokeStyle(lineWidth: 3, dash: [9, 6]))
             }
-            .stroke(Color.orange, style: StrokeStyle(lineWidth: 3, dash: [9, 6]))
-            .frame(width: 3, height: 100)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .ignore)
