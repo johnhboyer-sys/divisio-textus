@@ -87,7 +87,8 @@ struct HillClimbOCRTests {
         return folders
     }
 
-    /// A temporary folder of links to the packs found, so Tesseract reads from one place.
+    /// A temporary folder of copies of the packs found, so Tesseract reads from one place.
+    /// Copies, not links: the app counts only regular files as installed packs.
     static func tessdataFolder(in work: URL) -> (URL, Set<String>) {
         let folder = work.appendingPathComponent("tessdata", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -96,8 +97,7 @@ struct HillClimbOCRTests {
             for dir in tessdataCandidates() {
                 let file = dir.appendingPathComponent("\(code).traineddata")
                 if FileManager.default.isReadableFile(atPath: file.path),
-                   (try? FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("\(code).traineddata"),
-                                                                withDestinationURL: file)) != nil {
+                   (try? FileManager.default.copyItem(at: file, to: folder.appendingPathComponent("\(code).traineddata"))) != nil {
                     have.insert(code); break
                 }
             }
