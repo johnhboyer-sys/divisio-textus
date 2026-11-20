@@ -189,8 +189,8 @@ struct StackView: View {
                         } else {
                             ForEach(stack.members) { member in
                                 outline(member.crop, in: frame, color: flagged.contains(member.id) ? .red : .blue,
-                                        width: flagged.contains(member.id) ? 2 : 1,
-                                        opacity: flagged.contains(member.id) ? 0.8 : 0.18)
+                                        width: 1,
+                                        opacity: flagged.contains(member.id) ? 0.45 : 0.06)
                             }
                             CropBoxView(crop: draft(stack), imageFrame: frame,
                                         color: .orange, label: "Stack crop", tracksPageEdits: false)
