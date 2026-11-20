@@ -210,11 +210,15 @@ private struct ExportOptions: View {
         let apple = model.ocrReader != .tesseract
         LabeledContent {
             Button { packsState.wrappedValue = true } label: {
-                Text(names.isEmpty ? "Choose…" : chosen + "…").lineLimit(1).truncationMode(.middle)
+                Text(apple || names.isEmpty ? "Choose…" : chosen + "…").lineLimit(1).truncationMode(.middle)
             }
             .help(chosen)
         } label: {
-            Text(apple ? "Extra languages" : "Languages").fixedSize()
+            if apple {
+                Text(names.isEmpty ? "Other languages:" : "Other languages: \(chosen)").lineLimit(1).truncationMode(.tail)
+            } else {
+                Text("Languages").fixedSize()
+            }
         }
         let missing = applicable.filter { !model.installedPacks.contains($0) && model.packDownloads[$0] != .downloading }
         if !missing.isEmpty {
