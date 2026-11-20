@@ -34,7 +34,13 @@ enum PageAnalyzer {
         // corners left empty can reach into the printed text, and text beats a
         // clean corner.
         func page(_ side: Range<Double>, _ turned: Double, _ text: CropRect, _ blank: Bool) -> CropRect {
-            let paper = paperBounds(g, xRange: side, turned: turned)
+            var paper = paperBounds(g, xRange: side, turned: turned)
+            // A spread's page runs to the split, its fold (John, 2026-11-20): the
+            // fold's shadow is part of the page, so the page keeps its true size.
+            if r.classification == .spread {
+                if side.upperBound == r.splitX { paper.width = r.splitX - paper.minX }
+                else { paper.width = paper.maxX - r.splitX; paper.x = r.splitX }
+            }
             return blank ? paper : paper.union(text)
         }
         // The sheet's edges are looked for in finer detail: a page size is
