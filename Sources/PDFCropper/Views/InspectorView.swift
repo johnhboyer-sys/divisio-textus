@@ -173,6 +173,10 @@ private struct PageSections: View {
                 }
                 if editing { model.beginEdit() } else { model.endEdit("Straighten") }
             }
+            .accessibilityAdjustableAction { direction in
+                let step = direction == .increment ? 0.1 : -0.1
+                model.perform("Straighten") { value.wrappedValue = min(8, max(-8, ((value.wrappedValue + step) * 10).rounded() / 10)) }
+            }
             .labelsHidden()     // else the Form gives it only the value column
             Text(String(format: "%+.1f°", value.wrappedValue))
                 .monospacedDigit().foregroundStyle(.secondary)
@@ -326,6 +330,12 @@ private struct SelectionSections: View {
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()
+            .accessibilityAdjustableAction { direction in
+                let step = direction == .increment ? 0.1 : -0.1
+                model.perform("Straighten") {
+                    model.setSkew(min(8, max(-8, ((anchor + step) * 10).rounded() / 10)), side: side, for: ids)
+                }
+            }
             Text(values.shared.map { String(format: "%+.1f°", $0) } ?? "mixed")
                 .monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
