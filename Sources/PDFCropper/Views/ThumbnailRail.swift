@@ -74,8 +74,11 @@ struct ThumbnailRail: View {
 
     private func scrollToSelected(_ proxy: ScrollViewProxy) {
         guard let id = model.selectedPageID else { return }
-        // After the rows exist.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { proxy.scrollTo(id, anchor: .center) }
+        // After the rows exist; skipped if another page was chosen meanwhile.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard model.selectedPageID == id else { return }
+            proxy.scrollTo(id, anchor: .center)
+        }
     }
 
     /// Trim All Pages: leave the chosen pages out, or put them back (the page

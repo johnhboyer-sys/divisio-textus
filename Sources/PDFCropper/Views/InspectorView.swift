@@ -429,13 +429,7 @@ private struct StackSections: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(stack.outliers) { member in
-                            LabeledContent {
-                                Button("Show") {
-                                    model.selectedPageID = member.id
-                                    model.showsStack = false
-                                }
-                                .help("Open this page in Page view")
-                            } label: {
+                            HStack {
                                 Label {
                                     Text(member.side == .whole || member.side == .single
                                          ? "p. \(member.page.sourceIndex + 1)"
@@ -443,6 +437,12 @@ private struct StackSections: View {
                                 } icon: {
                                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
                                 }
+                                Spacer()
+                                Button("Show") {
+                                    model.selectedPageID = member.id
+                                    model.showsStack = false
+                                }
+                                .help("Open this page in Page view")
                             }
                         }
                     }
