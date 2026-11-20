@@ -146,14 +146,13 @@ private struct PageSections: View {
             .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
         } else {
             if let readout { LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() } }
-            Menu {
-                Button("To All Single Pages") { model.applySingleCrop(alternate: false) }
-                Button("To Alternate Pages") { model.applySingleCrop(alternate: true) }
-                    .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
-            } label: {
-                Text("Apply crop").frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Text("Copy crop")
+                Spacer(minLength: 0)
+                Button("All single pages") { model.applySingleCrop(alternate: false) }
+                Button("Alternate pages") { model.applySingleCrop(alternate: true) }
             }
-            .menuStyle(.button)
+            .controlSize(.small)
             .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
         }
     }
