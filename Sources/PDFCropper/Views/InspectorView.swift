@@ -525,7 +525,7 @@ private struct TrimSection: View {
                         Label("Trim", systemImage: "crop").frame(maxWidth: .infinity)
                     }
                         .disabled(model.isBusy)
-                        .help("Draw the part of the scan the page is on")
+                        .help("Draw the part of the image the page is on")
                     Button { model.removeTrim() } label: { Text("Remove Trim").frame(maxWidth: .infinity) }
                         .disabled(model.selectedPage?.trim == nil || model.isBusy)
                 }
