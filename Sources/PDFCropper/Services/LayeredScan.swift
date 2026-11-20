@@ -101,8 +101,11 @@ enum LayeredScan {
 
     /// Draw the text layer into `ctx` as `PDFRenderer.renderCGImage` draws the page
     /// at `scale` pixels per point: the crop box at the origin, turned by /Rotate.
-    static func drawText(_ layers: Layers, of page: PDFPage, in ctx: CGContext, scale: Double) {
+    /// `over` keeps what is beneath where the layer has no ink (as the page draws it,
+    /// a mask) instead of painting its paper white.
+    static func drawText(_ layers: Layers, of page: PDFPage, in ctx: CGContext, scale: Double, over: Bool = false) {
         ctx.saveGState()
+        if over { ctx.setBlendMode(.multiply) }
         ctx.scaleBy(x: scale, y: scale)
         ctx.concatenate(page.transform(for: .cropBox))
         ctx.concatenate(layers.placement)
@@ -183,38 +186,48 @@ enum LayeredScan {
         return (Int(r.minX), Int(r.minY), Int(r.width), Int(r.height))
     }
 
-    /// The page's output pages, in reading order, as black-and-white text pages:
-    /// the text layer alone at its own resolution, straightened and cut as the
-    /// color export would be, then split at half ink (8-bit gray holding only 0 and
-    /// 255, which the exporter packs to 1 bit). An entry is nil where the color
-    /// layer holds a picture inside that page (see `holdsPicture`): that page keeps
-    /// the color export. nil if a crop fails. With `previewDPI` the pages are
-    /// drawn small and left gray: a small 1-bit page looks broken, a gray one doesn't.
+    /// The page's output pages, in reading order, as black-and-white pages: both
+    /// layers drawn together at the text layer's own resolution (the color layer
+    /// smoothly enlarged), straightened and cut as the color export would be, then
+    /// turned to black and white by `BlackAndWhite.ink` with the text layer as the
+    /// sharp layer: body text stays the text layer pixel for pixel, print the
+    /// scanner left only in the color layer (a stamp, a rule, parts of big
+    /// letters) turns black, and shadows, tint and dark bands at the fold or the
+    /// page's edges turn white. 8-bit gray holding only 0 and 255, which the
+    /// exporter packs to 1 bit. An entry is nil where the color layer holds a
+    /// picture inside that page (see `holdsPicture`): that page keeps the color
+    /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
+    /// their ink left gray: a small 1-bit page looks broken, a gray one doesn't.
     static func textPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
                           direction: ReadingDirection, previewDPI: Double? = nil) -> [CGImage?]? {
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
-        guard let canvas = straightened(page, pdfPage, dpi: previewDPI ?? textDPI(layers), { ctx, scale in
-            drawText(layers, of: pdfPage, in: ctx, scale: scale)
-        }) else { return nil }
+        let dpi = previewDPI ?? textDPI(layers)
+        // Patches that can't be decoded were found to be pictures above; any left
+        // out here would only be paper.
+        let decoded = layers.patches.compactMap { p in patchImage(p).map { (p, $0) } }
+        guard let text = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                  drawText(layers, of: pdfPage, in: ctx, scale: scale) }),
+              let both = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                  drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
+                  drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) }) else { return nil }
         var out: [CGImage?] = []
         for (k, crop) in crops.enumerated() {
-            guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
+            guard let r = pixelRect(crop, width: text.width, height: text.height) else { return nil }
             if marked[k] { out.append(nil); continue }
-            var bits = [UInt8](repeating: 0, count: r.w * r.h)
+            var gray = [UInt8](repeating: 255, count: r.w * r.h)
+            var sharp = [Bool](repeating: false, count: r.w * r.h)
             for y in 0..<r.h {
-                let row = (r.y + y) * canvas.width + r.x
+                let row = (r.y + y) * text.width + r.x
                 for x in 0..<r.w {
-                    let v = canvas.pixels[row + x]
-                    bits[y * r.w + x] = previewDPI != nil ? v : v < 128 ? 0 : 255
+                    gray[y * r.w + x] = both.pixels[row + x]
+                    sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
                 }
             }
-            guard let provider = CGDataProvider(data: Data(bits) as CFData),
-                  let image = CGImage(width: r.w, height: r.h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: r.w,
-                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
-                                      provider: provider, decode: nil, shouldInterpolate: false,
-                                      intent: .defaultIntent) else { return nil }
+            let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
+                                        dpi: dpi, preview: previewDPI != nil)
+            guard let image = BlackAndWhite.image(ink, width: r.w, height: r.h) else { return nil }
             out.append(image)
         }
         return out

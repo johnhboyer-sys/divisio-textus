@@ -22,6 +22,9 @@ enum PDFExporter {
         var reader: OCRReader = .apple
         var packs: [String] = []
         var enhanceMode: EnhanceMode = .color  // color or grayscale
+        /// Scans not stored in layers in black and white too: hidden, set by
+        /// DIVISIO_BW=plain, for judging it as a possible export option.
+        var plainBlackAndWhite = BlackAndWhite.plainScans
     }
 
     /// Lets tests read installed packs without changing the user's pack folder.
@@ -175,7 +178,8 @@ enum PDFExporter {
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                         throw ExportError.renderFailed(page.sourceIndex)
                     }
-                    images += out
+                    // Hidden, for judging: other scans in black and white too.
+                    images += settings.plainBlackAndWhite ? out.map { BlackAndWhite.page($0, dpi: dpi) ?? $0 } : out
                     dpis += Array(repeating: dpi, count: out.count)
                 }
             }
