@@ -89,6 +89,17 @@ most crop cuts held no cut print, only such marks, comb teeth (still counted) an
 edges. `splitCutsGlyphsAll` and `cropCutsGlyphsAll` keep the old count; `glyphs` counts
 after the marks are left out.
 
+To look at what the counts see, page by page (glyphs the split or a crop edge runs through
+in red, the rest in green, pieces left out with a magenta cross, the split or crop edge in
+blue):
+
+    HILLCLIMB_TRIAGE="split:40,crop:40" HILLCLIMB_TRIAGE_FROM=<label> HILLCLIMB_TRIAGE_OUT=<folder> \
+      swift test -c release -Xswiftc -enable-testing --filter HillClimbTriage
+
+`HILLCLIMB_TRIAGE` also takes page ids (`Smith-1950-41,...`); `HILLCLIMB_TRIAGE_FULL=1`
+adds the whole straightened page with the crop boxes; `HILLCLIMB_TRIAGE=synth` checks that
+no piece left out on the synthetic pages touches drawn print.
+
 ## Diff two runs
 
     Tools/hillclimb/diff_split.py $HILLCLIMB_DIR/results/baseline $HILLCLIMB_DIR/results/new /tmp/diff
