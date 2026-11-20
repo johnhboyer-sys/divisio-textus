@@ -247,12 +247,14 @@ private struct ExportOptions: View {
                 }
                 Toggle("Keep page resolution", isOn: $model.matchScanResolution)
                     .help("Each page keeps its own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
-                VStack(alignment: .leading) {
-                    LabeledContent(model.matchScanResolution ? "Resolution if unknown" : "Export resolution") {
-                        Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
+                if !model.matchScanResolution {
+                    VStack(alignment: .leading) {
+                        LabeledContent("Export resolution") {
+                            Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
+                        }
+                        Slider(value: $model.exportDPI, in: 150...600, step: 50)
+                            .labelsHidden()
                     }
-                    Slider(value: $model.exportDPI, in: 150...600, step: 50)
-                        .labelsHidden()
                 }
             }
 

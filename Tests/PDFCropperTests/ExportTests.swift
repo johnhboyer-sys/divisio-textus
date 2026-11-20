@@ -21,6 +21,19 @@ struct ExportTests {
         return s
     }
 
+    @Test("Keep page resolution: a page with no scan renders at 300 DPI whatever the slider says")
+    func unknownScanDPIFallsBackTo300() {
+        var s = PDFExporter.Settings()
+        s.dpi = 450
+        s.matchScanResolution = true
+        #expect(PDFExporter.renderDPI(scanDPI: nil, settings: s) == 300)
+        #expect(PDFExporter.renderDPI(scanDPI: 1200, settings: s) == 600)
+        #expect(PDFExporter.renderDPI(scanDPI: 72, settings: s) == 150)
+        s.matchScanResolution = false
+        #expect(PDFExporter.renderDPI(scanDPI: nil, settings: s) == 450)
+        #expect(PDFExporter.renderDPI(scanDPI: 1200, settings: s) == 450)
+    }
+
     @Test("Pages keep their physical size at the scan's own resolution")
     func physicalPageSize() throws {
         let (doc, pages) = try letterScan("size-src.pdf")

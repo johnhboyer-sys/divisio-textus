@@ -12,6 +12,15 @@ import Compression
 /// PDF is searchable.
 enum PDFExporter {
 
+    /// The DPI a page renders at. With "Keep page resolution" on, the scan's own
+    /// (kept within 150–600), or 300 for a page with no scanned image; `settings.dpi`
+    /// only applies with it off.
+    static let unknownScanDPI = 300.0
+    static func renderDPI(scanDPI: Double?, settings: Settings) -> Double {
+        guard settings.matchScanResolution else { return settings.dpi }
+        return scanDPI.map { min(600, max(150, $0)) } ?? unknownScanDPI
+    }
+
     struct Settings {
         var dpi: Double = 300            // export resolution when not matching the scan
         var matchScanResolution = true   // use each page's own scan resolution instead
@@ -147,9 +156,7 @@ enum PDFExporter {
                     // Render at the scan's own resolution when there is one: higher
                     // would invent pixels, lower would throw detail away. Kept within
                     // 150–600 DPI so OCR has enough to read and memory stays sane.
-                    let dpi = settings.matchScanResolution
-                        ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-                        : settings.dpi
+                    let dpi = renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
                     // A crop that fails would silently drop an output page: fail the export.
                     guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {
