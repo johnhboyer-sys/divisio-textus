@@ -562,7 +562,13 @@ final class AppModel: ObservableObject {
         guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: outputPreviewDPI) else { return [] }
         let settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
-        let images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
+        var images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
+        // A scan stored in layers exports its text layer alone (see LayeredScan): show that.
+        if let layers = LayeredScan.layers(of: pdfPage),
+           let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
+                                            previewDPI: outputPreviewDPI), text.count == images.count {
+            images = zip(text, images).map { $0 ?? $1 }
+        }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction, images: images)
         outputOrder.removeAll { $0 == page.sourceIndex }
         outputOrder.append(page.sourceIndex)

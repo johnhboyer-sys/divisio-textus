@@ -150,6 +150,26 @@ enum PDFExporter {
                     let dpi = settings.matchScanResolution
                         ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
                         : settings.dpi
+                    // A scan stored in layers gives its text layer alone, in black and
+                    // white at its own resolution, but for pages whose color layer
+                    // holds a picture: those keep the color export.
+                    if let layers = LayeredScan.layers(of: pdfPage),
+                       let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
+                                                        direction: settings.direction) {
+                        var color: [CGImage] = []
+                        if text.contains(where: { $0 == nil }) {
+                            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
+                                  let out = outputImages(of: page, rendered: rendered, settings: settings) else {
+                                throw ExportError.renderFailed(page.sourceIndex)
+                            }
+                            color = out
+                        }
+                        for (k, image) in text.enumerated() {
+                            images.append(image ?? color[k])
+                            dpis.append(image == nil ? dpi : LayeredScan.textDPI(layers))
+                        }
+                        return
+                    }
                     // A crop that fails would silently drop an output page: fail the export.
                     guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {
