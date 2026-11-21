@@ -32,8 +32,7 @@ enum ShadowRemoval {
     ///   `t` tall, not thin, solid enough, not touching the side, with no other
     ///   marks about it but those of its own row and thin upright ones (a fold's
     ///   specks come in crowds; a stripe or tick beside a folio is no crowd); and a
-    ///   letter beside such a glyph (the 1 of a folio 10), or punctuation within its rows
-    ///   (the full stop of a hanging list number).
+    ///   letter beside such a glyph (the 1 of a folio 10).
     /// Specks within 0.1 `t` of each other are judged together, so print broken
     /// into pieces by a pale scan is judged whole. Everything else goes: streaks,
     /// ticks, broken lines, the striped edges of the page stack, specks, and
@@ -189,16 +188,6 @@ enum ShadowRemoval {
         let beside = Int((0.6 * t).rounded())
         for (n, m) in list.enumerated() where !keep[n] && letterTall(m) {
             keep[n] = near(m, beside).contains { o in o != n && keep[o] && shaped[o] && sameRow(m, list[o]) }
-        }
-        // And punctuation beside such a glyph, within its rows (the full stop of a list's
-        // hanging number 1.).
-        for (n, m) in list.enumerated() where !keep[n] {
-            guard Double(m.maxX - m.minX + 1) <= 0.5 * t, Double(m.maxY - m.minY + 1) <= 0.5 * t else { continue }
-            keep[n] = near(m, beside).contains { o in
-                let g = list[o]
-                return o != n && keep[o] && shaped[o] && Double(m.minY) >= Double(g.minY) - 0.3 * t
-                    && Double(m.maxY) <= Double(g.maxY) + 0.3 * t
-            }
         }
         // And a thin letter on its own, with nothing within two letters of it: a folio
         // or marginal 1. A lone tick looks the same and stays too (losing print is
