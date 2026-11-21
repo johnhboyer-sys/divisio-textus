@@ -109,6 +109,61 @@ struct BWFoldTests {
         #expect(share(p.out, p.keep) == 1)
     }
 
+    @Test("Review 2b: a lone narrow folio 1 beside the lines, within the block's height, stays")
+    func loneNarrowFolioBeside() {
+        var p = Self.page()
+        p.keep += Self.box(800, 500, 3, 20)
+        p.ink(p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.keep) == 1)
+        #expect(share(p.out, p.text) == 1)
+    }
+
+    @Test("Review 4b: a broken outline O, 1-pixel strokes, beside a band at the fold stays")
+    func brokenLetterBesideBand() {
+        // Gray page: paper 235, the text, a black band at the right side, an outline O beside it.
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var text: [Int] = []
+        for line in 0..<20 { for x in stride(from: 150, to: 660, by: 45) { text += Self.pair(x, 100 + line * 50) } }
+        for i in text { g[i] = 20 }
+        for i in Self.box(879, 0, 21, Self.h) { g[i] = 10 }
+        let o = Self.box(855, 500, 8, 1) + Self.box(855, 519, 8, 1) + Self.box(855, 500, 1, 20) + Self.box(862, 500, 1, 20)
+        for i in o { g[i] = 20 }
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                    removeShadows: true)
+        #expect(share(out, o) > 0.95, "\(share(out, o))")
+        #expect(share(out, text) > 0.99)
+    }
+
+    @Test("Review 5b: on a page of two lines a printed rule and a bracket near the side stay")
+    func sparsePageRules() {
+        var p = Page()
+        for line in 0..<2 { for x in stride(from: 150, to: 660, by: 45) { p.text += Self.pair(x, 500 + line * 50) } }
+        p.ink(p.text)
+        p.keep += Self.box(60, 300, 2, 400)                                         // a vertical rule
+        p.keep += Self.box(840, 300, 2, 300) + Self.box(828, 300, 12, 2) + Self.box(828, 598, 12, 2)   // a bracket
+        p.ink(p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.keep) == 1, "\(share(p.out, p.keep))")
+        #expect(share(p.out, p.text) == 1)
+    }
+
+    @Test("Review 6b: in color a faint period beside a removed streak piece is not painted out")
+    func faintPeriodBesidePaint() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var text: [Int] = []
+        for line in 0..<20 { for x in stride(from: 150, to: 660, by: 45) { text += Self.pair(x, 100 + line * 50) } }
+        for i in text { g[i] = 30 }
+        let streak = Self.box(800, 470, 2, 60)
+        for i in streak { g[i] = 40 }
+        let period = Self.box(807, 505, 2, 2)
+        for i in period { g[i] = 220 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(streak.allSatisfy { out[$0] > 225 }, "the streak is painted out")
+        #expect(period.allSatisfy { out[$0] <= 225 }, "\(period.map { out[$0] })")
+    }
+
     @Test("A page with no text is left as it is")
     func noText() {
         var out = [UInt8](repeating: 255, count: Self.w * Self.h)

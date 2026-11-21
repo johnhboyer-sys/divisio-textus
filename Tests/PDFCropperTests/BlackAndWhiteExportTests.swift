@@ -189,6 +189,36 @@ struct BlackAndWhiteExportTests {
         #expect(Double(kept) > 0.95 * Double(text.count), "gray, Remove shadows: \(kept) of \(text.count)")
     }
 
+    @Test("Review 1b: pale print (gray 150, 1%) beside black print (1%) stays")
+    func palePrintBesideBlack() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let pale = Self.text(in: CGRect(x: 100, y: 100, width: 700, height: 150))
+        let black = Self.text(in: CGRect(x: 100, y: 700, width: 700, height: 150))
+        for i in pale { g[i] = 150 }
+        for i in black { g[i] = 0 }
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+                                    width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, pale) > 0.95, "\(inkShare(out, pale))")
+        #expect(inkShare(out, black) > 0.95)
+    }
+
+    @Test("Review 3b: a black figure 2 inches tall, 0.05 inch from the side, stays")
+    func tallFigureNearSide() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 380, y: 100, width: 480, height: 1000))
+        for i in text { g[i] = 0 }
+        var figure: [Int] = []
+        for y in 300..<900 { for x in 15..<315 { figure.append(y * Self.w + x) } }
+        for i in figure { g[i] = 10 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        for remove in [false, true] {
+            let bw = BlackAndWhite.page(image, dpi: Self.dpi, removeShadows: remove).map(BlackAndWhite.grayPixels) ?? g
+            #expect(Double(figure.filter { bw[$0] < 128 }.count) > 0.95 * Double(figure.count), "remove \(remove)")
+        }
+        let gray = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(figure.filter { gray[$0] < 128 }.count) > 0.95 * Double(figure.count))
+    }
+
     @Test("Review 3: a black figure an inch square, 0.05 inch from the side, stays")
     func figureNearSide() throws {
         var g = [UInt8](repeating: 235, count: Self.w * Self.h)
