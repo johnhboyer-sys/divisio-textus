@@ -142,7 +142,7 @@ struct BlackAndWhiteExportTests {
         let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
         let layers = try #require(LayeredScan.layers(of: doc.page(at: 0)!))
         let out = try #require(LayeredScan.textPages(of: page, doc.page(at: 0)!, layers: layers,
-                                                     direction: .leftToRight)?.first ?? nil)
+                                                     direction: .leftToRight, bothLayers: true)?.first ?? nil)
         let px = BlackAndWhite.grayPixels(out)
         #expect(Set(px).isSubset(of: [0, 255]))
         // Text layer pixels are 4 per color-layer pixel.

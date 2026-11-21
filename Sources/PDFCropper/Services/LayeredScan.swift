@@ -186,6 +186,49 @@ enum LayeredScan {
         return (Int(r.minX), Int(r.minY), Int(r.width), Int(r.height))
     }
 
+    /// The page's output pages, in reading order, as black-and-white text pages.
+    /// Without `bothLayers` (Color or Grayscale, Remove shadows off: as before
+    /// black and white became an export choice), the text layer alone at its own
+    /// resolution, straightened and cut as the color export would be, then split at
+    /// half ink. With it, `inkPages`. An entry is nil where the color layer holds a
+    /// picture inside that page (see `holdsPicture`): that page keeps the color
+    /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
+    /// left gray: a small 1-bit page looks broken, a gray one doesn't.
+    static func textPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
+                          direction: ReadingDirection, previewDPI: Double? = nil,
+                          bothLayers: Bool = false, removeShadows: Bool = false) -> [CGImage?]? {
+        if bothLayers {
+            return inkPages(of: page, pdfPage, layers: layers, direction: direction, previewDPI: previewDPI,
+                            removeShadows: removeShadows)
+        }
+        let crops = page.outputCrops(direction: direction)
+        let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
+        guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
+        guard let canvas = straightened(page, pdfPage, dpi: previewDPI ?? textDPI(layers), { ctx, scale in
+            drawText(layers, of: pdfPage, in: ctx, scale: scale)
+        }) else { return nil }
+        var out: [CGImage?] = []
+        for (k, crop) in crops.enumerated() {
+            guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
+            if marked[k] { out.append(nil); continue }
+            var bits = [UInt8](repeating: 0, count: r.w * r.h)
+            for y in 0..<r.h {
+                let row = (r.y + y) * canvas.width + r.x
+                for x in 0..<r.w {
+                    let v = canvas.pixels[row + x]
+                    bits[y * r.w + x] = previewDPI != nil ? v : v < 128 ? 0 : 255
+                }
+            }
+            guard let provider = CGDataProvider(data: Data(bits) as CFData),
+                  let image = CGImage(width: r.w, height: r.h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: r.w,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                      provider: provider, decode: nil, shouldInterpolate: false,
+                                      intent: .defaultIntent) else { return nil }
+            out.append(image)
+        }
+        return out
+    }
+
     /// The page's output pages, in reading order, as black-and-white pages: both
     /// layers drawn together at the text layer's own resolution (the color layer
     /// smoothly enlarged), straightened and cut as the color export would be, then
@@ -199,9 +242,9 @@ enum LayeredScan {
     /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
     /// their ink left gray: a small 1-bit page looks broken, a gray one doesn't.
     /// `removeShadows` as for `BlackAndWhite.ink`.
-    static func textPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
-                          direction: ReadingDirection, previewDPI: Double? = nil,
-                          removeShadows: Bool = false) -> [CGImage?]? {
+    static func inkPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
+                         direction: ReadingDirection, previewDPI: Double? = nil,
+                         removeShadows: Bool = false) -> [CGImage?]? {
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }

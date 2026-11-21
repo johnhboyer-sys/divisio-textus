@@ -24,6 +24,10 @@ enum PDFExporter {
         var enhanceMode: EnhanceMode = .color  // color, grayscale or black and white
         /// Remove the fold's shadow, band, line and streaks (see ShadowRemoval).
         var removeShadows = false
+        /// A layered scan's black and white takes ink from both its layers and drops
+        /// shadows (`LayeredScan.inkPages`): in Black and white, or with Remove shadows.
+        /// Otherwise its text layer alone, as before those options.
+        var bothLayers: Bool { enhanceMode == .blackAndWhite || removeShadows }
     }
 
     /// Lets tests read installed packs without changing the user's pack folder.
@@ -158,7 +162,7 @@ enum PDFExporter {
                     if let layers = LayeredScan.layers(of: pdfPage),
                        let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
                                                         direction: settings.direction,
-                                                        removeShadows: settings.removeShadows) {
+                                                        bothLayers: settings.bothLayers, removeShadows: settings.removeShadows) {
                         var color: [CGImage] = []
                         if text.contains(where: { $0 == nil }) {
                             guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),

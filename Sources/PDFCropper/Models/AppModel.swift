@@ -572,7 +572,8 @@ final class AppModel: ObservableObject {
         // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
         if let layers = LayeredScan.layers(of: pdfPage) {
             if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
-                                                previewDPI: outputPreviewDPI, removeShadows: removeShadows),
+                                                previewDPI: outputPreviewDPI, bothLayers: settings.bothLayers,
+                                                removeShadows: removeShadows),
                text.count == images.count {
                 images = zip(text, images).map { $0 ?? $1 }
             }
