@@ -203,7 +203,8 @@ enum ShadowRemoval {
 
     /// A page's text lines, as `clearSides` measures them: its text height `t`, the
     /// marks of its lines (`lineMembers`, and `chained` with a line's stray ends), the
-    /// text block's left and right edges, and the line-chaining groups (`parent`).
+    /// text block's left and right edges, the line-chaining groups (`parent`), and each
+    /// line's middle row (the middle of its marks' middles).
     struct TextLines {
         var t: Double
         var minGlyph: Int
@@ -212,6 +213,7 @@ enum ShadowRemoval {
         var left: Int
         var right: Int
         var parent: [Int]
+        var middles: [Int]
     }
 
     /// See `TextLines`; nil for a page with fewer than three text lines.
@@ -265,7 +267,7 @@ enum ShadowRemoval {
         // beyond those (a tick or a piece of a fold line chained to the line's end)
         // is judged with the rest beside the block.
         var lineMembers = Set<Int>(), chained = Set<Int>()
-        var starts: [Int] = [], ends: [Int] = []
+        var starts: [Int] = [], ends: [Int] = [], middles: [Int] = []
         for (_, ms) in lineOf where ms.count >= 3 {
             let wide = ms.filter { !thin(blobs[$0]) }
             guard wide.count >= 2, wide.count * 3 >= ms.count else { continue }
@@ -278,6 +280,7 @@ enum ShadowRemoval {
             chained.formUnion(ms)
             starts.append(lo)
             ends.append(hi)
+            middles.append(ms.map { (blobs[$0].minY + blobs[$0].maxY) / 2 }.sorted()[ms.count / 2])
         }
         guard starts.count >= 3 else { return nil }
         starts.sort(); ends.sort(by: >)
@@ -285,7 +288,7 @@ enum ShadowRemoval {
         let left = starts[k - 1], right = ends[k - 1]
         guard left < right else { return nil }
         return TextLines(t: t, minGlyph: minGlyph, lineMembers: lineMembers, chained: chained, left: left, right: right,
-                         parent: parent)
+                         parent: parent, middles: middles)
     }
 
 
@@ -397,13 +400,22 @@ enum ShadowRemoval {
                 }
             }
             guard best.count >= 4 else { continue }
-            // Teeth stand beside the text block: blocks in it (a list's square bullets,
-            // starting its lines) are no teeth.
+            // A comb, not a list: its teeth run down most of the page (half its height or
+            // more), stand beside the text block (not in it, as bullets starting its lines
+            // do), and keep their own pitch, not the lines' (a list's markers, even hanging
+            // apart from the block, sit on its lines: three in four or more of them have
+            // their middle within 0.3 of a text height of a line's middle).
+            guard (best[best.count - 1].maxY - best[0].minY) * 2 >= h else { continue }
             if let ink {
                 if block == nil { block = .some(textLines(Components(ink, w, h).blobs, dpi: dpi)) }
                 if let b = block ?? nil {
                     best = best.filter { x0 + $0.maxX < b.left || x0 + $0.minX > b.right }
                     guard best.count >= 4 else { continue }
+                    let near = 0.3 * b.t
+                    let onLines = best.filter { o in
+                        b.middles.contains { Double(abs($0 - (o.minY + o.maxY) / 2)) <= near }
+                    }.count
+                    guard onLines * 4 < best.count * 3 else { continue }
                 }
             }
             found = true
