@@ -17,8 +17,8 @@ struct BWCombTests {
 
     /// Paper 235, 20 lines of text (x 150 to 675) at gray 30, and eleven comb teeth
     /// (40 x 60, gray 45) down the right side every 100 px, each with a speckled clump
-    /// (its loop) at its inner end.
-    static func page() -> (gray: [UInt8], text: [Int], teeth: [Int], clumps: [Int]) {
+    /// (its loop) at its inner end, unless `clumps` is false.
+    static func page(clumps withClumps: Bool = true) -> (gray: [UInt8], text: [Int], teeth: [Int], clumps: [Int]) {
         var g = [UInt8](repeating: 235, count: w * h)
         var text: [Int] = []
         for line in 0..<20 {
@@ -33,7 +33,7 @@ struct BWCombTests {
         for k in 0..<11 {
             let y = 80 + k * 100
             teeth += box(840, y, 40, 60)
-            for yy in (y + 20)..<(y + 40) { for xx in 818..<838 where rng.chance(0.5) { clumps.append(yy * w + xx) } }
+            for yy in (y + 20)..<(y + 40) { for xx in 818..<838 where rng.chance(0.5) && withClumps { clumps.append(yy * w + xx) } }
         }
         for i in teeth { g[i] = 45 }
         for i in clumps { g[i] = 165 }     // pale, as the loops round Oesterle's teeth are (mean gray 146 to 189)
@@ -144,5 +144,18 @@ struct BWCombTests {
         for (name, px) in [("rule", rule), ("bracket", bracket), ("dash", dash)] {
             #expect(Double(px.filter { color[$0] < 100 }.count) > 0.99 * Double(px.count), "\(name) in color")
         }
+    }
+
+    @Test("A gray rule running up to a tooth stays")
+    func grayRuleStays() throws {
+        var p = Self.page(clumps: false)
+        let rule = Self.box(700, 510, 136, 2)
+        for i in rule { p.gray[i] = 100 }
+        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, rule) > 0.95, "\(share(bw, rule))")
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(rule.filter { color[$0] < 160 }.count) > 0.95 * Double(rule.count), "rule in color")
     }
 }

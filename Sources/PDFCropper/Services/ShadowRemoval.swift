@@ -458,9 +458,9 @@ enum ShadowRemoval {
                 drop.append(k); continue
             }
             if cc.count(k, where: { nearTooth[$0] == 0 }) > 0 {
-                // Touching a tooth: its loop if pale; else left to the side rule, never kept
-                // for it (a tooth's trimmed rim is dark and straight too).
-                if paler { drop.append(k) }
+                // Touching a tooth: its loop if pale and lying in its zone; else left to the
+                // side rule, never kept for it (a tooth's trimmed rim is dark and straight too).
+                if paler && inZone * 10 >= b.count * 9 { drop.append(k) }
                 continue
             }
             let isPrint = cc.hasStroke(k, run, in: out) && !paler
