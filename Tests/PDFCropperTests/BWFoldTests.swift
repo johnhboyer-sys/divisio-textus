@@ -84,6 +84,31 @@ struct BWFoldTests {
         #expect(share(p.out, p.text) == 1)
     }
 
+    @Test("Review 2: a lone narrow folio 1 below the block, beside it, stays")
+    func loneNarrowFolio() {
+        var p = Self.page()
+        p.keep += Self.box(800, 1150, 3, 20)
+        p.ink(p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.keep) == 1)
+        #expect(share(p.out, p.text) == 1)
+    }
+
+    @Test("Review 5: on a page of two lines a crease 0.2 inch in goes; the lines and a printed frame stay")
+    func sparsePageCrease() {
+        var p = Page()
+        for line in 0..<2 { for x in stride(from: 150, to: 660, by: 45) { p.text += Self.pair(x, 500 + line * 50) } }
+        p.ink(p.text)
+        p.junk += Self.box(838, 0, 3, Self.h)                                       // the crease, 0.2 inch in
+        // A printed frame near the other side: a box of 2-pixel rules.
+        p.keep += Self.box(20, 300, 2, 400) + Self.box(110, 300, 2, 400) + Self.box(20, 300, 92, 2) + Self.box(20, 698, 92, 2)
+        p.ink(p.junk + p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.junk) == 0, "\(share(p.out, p.junk))")
+        #expect(share(p.out, p.text) == 1)
+        #expect(share(p.out, p.keep) == 1)
+    }
+
     @Test("A page with no text is left as it is")
     func noText() {
         var out = [UInt8](repeating: 255, count: Self.w * Self.h)

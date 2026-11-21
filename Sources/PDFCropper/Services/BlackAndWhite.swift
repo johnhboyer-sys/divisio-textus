@@ -577,9 +577,12 @@ enum BlackAndWhite {
     }
 
     /// Whether a gray page holds tones worth reading (a grayscale scan) rather than
-    /// black and white with a little gray at the edges of strokes.
+    /// black and white with a little gray at the edges of strokes: a twentieth of it
+    /// mid gray, or, on a page of sparse pale print, a thousandth of it mid gray and
+    /// twice as much as near black (the edges of black strokes never are).
     static func holdsTones(_ gray: [UInt8]) -> Bool {
-        let mid = gray.reduce(0) { $0 + ($1 > 40 && $1 < 215 ? 1 : 0) }
-        return mid * 20 > gray.count
+        var mid = 0, dark = 0
+        for v in gray { if v > 40 && v < 215 { mid += 1 } else if v <= 40 { dark += 1 } }
+        return mid * 20 > gray.count || (mid * 1000 > gray.count && mid > 2 * dark)
     }
 }

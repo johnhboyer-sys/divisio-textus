@@ -170,6 +170,43 @@ struct BlackAndWhiteExportTests {
         #expect(px.filter { $0 == 255 }.count * 10 > px.count * 8)
     }
 
+    @Test("Review 1: sparse pale print (gray 150, about 1% of the page) stays, with and without Remove shadows")
+    func sparsePalePrint() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 100, y: 100, width: 700, height: 150))
+        for i in text { g[i] = 150 }
+        let share = Double(text.count) / Double(Self.w * Self.h)
+        #expect(share > 0.005 && share < 0.02, "\(share)")
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+                                    width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, text) > 0.95, "black and white: \(inkShare(out, text))")
+        let on = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+                                   width: Self.w, height: Self.h, dpi: Self.dpi, removeShadows: true)
+        #expect(inkShare(on, text) > 0.95, "black and white, Remove shadows: \(inkShare(on, text))")
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let gray = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let kept = text.filter { gray[$0] < 200 }.count
+        #expect(Double(kept) > 0.95 * Double(text.count), "gray, Remove shadows: \(kept) of \(text.count)")
+    }
+
+    @Test("Review 3: a black figure an inch square, 0.05 inch from the side, stays")
+    func figureNearSide() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 380, y: 100, width: 480, height: 1000))
+        for i in text { g[i] = 0 }
+        var figure: [Int] = []
+        for y in 400..<700 { for x in 15..<315 { figure.append(y * Self.w + x) } }
+        for i in figure { g[i] = 10 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        // Black and white: either kept as a picture (the page stays gray) or made black.
+        let bw = BlackAndWhite.page(image, dpi: Self.dpi).map(BlackAndWhite.grayPixels) ?? g
+        #expect(Double(figure.filter { bw[$0] < 128 }.count) > 0.95 * Double(figure.count))
+        let on = BlackAndWhite.page(image, dpi: Self.dpi, removeShadows: true).map(BlackAndWhite.grayPixels) ?? g
+        #expect(Double(figure.filter { on[$0] < 128 }.count) > 0.95 * Double(figure.count))
+        let gray = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(figure.filter { gray[$0] < 128 }.count) > 0.95 * Double(figure.count))
+    }
+
     @Test("Black and white of a straightened low-resolution scan is made twice as fine")
     func turnedLowResolution() throws {
         let letter = CGRect(x: 0, y: 0, width: 612, height: 792)

@@ -299,6 +299,50 @@ struct LayeredScanTests {
         }
     }
 
+    @Test("Review 4: in Color without Remove shadows a layered page is its text layer alone, as before")
+    func colorIsTextLayerAlone() throws {
+        let bits = LayeredFixture.textBits()
+        // Print only in the color layer: a dark rule across the top.
+        let rule = LayeredFixture.Patch(jpeg: LayeredFixture.jpeg(200, 4) { _, _ in (40, 40, 40) }, width: 200, height: 4,
+                                        rect: CGRect(x: 40, y: 200, width: 200, height: 2))
+        let url = LayeredFixture.write("color-text.pdf", [.init(bits: bits, patches: LayeredFixture.paper() + [rule])])
+        let doc = try #require(PDFDocument(url: url))
+        let want = ink(bits)
+        func drawn(_ settings: PDFExporter.Settings, _ name: String) throws -> [UInt8] {
+            let out = Fixtures.url(name)
+            _ = try PDFExporter.export(pages: [single()], from: doc, to: out, settings: settings)
+            return HillClimb.gray(try #require(PDFRenderer.renderCGImage(page: PDFDocument(url: out)!.page(at: 0)!, dpi: 300)))
+        }
+        let color = try drawn(noOCR, "color-text-out.pdf")
+        #expect(color.count == want.count)
+        #expect(zip(color, want).filter { ($0.0 < 128) != $0.1 }.count == 0)
+        // Black and white keeps the color layer's print too.
+        var bw = noOCR
+        bw.enhanceMode = .blackAndWhite
+        let both = try drawn(bw, "color-text-bw.pdf")
+        #expect(zip(both, want).filter { $0.0 < 128 && !$0.1 }.count > 500)
+    }
+
+    @Test("Review 6: with Remove shadows the Export view shows a layered picture page as the export makes it")
+    @MainActor func picturePreviewRemovesShadows() async throws {
+        let bits = LayeredFixture.textBits(skipping: LayeredFixture.pictureHole)
+        let url = LayeredFixture.write("picture-preview.pdf", [
+            .init(bits: bits, patches: LayeredFixture.paper() + [LayeredFixture.picture()])])
+        let m = testModel()
+        m.load(url: url); await waitUntilIdle(m)
+        m.removeShadows = true
+        let page = try #require(m.pages.first)
+        let shown = try #require(m.outputPreview(for: page).first)
+        // As the export makes it, at the view's 40 DPI.
+        let doc = try #require(PDFDocument(url: url))
+        var settings = PDFExporter.Settings(direction: m.direction, enhanceMode: m.enhanceMode)
+        settings.removeShadows = true
+        let small = try #require(PDFRenderer.renderCGImage(page: doc.page(at: 0)!, dpi: 40))
+        let plain = try #require(PDFExporter.outputImages(of: page, rendered: small, settings: settings)?.first)
+        let want = try #require(ShadowRemoval.page(plain, dpi: 40))
+        #expect(HillClimb.rgbx(shown) == HillClimb.rgbx(want))
+    }
+
     @Test("The Export view shows a layered page's text layer, gray at its small size")
     @MainActor func preview() async throws {
         let bits = LayeredFixture.textBits()
