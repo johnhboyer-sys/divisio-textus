@@ -176,6 +176,23 @@ struct BWFoldTests {
         #expect(share(p.out, p.text) == 1)
     }
 
+    @Test("A title's first capital beside the block stays when the title is too big to be a text line")
+    func titleCapital() {
+        var p = Page()
+        for line in 0..<16 { for x in stride(from: 150, to: 660, by: 45) { p.text += Self.pair(x, 300 + line * 50) } }
+        // Title letters 70 tall (over 3 text heights), boxes of 5-px strokes, from x 160.
+        for x in stride(from: 160, to: 400, by: 45) {
+            p.text += Self.box(x, 100, 5, 70) + Self.box(x + 30, 100, 5, 70) + Self.box(x, 100, 35, 5) + Self.box(x, 165, 35, 5)
+        }
+        p.ink(p.text)
+        // Its P, 20 px before it and past the block's edge.
+        p.keep += Self.box(95, 100, 5, 70) + Self.box(95, 100, 40, 5) + Self.box(95, 135, 40, 5) + Self.box(130, 100, 5, 40)
+        p.ink(p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.keep) == 1, "\(share(p.out, p.keep))")
+        #expect(share(p.out, p.text) == 1)
+    }
+
     @Test("A page with no text is left as it is")
     func noText() {
         var out = [UInt8](repeating: 255, count: Self.w * Self.h)

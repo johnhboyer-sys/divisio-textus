@@ -123,6 +123,12 @@ enum ShadowRemoval {
         let zoned = Set(zone)
         let nearMembers = chained.filter { !zoned.contains($0) && (blobs[$0].minX < left + reach || blobs[$0].maxX > right - reach) }
             .map { blobs[$0] }
+        // Marks inside the block near its edges, letter-sized or bigger.
+        let inBlock = blobs.indices.filter { k in
+            let m = blobs[k]
+            return !zoned.contains(k) && m.count >= minGlyph && Double(m.height) >= 0.45 * t
+                && (m.minX < left + 4 * reach || m.maxX > right - 4 * reach)
+        }
         // Small marks beside a line's mark: punctuation, footnote markers, accents;
         // not a tall thin one (a tick, a piece of a fold line).
         var attached = Set<Int>()
@@ -139,11 +145,15 @@ enum ShadowRemoval {
                 }
             } else if Double(b.width) >= 0.3 * t, b.width * 5 >= b.height {
                 // A big letter starting or ending a line (a title's capital, a drop cap):
-                // not thin, within a letter of a line's mark, sharing its row.
-                for m in nearMembers {
+                // not thin, sharing a row with ink inside the block (the rest of its word,
+                // which may be too big to be a text line), no further from it than a
+                // letter (or half its own height).
+                let reachX = max(t, 0.5 * Double(b.height))
+                for k in inBlock {
+                    let m = blobs[k]
                     let gap = max(0, b.minX - m.maxX - 1, m.minX - b.maxX - 1)
                     let overlap = min(b.maxY, m.maxY) - max(b.minY, m.minY) + 1
-                    if Double(gap) <= t, 2 * overlap >= m.height { attached.insert(i); break }
+                    if Double(gap) <= reachX, 2 * overlap >= min(m.height, b.height) { attached.insert(i); break }
                 }
             }
         }
