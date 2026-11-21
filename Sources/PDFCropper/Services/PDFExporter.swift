@@ -187,11 +187,15 @@ enum PDFExporter {
                        abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
                        let fine = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
                        let out = outputImages(of: page, rendered: fine, settings: settings) {
-                        let bw = out.map { BlackAndWhite.page($0, dpi: fineDPI, removeShadows: settings.removeShadows) }
-                        if bw.allSatisfy({ $0 != nil }) {
-                            images += bw.compactMap { $0 }
-                            dpis += Array(repeating: fineDPI, count: bw.count)
-                            return
+                        // Whether any holds a picture first: then none is made at this size.
+                        let prepared = out.map { BlackAndWhite.prepare($0, dpi: fineDPI) }
+                        if !prepared.contains(where: { $0.picture }) {
+                            let bw = prepared.map { BlackAndWhite.page($0, dpi: fineDPI, removeShadows: settings.removeShadows) }
+                            if bw.allSatisfy({ $0 != nil }) {
+                                images += bw.compactMap { $0 }
+                                dpis += Array(repeating: fineDPI, count: bw.count)
+                                return
+                            }
                         }
                     }
                     // A crop that fails would silently drop an output page: fail the export.

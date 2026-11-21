@@ -27,11 +27,12 @@ enum BlackAndWhite {
     /// grayscale scan, not a black-and-white one). Out: 0 for ink, 255 for paper;
     /// with `preview`, ink keeps its gray instead of turning black. With
     /// `removeShadows`, what is not print beside the text block goes too
-    /// (`ShadowRemoval.clearSides`).
+    /// (`ShadowRemoval.clearSides`). `paper`, if given, is `background` of `gray` at `dpi`,
+    /// already made by the caller.
     static func ink(gray: [UInt8], sharp: [Bool]?, tone: Bool, width w: Int, height h: Int,
-                    dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> [UInt8] {
+                    dpi: Double, preview: Bool = false, removeShadows: Bool = false, paper given: [UInt8]? = nil) -> [UInt8] {
         guard w > 0, h > 0, gray.count == w * h else { return gray }
-        let paper = background(gray, w, h, dpi: dpi)
+        let paper = given ?? background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
         let blur = boxBlur(gray, w, h, radius: Int((0.008 * dpi).rounded()))
         let around = boxBlur(gray, w, h, radius: Int((0.05 * dpi).rounded()))
@@ -539,11 +540,30 @@ enum BlackAndWhite {
     /// or nil when it holds a picture (see `holdsPicture`) and should stay as it is.
     /// `preview` and `removeShadows` as for `ink`.
     static func page(_ image: CGImage, dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> CGImage? {
+        page(prepare(image, dpi: dpi), dpi: dpi, preview: preview, removeShadows: removeShadows)
+    }
+
+    /// An output page's gray pixels and paper, and whether it holds a picture: worked
+    /// out once, so the picture test can come before any other work (see `page`).
+    struct Prepared {
+        let gray: [UInt8], paper: [UInt8]
+        let width: Int, height: Int
+        let picture: Bool
+    }
+
+    static func prepare(_ image: CGImage, dpi: Double) -> Prepared {
         let w = image.width, h = image.height
         let gray = grayPixels(image)
-        guard !holdsPicture(background(gray, w, h, dpi: dpi), gray, w, h, dpi: dpi) else { return nil }
-        return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray, width: w, height: h), width: w, height: h, dpi: dpi,
-                              preview: preview, removeShadows: removeShadows),
+        let paper = background(gray, w, h, dpi: dpi)
+        return Prepared(gray: gray, paper: paper, width: w, height: h, picture: holdsPicture(paper, gray, w, h, dpi: dpi))
+    }
+
+    /// `page` from a page already prepared at `dpi`.
+    static func page(_ p: Prepared, dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> CGImage? {
+        guard !p.picture else { return nil }
+        let w = p.width, h = p.height
+        return Self.image(ink(gray: p.gray, sharp: nil, tone: holdsTones(p.gray, width: w, height: h), width: w, height: h,
+                              dpi: dpi, preview: preview, removeShadows: removeShadows, paper: p.paper),
                           width: w, height: h)
     }
 
