@@ -311,11 +311,11 @@ enum ShadowRemoval {
         let paperRef = channels == 1 ? Double(paperColor[0])
             : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
         let floor = paperRef * 0.35
-        // What is painted: what isn't print, and 0.01 inch about it; then on out to
-        // 0.025 inch through pixels joined to it that aren't paper (darker than the
-        // paper under them, or off the paper's hue): its soft rim and colored fringe (a
-        // comb tooth's pink edge). Faint print apart from it has paper between and stays.
-        var paint = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.01 * dpi).rounded()))).map { $0 == 0 }
+        // What is painted: what isn't print, and on out to 0.025 inch through pixels
+        // joined to it that aren't paper (darker than the paper under them, or off
+        // the paper's hue): its soft rim and colored fringe (a comb tooth's pink edge).
+        // Faint print apart from it has paper between, however close, and stays.
+        var paint = junk.map { $0 == 0 }
         func offPaper(_ i: Int) -> Bool {
             if Int(gray[i]) < Int(paper[i]) - 6 { return true }
             guard channels == 4 else { return false }
