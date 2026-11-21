@@ -271,6 +271,20 @@ struct BlackAndWhiteExportTests {
         #expect(inkShare(out, text) > 0.99)
     }
 
+    @Test("Review 4d: on a layered scan's shadow a small letter's dot stays beside its stem")
+    func smallLetterDotOnShadow() {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        for y in 500..<596 { for x in 400..<496 { g[y * Self.w + x] = 125 } }
+        var sharp = [Bool](repeating: false, count: Self.w * Self.h)
+        var stem: [Int] = [], dot: [Int] = []
+        for y in 537..<557 { for x in 444..<446 { stem.append(y * Self.w + x) } }
+        for y in 532..<535 { dot.append(y * Self.w + 444) }
+        for i in stem + dot { sharp[i] = true; g[i] = 0 }
+        let out = BlackAndWhite.ink(gray: g, sharp: sharp, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, stem) == 1)
+        #expect(inkShare(out, dot) == 1, "\(inkShare(out, dot))")
+    }
+
     @Test("Review 3: a black figure an inch square, 0.05 inch from the side, stays")
     func figureNearSide() throws {
         var g = [UInt8](repeating: 235, count: Self.w * Self.h)

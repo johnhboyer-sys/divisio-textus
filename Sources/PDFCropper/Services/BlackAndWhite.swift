@@ -97,14 +97,16 @@ enum BlackAndWhite {
         // does anything over 0.15 inch across (not a piece of a letter).
         let beside = max(2, Int((0.02 * dpi).rounded())), piece = Int((0.15 * dpi).rounded())
         var rescued: [[Int]] = []
-        // Kept ink that is part of a letter: its touching group holds four full stops'
-        // worth of pixels or more (a speck the test above let through does not).
-        let letterSize = 4 * minGlyph
+        // Kept ink of a letter: a group the size the test above asks of print (a full
+        // stop) or more, holding a stroke (a straight run of ink 0.02 inch long, across
+        // or down). A small letter's stem rescues its dot; a cluster of a shadow's
+        // speckle, a loose chain of single pixels, rescues nothing; nor do rescued pieces.
+        let stroke = max(4, beside), looked = 40 * minGlyph
         var isLetter = [Int: Bool]()
         func letter(_ start: Int) -> Bool {
             if let known = isLetter[start] { return known }
             var seenHere: Set<Int> = [start], todo = [start]
-            while let k = todo.popLast(), seenHere.count < letterSize {
+            while let k = todo.popLast(), seenHere.count < looked {
                 let x = k % w, y = k / w
                 for ny in max(0, y - 1)...min(h - 1, y + 1) {
                     for nx in max(0, x - 1)...min(w - 1, x + 1) where out[ny * w + nx] == 0 && !seenHere.contains(ny * w + nx) {
@@ -112,9 +114,16 @@ enum BlackAndWhite {
                     }
                 }
             }
-            let big = seenHere.count >= letterSize
-            isLetter[start] = big
-            return big
+            var found = false
+            if seenHere.count >= minGlyph {
+                for k in seenHere where !found {
+                    let x = k % w
+                    if x + stroke <= w, !seenHere.contains(k - 1), (0..<stroke).allSatisfy({ seenHere.contains(k + $0) }) { found = true }
+                    if !seenHere.contains(k - w), (0..<stroke).allSatisfy({ seenHere.contains(k + $0 * w) }) { found = true }
+                }
+            }
+            for k in seenHere { isLetter[k] = found }
+            return found
         }
         for group in failed {
             var x0 = w, x1 = 0, y0 = h, y1 = 0
