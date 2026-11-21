@@ -263,10 +263,9 @@ enum ShadowRemoval {
             let b = Int(paper[i])
             if ink[i] != 0, gray[i] < 128 || Int(gray[i]) < b - max(20, b * 12 / 100) { junk[i] = 0 }
         }
-        let junkNear = LayeredScan.minFilter(junk, w, h, radius: reachPx)
+        // Its soft rim and colored fringe go with it.
+        let junkNear = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.01 * dpi).rounded())))
         let clean = BlackAndWhite.cleanLevel(paper)
-        let paperRef = Double(clean + 20)
-        let floor = paperRef * 0.35
         // The page's paper color: the mean of clean paper away from any ink.
         var sum = [Double](repeating: 0, count: channels), n = 0.0
         for i in stride(from: 0, to: w * h, by: 7) where Int(paper[i]) >= clean && printNear[i] != 0 && junkNear[i] != 0
@@ -275,8 +274,13 @@ enum ShadowRemoval {
             n += 1
         }
         let paperColor: [UInt8] = (0..<channels).map { c in
-            n > 0 ? UInt8(min(255, (sum[c] / n).rounded())) : UInt8(min(255, paperRef))
+            n > 0 ? UInt8(min(255, (sum[c] / n).rounded())) : UInt8(min(255, clean + 20))
         }
+        // Shadowed paper is brought up to that color's own gray, so what is painted and
+        // what is evened out meet without a step.
+        let paperRef = channels == 1 ? Double(paperColor[0])
+            : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
+        let floor = paperRef * 0.35
         let picture = BlackAndWhite.pictureMap(paper, w, h, dpi: dpi)
         for i in 0..<(w * h) where !picture[i] {
             let isPrint = printNear[i] == 0
@@ -284,9 +288,12 @@ enum ShadowRemoval {
             if !isPrint && (junkNear[i] == 0 || p < floor) {
                 for c in 0..<channels { px[i * channels + c] = paperColor[c] }
             } else if p < paperRef {
+                // Paper is never brought up past the paper's color: beside a dark mark the
+                // paper map runs dark, and evening out by it would leave a white rim.
                 let f = paperRef / max(1, p)
                 for c in 0..<channels {
-                    px[i * channels + c] = UInt8(min(255, (Double(px[i * channels + c]) * f).rounded()))
+                    let v = Double(px[i * channels + c]) * f
+                    px[i * channels + c] = UInt8(min(isPrint ? 255 : Double(paperColor[c]), v).rounded())
                 }
             }
         }

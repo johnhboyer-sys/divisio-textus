@@ -63,7 +63,8 @@ struct BWShowTests {
             for k in 0..<count {
                 let before = variants[2].pages[k]       // black and white without the option: shows the marks
                 let side = count == 2 ? (k == 0 ? 1 : -1) : Self.darkerSide(before)
-                let r = Self.foldRect(before, side: side, dpi: dpi)
+                let r = Self.foldRect(before, side: side,
+                                      dpi: dpi * Double(before.width) / Double(variants[0].pages[k].width))
                 var row: [(String, CGImage)] = []
                 if k < scans.count, let s = Self.cut(scans[k], r, from: before) { row.append(("scan (gray) — page \(k + 1)", s)) }
                 for v in variants where k < v.pages.count {

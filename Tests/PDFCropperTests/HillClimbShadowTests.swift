@@ -16,7 +16,8 @@ import PDFKit
 /// `PDFExporter.finished` in Black and white and in Color (gray). Per mode:
 /// * `residue`: of the pixels in the fold zone (from the fold to the print nearest it,
 ///   the median over rows) that are not print (2 px from it), the share darker than
-///   paper (black in black and white; 30 under the page's paper elsewhere). Lower is
+///   paper (black in black and white; elsewhere 30 or more off the page's paper, either way,
+///   so paper evened out too far, to white, counts as well). Lower is
 ///   better. `residuePage` is the same over the whole leaf.
 /// * `printLoss`: the share of solid print pixels (mask under 60) gone to paper, and
 ///   `glyphsLost`, print components that lost half their solid pixels. Hard gate.
@@ -204,7 +205,7 @@ struct HillClimbShadowTests {
             for x in 0..<w {
                 let i = y * w + x
                 if near[i] == 255 {
-                    let dark = Int(out[i]) < darkCut
+                    let dark = bw ? Int(out[i]) < darkCut : abs(Int(out[i]) - paper) >= 30
                     t.pageNonPrint += 1; if dark { t.pageDark += 1 }
                     if foldRight ? x > edge + 2 : x < edge - 2 { t.zoneNonPrint += 1; if dark { t.zoneDark += 1 } }
                 } else if mask[i] < 60 {
