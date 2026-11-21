@@ -94,7 +94,9 @@ struct BWFoldTests {
         #expect(share(p.out, p.text) == 1)
     }
 
-    @Test("Review 5: on a page of two lines a crease 0.2 inch in goes; the lines and a printed frame stay")
+    /// A crease on such a page can't be told from a printed rule or bracket reliably
+    /// (see `sparsePageRules`), so it stays: losing print is worse than a mark.
+    @Test("Review 5: on a page of two lines nothing is cleared; the lines and a printed frame stay")
     func sparsePageCrease() {
         var p = Page()
         for line in 0..<2 { for x in stride(from: 150, to: 660, by: 45) { p.text += Self.pair(x, 500 + line * 50) } }
@@ -103,10 +105,9 @@ struct BWFoldTests {
         // A printed frame near the other side: a box of 2-pixel rules.
         p.keep += Self.box(20, 300, 2, 400) + Self.box(110, 300, 2, 400) + Self.box(20, 300, 92, 2) + Self.box(20, 698, 92, 2)
         p.ink(p.junk + p.keep)
+        let before = p.out
         ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
-        #expect(share(p.out, p.junk) == 0, "\(share(p.out, p.junk))")
-        #expect(share(p.out, p.text) == 1)
-        #expect(share(p.out, p.keep) == 1)
+        #expect(p.out == before)
     }
 
     @Test("Review 2b: a lone narrow folio 1 beside the lines, within the block's height, stays")

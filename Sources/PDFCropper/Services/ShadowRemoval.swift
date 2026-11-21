@@ -36,8 +36,8 @@ enum ShadowRemoval {
     /// Specks within 0.1 `t` of each other are judged together, so print broken
     /// into pieces by a pale scan is judged whole. Everything else goes: streaks,
     /// ticks, broken lines, the striped edges of the page stack, specks, and
-    /// anything touching the side. On a page of one or two text lines only creases go
-    /// (`clearCreases`); a page with none is left as it is. Returns whether it ran.
+    /// anything touching the side. A page with fewer than three text lines is left
+    /// as it is. Returns whether it ran.
     @discardableResult
     static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
         guard w > 2, h > 2, out.count == w * h else { return false }
@@ -107,11 +107,7 @@ enum ShadowRemoval {
             ends.append(hi)
             tops.append(ms.map { blobs[$0].minY }.min()!); bottoms.append(ms.map { blobs[$0].maxY }.max()!)
         }
-        guard !starts.isEmpty else { return false }
-        guard starts.count >= 3 else {
-            clearCreases(&out, cc, w, h, dpi: dpi, outside: starts.min()!...ends.max()!)
-            return true
-        }
+        guard starts.count >= 3 else { return false }
         starts.sort(); ends.sort(by: >)
         let k = max(2, min(5, starts.count / 8))
         let left = starts[k - 1], right = ends[k - 1]
@@ -239,30 +235,6 @@ enum ShadowRemoval {
         }
         for (n, m) in list.enumerated() where !keep[n] { for i in m.blobs { cc.clear(i, in: &out) } }
         return true
-    }
-
-    /// On a page of one or two text lines, too few to find the text block by, only
-    /// the plainest fold mark goes: a thin upright line (0.02 inch thick on average)
-    /// an inch long or more, within half an inch of the left or right side, wholly
-    /// outside the lines' columns `outside`, with no ink within 0.04 inch either side.
-    /// A frame, a rule joined to anything, a letter: none is such a line.
-    static func clearCreases(_ out: inout [UInt8], _ cc: Components, _ w: Int, _ h: Int, dpi: Double,
-                             outside: ClosedRange<Int>) {
-        let thin = max(2, Int((0.02 * dpi).rounded())), inch = Int(dpi.rounded())
-        let reach = Int((0.5 * dpi).rounded()), apart = max(1, Int((0.04 * dpi).rounded()))
-        var gone: [Int] = []
-        for (k, b) in cc.blobs.enumerated() {
-            guard b.height >= inch, b.count <= thin * b.height, b.width <= 4 * thin,
-                  b.minX < reach || b.maxX >= w - reach,
-                  b.maxX < outside.lowerBound || b.minX > outside.upperBound else { continue }
-            var beside = 0
-            for y in b.minY...b.maxY {
-                for x in max(0, b.minX - apart)..<b.minX where out[y * w + x] == 0 { beside += 1 }
-                for x in (b.maxX + 1)..<min(w, b.maxX + 1 + apart) where out[y * w + x] == 0 { beside += 1 }
-            }
-            if beside * 20 <= b.count { gone.append(k) }
-        }
-        for k in gone { cc.clear(k, in: &out) }
     }
 
     // MARK: Color and grayscale
