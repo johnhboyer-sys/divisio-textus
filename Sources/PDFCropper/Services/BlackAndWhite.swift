@@ -114,8 +114,9 @@ enum BlackAndWhite {
                     }
                 }
             }
-            var found = false
-            if seenHere.count >= minGlyph {
+            // A group too big to search to its end is no speck: a letter (or more).
+            var found = seenHere.count >= looked
+            if !found, seenHere.count >= minGlyph {
                 for k in seenHere where !found {
                     let x = k % w
                     if x + stroke <= w, !seenHere.contains(k - 1), (0..<stroke).allSatisfy({ seenHere.contains(k + $0) }) { found = true }

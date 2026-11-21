@@ -285,6 +285,85 @@ struct BlackAndWhiteExportTests {
         #expect(inkShare(out, dot) == 1, "\(inkShare(out, dot))")
     }
 
+    /// `text` drawn black on white with CoreText, `points` tall at `dpi`, its baseline at
+    /// `baseline` px from the top and starting at `x`: 0 for ink, 255 for paper, smoothed.
+    static func rendered(_ text: String, font name: String, points: Double, dpi: Double,
+                         x: Double, baseline: Double, into px: inout [UInt8]) -> String {
+        let font = CTFontCreateWithName(name as CFString, points * dpi / 72, nil)
+        let attrs: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): font]
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+        px.withUnsafeMutableBytes { p in
+            guard let ctx = CGContext(data: p.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return }
+            ctx.setFillColor(gray: 0, alpha: 1)
+            ctx.textPosition = CGPoint(x: x, y: Double(h) - baseline)
+            CTLineDraw(line, ctx)
+        }
+        return CTFontCopyPostScriptName(font) as String
+    }
+
+    @Test("Review 4f: a piece beside a big kept group is judged by the whole group, not the part searched first")
+    func pieceBesideBigGroup() {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        for y in 450..<900 { for x in 250..<700 { g[y * Self.w + x] = 125 } }
+        var sharp = [Bool](repeating: false, count: Self.w * Self.h)
+        // A 2-px diagonal, 600 px with no straight run of 6, ending in an upright bar.
+        var group: [Int] = []
+        for i in 0..<300 { group += [(520 + i) * Self.w + 300 + i, (520 + i) * Self.w + 301 + i] }
+        for y in 820..<840 { for x in 600..<603 { group.append(y * Self.w + x) } }
+        let piece = [516 * Self.w + 296, 516 * Self.w + 297, 517 * Self.w + 296, 517 * Self.w + 297]
+        for i in group + piece { sharp[i] = true; g[i] = 0 }
+        let out = BlackAndWhite.ink(gray: g, sharp: sharp, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, group) == 1, "the group is kept: \(inkShare(out, group))")
+        #expect(inkShare(out, piece) == 1, "\(inkShare(out, piece))")
+    }
+
+    /// One case at a time: drawing with CoreText from parallel cases stalled the run.
+    @Test("Review 4e: Greek accents and breathings and italic dots on a layered scan's shadow stay")
+    func accentsOnShadow() {
+        for dpi in [300.0, 200.0, 150.0] { for points in [9.0, 7.0, 6.0] { accents(dpi: dpi, points: points) } }
+    }
+
+    private func accents(dpi: Double, points: Double) {
+        var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
+        let greek = Self.rendered("ά ὁ ῆ ἐ", font: "TimesNewRomanPSMT", points: points, dpi: dpi, x: 150, baseline: 500, into: &ink)
+        let italic = Self.rendered("i é ö", font: "TimesNewRomanPS-ItalicMT", points: points, dpi: dpi, x: 150, baseline: 600,
+                                   into: &ink)
+        // The gray-125 shadow under them, on gray-235 paper; the sharp layer is the drawn ink.
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var sharp = [Bool](repeating: false, count: Self.w * Self.h)
+        for y in 400..<700 { for x in 100..<700 { g[y * Self.w + x] = 125 } }
+        for i in g.indices {
+            g[i] = UInt8(Int(g[i]) * Int(ink[i]) / 255)
+            sharp[i] = ink[i] < 128
+        }
+        let out = BlackAndWhite.ink(gray: g, sharp: sharp, tone: true, width: Self.w, height: Self.h, dpi: dpi)
+        // Every piece of every letter (bodies, accents, breathings, dots) keeps its ink.
+        var seen = [Bool](repeating: false, count: Self.w * Self.h)
+        var pieces = 0, lost: [String] = []
+        for s in sharp.indices where sharp[s] && !seen[s] {
+            var stack = [s], piece: [Int] = []
+            seen[s] = true
+            while let k = stack.popLast() {
+                piece.append(k)
+                let x = k % Self.w, y = k / Self.w
+                for ny in max(0, y - 1)...min(Self.h - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(Self.w - 1, x + 1) where sharp[ny * Self.w + nx] && !seen[ny * Self.w + nx] {
+                        seen[ny * Self.w + nx] = true; stack.append(ny * Self.w + nx)
+                    }
+                }
+            }
+            pieces += 1
+            let kept = piece.filter { out[$0] == 0 }.count
+            if kept * 10 < piece.count * 9 {
+                lost.append("\(piece.count) px at (\(piece[0] % Self.w), \(piece[0] / Self.w)) kept \(kept)")
+            }
+        }
+        #expect(pieces >= 12, "\(pieces) pieces drawn (\(greek), \(italic))")
+        #expect(lost.isEmpty, "\(points) pt at \(dpi) DPI, \(greek)/\(italic): lost \(lost)")
+    }
+
     @Test("Review 3: a black figure an inch square, 0.05 inch from the side, stays")
     func figureNearSide() throws {
         var g = [UInt8](repeating: 235, count: Self.w * Self.h)
