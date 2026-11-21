@@ -146,6 +146,19 @@ struct BWCombTests {
         }
     }
 
+    @Test("A folio 1 beside a tooth, as tall as its end, stays")
+    func folioOneStays() throws {
+        var p = Self.page(clumps: false)
+        let one = Self.box(815, 490, 4, 46)
+        for i in one { p.gray[i] = 30 }
+        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, one) > 0.95, "\(share(bw, one))")
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(one.filter { color[$0] < 100 }.count) > 0.95 * Double(one.count), "1 in color")
+    }
+
     @Test("A gray rule running up to a tooth stays")
     func grayRuleStays() throws {
         var p = Self.page(clumps: false)

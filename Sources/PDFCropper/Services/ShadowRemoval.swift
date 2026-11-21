@@ -447,11 +447,12 @@ enum ShadowRemoval {
             var sum = 0
             _ = cc.count(k, where: { sum += Int(gray[$0]); return true })
             let paler = Double(sum) > pale * Double(b.count)
-            // A tooth's end: an upright mark (over 0.15 inch tall, at most 0.6 times as wide)
-            // three quarters a tooth's height or more, within its rows (give or take 0.06
-            // inch, as its end curls) and within 0.15 inch of it across. A folio or letter
-            // beside a tooth is shorter, or wider.
-            if b.height >= tall, b.width * 5 <= b.height * 3, t.boxes.contains(where: { o in
+            // A tooth's end: an upright mark (over 0.15 inch tall, 0.06 inch wide or more
+            // but at most 0.6 times its height) three quarters a tooth's height or more,
+            // within its rows (give or take 0.06 inch, as its end curls) and within 0.15
+            // inch of it across. A folio or letter beside a tooth is shorter, or wider, or
+            // a stem thinner than that (a 1).
+            if b.height >= tall, b.width >= 2 * grow, b.width * 5 <= b.height * 3, t.boxes.contains(where: { o in
                 b.minY >= o.minY - 2 * grow && b.maxY <= o.maxY + 2 * grow && b.height * 4 >= o.height * 3
                     && b.minX >= o.minX - inward - grow && b.maxX <= o.maxX + inward + grow
             }) {
@@ -464,9 +465,10 @@ enum ShadowRemoval {
                 continue
             }
             let isPrint = cc.hasStroke(k, run, in: out) && !paler
-            // A thin upright line (under 0.03 inch wide, 0.15 inch tall or more) is left to
-            // the side rule, unkept: by a binding as by the fold, a page stack's stripe.
-            if isPrint { if b.width >= thin || b.height < tall { printed.append(k) } }
+            // A thin upright line (under 0.03 inch wide, 0.3 inch tall or more: taller than
+            // a folio's 1) is left to the side rule, unkept: by a binding as by the fold, a
+            // page stack's stripe.
+            if isPrint { if b.width >= thin || b.height < 2 * tall { printed.append(k) } }
             else if inZone * 10 >= b.count * 9 { drop.append(k) }
         }
         var keep = [Bool](repeating: false, count: w * h)
