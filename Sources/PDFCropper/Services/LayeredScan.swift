@@ -360,30 +360,96 @@ enum LayeredScan {
         }
     }
 
-    /// Each pixel's largest value within `radius` (a square), done by rows then columns.
+    /// Each pixel's largest value within `radius` (a square, cut short at the image's
+    /// edges): the smallest of the image turned over (255 - v), turned back.
     static func maxFilter(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
-        filter(p, w, h, r, max)
+        guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
+        return minFilter(p.map { 255 - $0 }, w, h, radius: r).map { 255 - $0 }
     }
 
+    /// Each pixel's smallest value within `radius` (a square, cut short at the image's
+    /// edges), by rows then columns, each with van Herk and Gil-Werman's running
+    /// minimums: the line padded with paper (255) by `radius` either side and cut into
+    /// blocks 2 × radius + 1 long; a window that long spans at most two blocks, so its
+    /// minimum is the smaller of one block's minimum from the window's start onward and
+    /// the next block's minimum up to the window's end. A few steps a pixel whatever
+    /// the radius. The columns are done a row at a time, so memory is read in order.
     static func minFilter(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
-        filter(p, w, h, r, min)
-    }
-
-    private static func filter(_ p: [UInt8], _ w: Int, _ h: Int, _ r: Int, _ pick: (UInt8, UInt8) -> UInt8) -> [UInt8] {
-        var rows = p
-        for y in 0..<h {
-            for x in 0..<w {
-                var v = p[y * w + x]
-                for k in max(0, x - r)...min(w - 1, x + r) { v = pick(v, p[y * w + k]) }
-                rows[y * w + x] = v
+        guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
+        let span = 2 * r + 1
+        var rows = [UInt8](repeating: 255, count: w * h)
+        // Along each row.
+        let len = w + 2 * r
+        var fore = [UInt8](repeating: 255, count: len), back = fore
+        p.withUnsafeBufferPointer { src in
+            rows.withUnsafeMutableBufferPointer { dst in
+                fore.withUnsafeMutableBufferPointer { g in
+                    back.withUnsafeMutableBufferPointer { b in
+                        for y in 0..<h {
+                            let base = y * w - r       // padded index i is source base + i
+                            var start = 0
+                            while start < len {
+                                let end = min(start + span, len)
+                                var m: UInt8 = 255
+                                for i in start..<end {
+                                    let v = i >= r && i < r + w ? src[base + i] : 255
+                                    if v < m { m = v }
+                                    g[i] = m
+                                }
+                                m = 255
+                                var i = end - 1
+                                while i >= start {
+                                    let v = i >= r && i < r + w ? src[base + i] : 255
+                                    if v < m { m = v }
+                                    b[i] = m
+                                    i -= 1
+                                }
+                                start = end
+                            }
+                            let row = y * w
+                            for x in 0..<w { dst[row + x] = min(b[x], g[x + 2 * r]) }
+                        }
+                    }
+                }
             }
         }
-        var out = rows
-        for y in 0..<h {
-            for x in 0..<w {
-                var v = rows[y * w + x]
-                for k in max(0, y - r)...min(h - 1, y + r) { v = pick(v, rows[k * w + x]) }
-                out[y * w + x] = v
+        // Down the columns, whole rows at a time.
+        let tall = h + 2 * r
+        var gRows = [UInt8](repeating: 255, count: tall * w), bRows = gRows
+        var out = [UInt8](repeating: 255, count: w * h)
+        rows.withUnsafeBufferPointer { src in
+            gRows.withUnsafeMutableBufferPointer { g in
+                bRows.withUnsafeMutableBufferPointer { b in
+                    var start = 0
+                    while start < tall {
+                        let end = min(start + span, tall)
+                        for j in start..<end {
+                            let inside = j >= r && j < r + h
+                            let from = (j - r) * w, to = j * w, prev = (j - 1) * w
+                            for x in 0..<w {
+                                let v = inside ? src[from + x] : 255
+                                g[to + x] = j == start ? v : min(g[prev + x], v)
+                            }
+                        }
+                        var j = end - 1
+                        while j >= start {
+                            let inside = j >= r && j < r + h
+                            let from = (j - r) * w, to = j * w, next = (j + 1) * w
+                            for x in 0..<w {
+                                let v = inside ? src[from + x] : 255
+                                b[to + x] = j == end - 1 ? v : min(b[next + x], v)
+                            }
+                            j -= 1
+                        }
+                        start = end
+                    }
+                    out.withUnsafeMutableBufferPointer { dst in
+                        for y in 0..<h {
+                            let top = y * w, bottom = (y + 2 * r) * w
+                            for x in 0..<w { dst[top + x] = min(b[top + x], g[bottom + x]) }
+                        }
+                    }
+                }
             }
         }
         return out
