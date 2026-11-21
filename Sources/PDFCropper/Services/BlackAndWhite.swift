@@ -347,7 +347,8 @@ enum BlackAndWhite {
 
     /// Solid dark strips and patches along the page's sides, to white out. Measured on
     /// cells of 0.01 inch: a cell is dark when at least 30% of it is ink. In a group
-    /// of touching dark cells that comes within 0.1 inch of a side, the solid cells
+    /// of touching dark cells that runs off the crop (a figure printed near a side has
+    /// paper between it and the edge) and comes within 0.1 inch of a side, the solid cells
     /// (dark for 0.03 inch all round, as print's strokes never are) go white. If
     /// the group runs at least an inch along that side and is somewhere 0.04 inch
     /// thick across it (more than a printed rule), it is a band, and its cells in a
@@ -421,11 +422,9 @@ enum BlackAndWhite {
             }
             let atSide = minX < near || maxX >= cw - near, atEdge = minY < near || maxY >= ch - near
             guard atSide || atEdge else { continue }
-            // It runs off the crop, or along a side for 0.4 of it: a figure printed
-            // near the side does neither.
-            let runsOff = minX == 0 || maxX == cw - 1 || minY == 0 || maxY == ch - 1
-            let runsAlong = (atSide && (maxY - minY + 1) * 5 >= ch * 2) || (atEdge && (maxX - minX + 1) * 5 >= cw * 2)
-            guard runsOff || runsAlong else { continue }
+            // A band runs off the crop; a figure printed near the side, however long,
+            // has paper between it and the edge.
+            guard minX == 0 || maxX == cw - 1 || minY == 0 || maxY == ch - 1 else { continue }
             let side = atSide && maxY - minY + 1 >= inch && group.contains { hRun[$0] >= thick }
             let edge = atEdge && maxX - minX + 1 >= inch && group.contains { vRun[$0] >= thick }
             for k in group where solid(k) || (side && vRun[k] >= longRun) || (edge && hRun[k] >= longRun) {
@@ -491,23 +490,24 @@ enum BlackAndWhite {
     static func page(_ image: CGImage, dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> CGImage? {
         let w = image.width, h = image.height
         let gray = grayPixels(image)
-        guard !holdsPicture(background(gray, w, h, dpi: dpi), w, h, dpi: dpi) else { return nil }
+        guard !holdsPicture(background(gray, w, h, dpi: dpi), gray, w, h, dpi: dpi) else { return nil }
         return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray, width: w, height: h), width: w, height: h, dpi: dpi,
                               preview: preview, removeShadows: removeShadows),
                           width: w, height: h)
     }
 
     /// A picture on the paper map: a group of touching places at least 20% darker
-    /// than the page's usual paper, at least 0.4 inch each way, clear of the page's
-    /// sides (where bands and shadows are), and over 0.15 square inch in all. Print
-    /// is gone from the paper map, but a photo, plate or shaded figure stays.
-    static func holdsPicture(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
-        pictureCells(paper, w, h, dpi: dpi).area > LayeredScan.pictureLimit
+    /// than the page's usual paper, at least 0.4 inch each way, not a band or shadow
+    /// (near a side, with the scan `gray` dark at the crop's edge beside it: it runs
+    /// off the crop), and over 0.15 square inch in all. Print is gone from the paper
+    /// map, but a photo, plate or shaded figure stays.
+    static func holdsPicture(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
+        pictureCells(paper, gray, w, h, dpi: dpi).area > LayeredScan.pictureLimit
     }
 
     /// Where a picture is (see `holdsPicture`), pixel by pixel, grown by 0.1 inch.
-    static func pictureMap(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
-        let cells = pictureCells(paper, w, h, dpi: dpi)
+    static func pictureMap(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
+        let cells = pictureCells(paper, gray, w, h, dpi: dpi)
         var out = [Bool](repeating: false, count: w * h)
         guard cells.mark.contains(true) else { return out }
         let grow = max(1, Int((0.1 * dpi / Double(cells.step)).rounded()))
@@ -521,7 +521,7 @@ enum BlackAndWhite {
 
     /// The picture groups of `holdsPicture` on cells of `step` pixels, `width` cells
     /// a row, and their area in square inches.
-    static func pictureCells(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double)
+    static func pictureCells(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double)
         -> (mark: [Bool], width: Int, step: Int, area: Double) {
         let step = max(1, Int((dpi / 50).rounded()))
         let sw = (w + step - 1) / step, sh = (h + step - 1) / step
@@ -551,10 +551,18 @@ enum BlackAndWhite {
                     stack.append(ny * sw + nx)
                 }
             }
-            // A band or shadow runs along a side; a picture near one doesn't.
-            let alongSide = (minX < edge || maxX >= sw - edge) && (maxY - minY + 1) * 5 >= sh * 2
-            let alongEdge = (minY < edge || maxY >= sh - edge) && (maxX - minX + 1) * 5 >= sw * 2
-            if !alongSide, !alongEdge, maxX - minX >= span, maxY - minY >= span {
+            // A band or shadow runs off the crop: beside it, 30% or more of the crop's
+            // outer 2 px is as dark. A picture near a side has paper between it and the edge.
+            func darkStrip(_ xs: Range<Int>, _ ys: Range<Int>) -> Bool {
+                var dark = 0, n = 0
+                for y in ys { for x in xs { n += 1; if Int(gray[y * w + x]) * 5 <= usual * 4 { dark += 1 } } }
+                return n > 0 && dark * 10 >= n * 3
+            }
+            let x0 = minX * step, x1 = min(w, (maxX + 1) * step), y0 = minY * step, y1 = min(h, (maxY + 1) * step)
+            let bw = min(2, w), bh = min(2, h)
+            let runsOff = (minX < edge && darkStrip(0..<bw, y0..<y1)) || (maxX >= sw - edge && darkStrip((w - bw)..<w, y0..<y1))
+                || (minY < edge && darkStrip(x0..<x1, 0..<bh)) || (maxY >= sh - edge && darkStrip(x0..<x1, (h - bh)..<h))
+            if !runsOff, maxX - minX >= span, maxY - minY >= span {
                 area += size
                 for k in group { picture[k] = true }
             }

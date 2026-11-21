@@ -292,7 +292,7 @@ enum ShadowRemoval {
         let paperRef = channels == 1 ? Double(paperColor[0])
             : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
         let floor = paperRef * 0.35
-        let picture = BlackAndWhite.pictureMap(paper, w, h, dpi: dpi)
+        let picture = BlackAndWhite.pictureMap(paper, gray, w, h, dpi: dpi)
         for i in 0..<(w * h) where !picture[i] {
             let isPrint = printNear[i] == 0
             let p = Double(paper[i])
