@@ -517,15 +517,26 @@ enum ShadowRemoval {
                 continue
             }
             // A thin upright line (under 0.03 inch wide, 0.15 inch tall or more) is left to
-            // the side rule, unkept, when it is 0.3 inch tall or more or has other ink above
-            // or below it within 0.3 inch: by a binding as by the fold, a page stack's
-            // stripe, whole or broken. A folio's 1 stands alone.
+            // the side rule, unkept, when it is a page stack's stripe, whole or broken: 0.3
+            // inch tall or more itself, or in line with other thin upright pieces (sharing
+            // its columns, alike in width, gaps under 0.3 inch) that run 0.6 inch together,
+            // by a binding as by the fold. Other ink above or below it (the rule under a
+            // folio's 1) takes nothing away.
             func stripe() -> Bool {
-                b.height >= 2 * tall || cc.blobs.indices.contains { j in
+                if b.height >= 2 * tall { return true }
+                let pieces = cc.blobs.indices.filter { j in
                     let o = cc.blobs[j]
-                    return j != k && o.maxX >= b.minX - 1 && o.minX <= b.maxX + 1
-                        && max(o.minY - b.maxY, b.minY - o.maxY) <= 2 * tall
+                    return j != k && o.height >= 2 * o.width && o.maxX >= b.minX - 1 && o.minX <= b.maxX + 1
+                        && o.width * 2 >= b.width && o.width <= 2 * b.width
+                }.map { cc.blobs[$0] }
+                var lo = b.minY, hi = b.maxY, grew = true
+                while grew {
+                    grew = false
+                    for o in pieces where (o.minY < lo || o.maxY > hi) && o.maxY >= lo - 2 * tall && o.minY <= hi + 2 * tall {
+                        lo = min(lo, o.minY); hi = max(hi, o.maxY); grew = true
+                    }
                 }
+                return hi - lo + 1 >= 4 * tall
             }
             if isPrint { if b.width >= thin || b.height < tall || !stripe() { printed.append(k) } }
             else if inZone * 10 >= b.count * 9 && !looksPrint { drop.append(k) }
