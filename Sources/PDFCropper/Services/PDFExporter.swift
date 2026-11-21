@@ -21,10 +21,9 @@ enum PDFExporter {
         var ocrLanguages: [String] = ["en-US"]
         var reader: OCRReader = .apple
         var packs: [String] = []
-        var enhanceMode: EnhanceMode = .color  // color or grayscale
-        /// Scans not stored in layers in black and white too: hidden, set by
-        /// DIVISIO_BW=plain, for judging it as a possible export option.
-        var plainBlackAndWhite = BlackAndWhite.plainScans
+        var enhanceMode: EnhanceMode = .color  // color, grayscale or black and white
+        /// Remove the fold's shadow, band, line and streaks (see ShadowRemoval).
+        var removeShadows = false
     }
 
     /// Lets tests read installed packs without changing the user's pack folder.
@@ -158,14 +157,16 @@ enum PDFExporter {
                     // holds a picture: those keep the color export.
                     if let layers = LayeredScan.layers(of: pdfPage),
                        let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
-                                                        direction: settings.direction) {
+                                                        direction: settings.direction,
+                                                        removeShadows: settings.removeShadows) {
                         var color: [CGImage] = []
                         if text.contains(where: { $0 == nil }) {
                             guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                                   let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                                 throw ExportError.renderFailed(page.sourceIndex)
                             }
-                            color = out
+                            // A picture page: never black and white.
+                            color = settings.removeShadows ? out.map { ShadowRemoval.page($0, dpi: dpi) ?? $0 } : out
                         }
                         for (k, image) in text.enumerated() {
                             images.append(image ?? color[k])
@@ -178,8 +179,7 @@ enum PDFExporter {
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                         throw ExportError.renderFailed(page.sourceIndex)
                     }
-                    // Hidden, for judging: other scans in black and white too.
-                    images += settings.plainBlackAndWhite ? out.map { BlackAndWhite.page($0, dpi: dpi) ?? $0 } : out
+                    images += out.map { finished($0, dpi: dpi, settings: settings) }
                     dpis += Array(repeating: dpi, count: out.count)
                 }
             }
@@ -263,6 +263,18 @@ enum PDFExporter {
             images.append(sub)
         }
         return images
+    }
+
+    /// An output page of a scan not stored in layers, made black and white and its
+    /// shadows removed as the settings ask. In black and white a page holding a
+    /// picture stays gray (see `BlackAndWhite.page`). With `preview`, a small page:
+    /// its ink is left gray.
+    static func finished(_ image: CGImage, dpi: Double, settings: Settings, preview: Bool = false) -> CGImage {
+        if settings.enhanceMode == .blackAndWhite,
+           let bw = BlackAndWhite.page(image, dpi: dpi, preview: preview, removeShadows: settings.removeShadows) {
+            return bw
+        }
+        return settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages

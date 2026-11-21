@@ -34,7 +34,7 @@ enum ImageEnhancer {
         switch mode {
         case .color:
             return image
-        case .grayscale:
+        case .grayscale, .blackAndWhite:   // black and white starts from gray (see PDFExporter.finished)
             let ci = CIImage(cgImage: image)
                 .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0.0])
             let gray = CGColorSpaceCreateDeviceGray()

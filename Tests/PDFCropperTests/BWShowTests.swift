@@ -7,8 +7,8 @@ import PDFKit
 /// black-and-white export by eye. Runs only when BW_SHOW_DIR and HILLCLIMB_DIR are
 /// set. For each case it exports the one source page and writes every output page,
 /// drawn at the resolution it was made at, as `<case>-<BW_SHOW_TAG>-<k>.png`, and the
-/// gray export of the same crop as `<case>-gray-<k>.png`. Plain scans are exported with
-/// DIVISIO_BW=plain when BW_SHOW_TAG is "after".
+/// gray export of the same crop as `<case>-gray-<k>.png`. BW_SHOW_MODE (color, gray or
+/// bw; default color) picks the export's color, BW_SHOW_REMOVE=1 turns on Remove shadows.
 @Suite("BW show", .serialized,
        .enabled(if: ProcessInfo.processInfo.environment["BW_SHOW_DIR"] != nil
                     && ProcessInfo.processInfo.environment["HILLCLIMB_DIR"] != nil))
@@ -40,10 +40,11 @@ struct BWShowTests {
             }
             guard let (m, url) = models[c.book],
                   let page = m.pages.first(where: { $0.sourceIndex == c.page - 1 }) else { continue }
-            if c.plain && tag == "after" { setenv("DIVISIO_BW", "plain", 1) } else { unsetenv("DIVISIO_BW") }
-            defer { unsetenv("DIVISIO_BW") }
+            let mode: EnhanceMode = env["BW_SHOW_MODE"] == "bw" ? .blackAndWhite
+                : env["BW_SHOW_MODE"] == "gray" ? .grayscale : .color
             var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false,
-                                                reader: m.ocrReader, packs: m.ocrPacks, enhanceMode: m.enhanceMode)
+                                                reader: m.ocrReader, packs: m.ocrPacks, enhanceMode: mode)
+            settings.removeShadows = env["BW_SHOW_REMOVE"] == "1"
             settings.matchScanResolution = m.matchScanResolution
             let pdf = HillClimb.scratch.appendingPathComponent("\(c.name).pdf")
             let doc = try #require(AppModel.reopen(url, password: nil))

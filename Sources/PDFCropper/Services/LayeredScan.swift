@@ -198,8 +198,10 @@ enum LayeredScan {
     /// picture inside that page (see `holdsPicture`): that page keeps the color
     /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
     /// their ink left gray: a small 1-bit page looks broken, a gray one doesn't.
+    /// `removeShadows` as for `BlackAndWhite.ink`.
     static func textPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
-                          direction: ReadingDirection, previewDPI: Double? = nil) -> [CGImage?]? {
+                          direction: ReadingDirection, previewDPI: Double? = nil,
+                          removeShadows: Bool = false) -> [CGImage?]? {
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
@@ -226,7 +228,7 @@ enum LayeredScan {
                 }
             }
             let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
-                                        dpi: dpi, preview: previewDPI != nil)
+                                        dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
             guard let image = BlackAndWhite.image(ink, width: r.w, height: r.h) else { return nil }
             out.append(image)
         }

@@ -109,6 +109,10 @@ final class AppModel: ObservableObject {
     @Published var enhanceMode: EnhanceMode = .color {
         didSet { if enhanceMode != oldValue { clearImageCaches() } }
     }
+    /// Export: remove the fold's shadow, band, line and streaks (see ShadowRemoval).
+    @Published var removeShadows = false {
+        didSet { if removeShadows != oldValue { outputCache = [:]; outputOrder = [] } }
+    }
 
     @Published var isAnalyzing = false
     @Published var isExporting = false
@@ -178,7 +182,7 @@ final class AppModel: ObservableObject {
     // The Export view's pages, made as the export makes them from a small render,
     // remembering the page and settings each was made with.
     private struct CachedOutput {
-        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection
+        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool
         let images: [CGImage]
     }
     private var outputCache: [Int: CachedOutput] = [:]
@@ -554,22 +558,29 @@ final class AppModel: ObservableObject {
     /// The pages Export writes for `page`, in reading order, small: the export's own
     /// steps (PDFExporter.outputImages) run on a low-resolution render.
     func outputPreview(for page: BookPage) -> [CGImage] {
-        if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction {
+        if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction,
+           c.removeShadows == removeShadows {
             outputOrder.removeAll { $0 == page.sourceIndex }
             outputOrder.append(page.sourceIndex)
             return c.images
         }
         guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
               let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: outputPreviewDPI) else { return [] }
-        let settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
+        var settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
+        settings.removeShadows = removeShadows
         var images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
-        // A scan stored in layers exports its text layer alone (see LayeredScan): show that.
-        if let layers = LayeredScan.layers(of: pdfPage),
-           let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
-                                            previewDPI: outputPreviewDPI), text.count == images.count {
-            images = zip(text, images).map { $0 ?? $1 }
+        // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
+        if let layers = LayeredScan.layers(of: pdfPage) {
+            if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
+                                                previewDPI: outputPreviewDPI, removeShadows: removeShadows),
+               text.count == images.count {
+                images = zip(text, images).map { $0 ?? $1 }
+            }
+        } else {
+            images = images.map { PDFExporter.finished($0, dpi: outputPreviewDPI, settings: settings, preview: true) }
         }
-        outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction, images: images)
+        outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
+                                                     removeShadows: removeShadows, images: images)
         outputOrder.removeAll { $0 == page.sourceIndex }
         outputOrder.append(page.sourceIndex)
         while outputOrder.count > outputCacheLimit { outputCache[outputOrder.removeFirst()] = nil }
@@ -2043,6 +2054,7 @@ final class AppModel: ObservableObject {
         var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled,
                                             reader: ocrReader, packs: ocrPacks, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
+        settings.removeShadows = removeShadows
         let cancel = CancelFlag()
         exportCancel = cancel
         let openedKey = projectKey

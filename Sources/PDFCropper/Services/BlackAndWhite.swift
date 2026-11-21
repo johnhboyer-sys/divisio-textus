@@ -25,9 +25,11 @@ enum BlackAndWhite {
     /// layer's ink. With `sharp` nil, pixels under half gray are the sharp layer,
     /// and `tone` says whether the page holds grays worth reading as ink too (a
     /// grayscale scan, not a black-and-white one). Out: 0 for ink, 255 for paper;
-    /// with `preview`, ink keeps its gray instead of turning black.
+    /// with `preview`, ink keeps its gray instead of turning black. With
+    /// `removeShadows`, what is not print beside the text block goes too
+    /// (`ShadowRemoval.clearSides`).
     static func ink(gray: [UInt8], sharp: [Bool]?, tone: Bool, width w: Int, height h: Int,
-                    dpi: Double, preview: Bool = false) -> [UInt8] {
+                    dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> [UInt8] {
         guard w > 0, h > 0, gray.count == w * h else { return gray }
         let paper = background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
@@ -89,6 +91,7 @@ enum BlackAndWhite {
         if let sharp { clearHalo(&out, toneInk, sharp, gray, w, h, dpi: dpi, minGlyph: minGlyph) }
         clearRims(&out, cleared, w, h, dpi: dpi)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
+        if removeShadows { ShadowRemoval.clearSides(&out, w, h, dpi: dpi) }
         if preview { for i in 0..<(w * h) where out[i] == 0 { out[i] = gray[i] } }
         return out
     }
@@ -232,7 +235,7 @@ enum BlackAndWhite {
     /// Paper at least this light is clean: no shadow on it to speak of. Judged
     /// against the page's own paper, its lightest twentieth (a shadow or a dark
     /// board can cover most of a page), so tinted paper counts as clean.
-    private static func cleanLevel(_ paper: [UInt8]) -> Int {
+    static func cleanLevel(_ paper: [UInt8]) -> Int {
         var counts = [Int](repeating: 0, count: 256)
         for v in paper { counts[Int(v)] += 1 }
         var seen = 0, level = 255
@@ -477,17 +480,15 @@ enum BlackAndWhite {
         }
     }
 
-    /// Whether DIVISIO_BW=plain asks for scans not stored in layers to be exported
-    /// in black and white too (hidden, for judging; see `page`).
-    static var plainScans: Bool { ProcessInfo.processInfo.environment["DIVISIO_BW"] == "plain" }
-
     /// An output page in black and white, from its gray or color image at `dpi`,
     /// or nil when it holds a picture (see `holdsPicture`) and should stay as it is.
-    static func page(_ image: CGImage, dpi: Double) -> CGImage? {
+    /// `preview` and `removeShadows` as for `ink`.
+    static func page(_ image: CGImage, dpi: Double, preview: Bool = false, removeShadows: Bool = false) -> CGImage? {
         let w = image.width, h = image.height
         let gray = grayPixels(image)
         guard !holdsPicture(background(gray, w, h, dpi: dpi), w, h, dpi: dpi) else { return nil }
-        return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray), width: w, height: h, dpi: dpi),
+        return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray), width: w, height: h, dpi: dpi,
+                              preview: preview, removeShadows: removeShadows),
                           width: w, height: h)
     }
 
@@ -496,22 +497,46 @@ enum BlackAndWhite {
     /// sides (where bands and shadows are), and over 0.15 square inch in all. Print
     /// is gone from the paper map, but a photo, plate or shaded figure stays.
     static func holdsPicture(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
+        pictureCells(paper, w, h, dpi: dpi).area > LayeredScan.pictureLimit
+    }
+
+    /// Where a picture is (see `holdsPicture`), pixel by pixel, grown by 0.1 inch.
+    static func pictureMap(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
+        let cells = pictureCells(paper, w, h, dpi: dpi)
+        var out = [Bool](repeating: false, count: w * h)
+        guard cells.mark.contains(true) else { return out }
+        let grow = max(1, Int((0.1 * dpi / Double(cells.step)).rounded()))
+        let grown = LayeredScan.minFilter(cells.mark.map { $0 ? 0 : 255 }, cells.width, cells.mark.count / cells.width,
+                                          radius: grow)
+        for y in 0..<h {
+            for x in 0..<w where grown[(y / cells.step) * cells.width + x / cells.step] == 0 { out[y * w + x] = true }
+        }
+        return out
+    }
+
+    /// The picture groups of `holdsPicture` on cells of `step` pixels, `width` cells
+    /// a row, and their area in square inches.
+    static func pictureCells(_ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double)
+        -> (mark: [Bool], width: Int, step: Int, area: Double) {
         let step = max(1, Int((dpi / 50).rounded()))
         let sw = (w + step - 1) / step, sh = (h + step - 1) / step
         var small = [UInt8](repeating: 255, count: sw * sh)
         for y in 0..<sh { for x in 0..<sw { small[y * sw + x] = paper[(y * step) * w + x * step] } }
         let usual = cleanLevel(small) + 20
         var mark = small.map { Int($0) * 5 <= usual * 4 }
+        var picture = [Bool](repeating: false, count: sw * sh)
+        var group: [Int] = []
         let cellDPI = dpi / Double(step)
         let edge = max(1, Int((0.1 * cellDPI).rounded())), span = Int((0.4 * cellDPI).rounded())
         var area = 0
         var stack: [Int] = []
         for start in mark.indices where mark[start] {
             mark[start] = false
-            stack = [start]
+            stack = [start]; group = []
             var size = 0, minX = sw, maxX = 0, minY = sh, maxY = 0
             while let k = stack.popLast() {
                 size += 1
+                group.append(k)
                 let x = k % sw, y = k / sw
                 minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -522,9 +547,12 @@ enum BlackAndWhite {
                 }
             }
             let atSide = minX < edge || minY < edge || maxX >= sw - edge || maxY >= sh - edge
-            if !atSide, maxX - minX >= span, maxY - minY >= span { area += size }
+            if !atSide, maxX - minX >= span, maxY - minY >= span {
+                area += size
+                for k in group { picture[k] = true }
+            }
         }
-        return Double(area) / (cellDPI * cellDPI) > LayeredScan.pictureLimit
+        return (picture, sw, step, Double(area) / (cellDPI * cellDPI))
     }
 
     /// An 8-bit gray image of `pixels` (top-left origin rows).

@@ -170,9 +170,9 @@ struct BlackAndWhiteExportTests {
         #expect(px.filter { $0 == 255 }.count * 10 > px.count * 8)
     }
 
-    @Test("Scans not stored in layers export as before unless asked")
+    @Test("Scans not stored in layers: Color as before, Black and white 1 bit")
     func plainUnchanged() throws {
-        #expect(ProcessInfo.processInfo.environment["DIVISIO_BW"] != nil || !PDFExporter.Settings().plainBlackAndWhite)
+        #expect(PDFExporter.Settings().enhanceMode == .color && !PDFExporter.Settings().removeShadows)
         let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
         let scan = Fixtures.image(1275, 1650, gray: true) { c in
             c.setFillColor(CGColor(gray: 0.55, alpha: 1))
@@ -185,7 +185,6 @@ struct BlackAndWhiteExportTests {
         let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
         var settings = PDFExporter.Settings()
         settings.ocr = false
-        settings.plainBlackAndWhite = false
         let a = Fixtures.url("bw-plain-a.pdf"), b = Fixtures.url("bw-plain-b.pdf")
         _ = try PDFExporter.export(pages: [page], from: doc, to: a, settings: settings)
         // As before: the page drawn again is the color export's crop.
@@ -194,10 +193,13 @@ struct BlackAndWhiteExportTests {
         let src = try #require(PDFRenderer.renderCGImage(page: doc.page(at: 0)!, dpi: 150))
         let truth = try #require(PDFExporter.outputImages(of: page, rendered: src, settings: settings)?.first)
         #expect(Fixtures.difference(again, truth) < 1, "\(Fixtures.difference(again, truth))")
-        // Asked: black and white, the shadow white, the bars kept.
-        settings.plainBlackAndWhite = true
+        // Black and white: 1 bit, the shadow white, the bars kept.
+        settings.enhanceMode = .blackAndWhite
         _ = try PDFExporter.export(pages: [page], from: doc, to: b, settings: settings)
         let bw = try #require(PDFDocument(url: b)?.page(at: 0))
+        let drawn = try #require(PDFRenderer.drawnContent(bw.pageRef!)?.images.first)
+        var bpc: CGPDFInteger = 0
+        #expect(CGPDFDictionaryGetInteger(CGPDFStreamGetDictionary(drawn.stream)!, "BitsPerComponent", &bpc) && bpc == 1)
         let px = HillClimb.gray(try #require(PDFRenderer.renderCGImage(page: bw, dpi: 150)))
         let w = 1275
         #expect(px.count == w * 1650)
