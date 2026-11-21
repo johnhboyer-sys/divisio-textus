@@ -68,6 +68,7 @@ enum BlackAndWhite {
         let sharpPx = (0..<(w * h)).map { isSharp($0) && !cleared[$0] }
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
+        var failed: [[Int]] = []
         for start in 0..<(w * h) where pending[start] && !seen[start] {
             seen[start] = true
             stack = [start]; group = []
@@ -86,8 +87,48 @@ enum BlackAndWhite {
             let mb = sumBlur / group.count, ma = sumAround / group.count
             if group.count >= minGlyph, mb < ma - max(20, ma / 6) {
                 for k in group where pending[k] { out[k] = 0 }
+            } else if sharp != nil {
+                failed.append(group)
             }
         }
+        // A layered scan's text layer is the publisher's own ink: a piece of it too
+        // small or faint for the test above (a letter's hairline broken off) stays when
+        // kept ink lies within 0.02 inch of it. Specks away from letters still go; so
+        // does anything over 0.15 inch across (not a piece of a letter).
+        let beside = max(2, Int((0.02 * dpi).rounded())), piece = Int((0.15 * dpi).rounded())
+        var rescued: [[Int]] = []
+        // Kept ink that is part of a letter: its touching group holds four full stops'
+        // worth of pixels or more (a speck the test above let through does not).
+        let letterSize = 4 * minGlyph
+        var isLetter = [Int: Bool]()
+        func letter(_ start: Int) -> Bool {
+            if let known = isLetter[start] { return known }
+            var seenHere: Set<Int> = [start], todo = [start]
+            while let k = todo.popLast(), seenHere.count < letterSize {
+                let x = k % w, y = k / w
+                for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) where out[ny * w + nx] == 0 && !seenHere.contains(ny * w + nx) {
+                        seenHere.insert(ny * w + nx); todo.append(ny * w + nx)
+                    }
+                }
+            }
+            let big = seenHere.count >= letterSize
+            isLetter[start] = big
+            return big
+        }
+        for group in failed {
+            var x0 = w, x1 = 0, y0 = h, y1 = 0
+            for k in group { x0 = min(x0, k % w); x1 = max(x1, k % w); y0 = min(y0, k / w); y1 = max(y1, k / w) }
+            guard x1 - x0 <= piece, y1 - y0 <= piece else { continue }
+            var near = false
+            search: for y in max(0, y0 - beside)...min(h - 1, y1 + beside) {
+                for x in max(0, x0 - beside)...min(w - 1, x1 + beside) where out[y * w + x] == 0 && letter(y * w + x) {
+                    near = true; break search
+                }
+            }
+            if near { rescued.append(group) }
+        }
+        for group in rescued { for k in group where pending[k] { out[k] = 0 } }
         if let sharp { clearHalo(&out, toneInk, sharp, gray, w, h, dpi: dpi, minGlyph: minGlyph) }
         clearRims(&out, cleared, w, h, dpi: dpi)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
