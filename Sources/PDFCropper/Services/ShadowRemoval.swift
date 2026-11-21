@@ -10,7 +10,7 @@ import CoreGraphics
 ///   how much darker the paper under it is than the page's paper color, but paper
 ///   never past that color), and what black and white would call ink but
 ///   `clearSides` and the steps before it found not to be print is painted the
-///   page's paper color, with 0.01 inch about it.
+///   page's paper color, with 0.025 inch about it.
 enum ShadowRemoval {
 
     // MARK: The sides
@@ -326,8 +326,8 @@ enum ShadowRemoval {
             let b = Int(paper[i])
             if ink[i] != 0, gray[i] < 128 || Int(gray[i]) < b - max(20, b * 12 / 100) { junk[i] = 0 }
         }
-        // Its soft rim and colored fringe go with it.
-        let junkNear = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.01 * dpi).rounded())))
+        // Its soft rim and colored fringe (a comb tooth's pink edge) go with it.
+        let junkNear = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.025 * dpi).rounded())))
         let clean = BlackAndWhite.cleanLevel(paper)
         // The page's paper color: the mean of clean paper away from any ink.
         var sum = [Double](repeating: 0, count: channels), n = 0.0
