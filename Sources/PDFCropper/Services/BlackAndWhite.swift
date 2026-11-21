@@ -91,7 +91,7 @@ enum BlackAndWhite {
         if let sharp { clearHalo(&out, toneInk, sharp, gray, w, h, dpi: dpi, minGlyph: minGlyph) }
         clearRims(&out, cleared, w, h, dpi: dpi)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
-        if removeShadows { ShadowRemoval.clearSides(&out, w, h, dpi: dpi) }
+        if removeShadows { ShadowRemoval.clearSides(&out, w, h, dpi: dpi, cleared: cleared) }
         if preview { for i in 0..<(w * h) where out[i] == 0 { out[i] = gray[i] } }
         return out
     }

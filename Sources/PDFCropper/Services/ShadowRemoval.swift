@@ -39,7 +39,7 @@ enum ShadowRemoval {
     /// anything touching the side. On a page of one or two text lines only creases go
     /// (`clearCreases`); a page with none is left as it is. Returns whether it ran.
     @discardableResult
-    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
+    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double, cleared: [Bool]? = nil) -> Bool {
         guard w > 2, h > 2, out.count == w * h else { return false }
         let cc = Components(out, w, h)
         let blobs = cc.blobs
@@ -207,6 +207,21 @@ enum ShadowRemoval {
         // A glyph on its own: other marks about it, but for its own row's, hold under
         // a tenth of its ink.
         let around = Int(t.rounded())
+        var textEdge = 0, textInk = 0
+        for i in lineMembers.prefix(4000) { textEdge += cc.edge(i, in: out); textInk += blobs[i].count }
+        let ragged = Double(textEdge) / Double(max(1, textInk))
+        func besideRemoved(_ m: Mark) -> Bool {
+            if near(m, around).contains(where: { o in
+                let q = list[o]
+                return !flatRule(q) && (Double(q.maxY - q.minY + 1) > 2.2 * t || Double(q.maxX - q.minX + 1) > 4 * t)
+            }) { return true }
+            guard let cleared else { return false }
+            for y in stride(from: max(0, m.minY - around), through: min(h - 1, m.maxY + around), by: 2) {
+                for x in stride(from: max(0, m.minX - around), through: min(w - 1, m.maxX + around), by: 2)
+                    where cleared[y * w + x] { return true }
+            }
+            return false
+        }
         var keep = [Bool](repeating: false, count: list.count)
         for (n, m) in list.enumerated() {
             if flatRule(m) { keep[n] = true; continue }
@@ -221,6 +236,12 @@ enum ShadowRemoval {
                 crowd += q.count
             }
             keep[n] = crowd * 10 <= m.count
+            // But a ragged clump beside something removed is what is left of it (the
+            // tip of a comb's tooth): ragged against the page's own letters, beside a
+            // band the band pass cleared or a mark too big for a glyph.
+            if keep[n], besideRemoved(m), Double(m.blobs.reduce(0) { $0 + cc.edge($1, in: out) }) > 1.5 * ragged * Double(m.count) {
+                keep[n] = false
+            }
         }
         // And a letter beside a glyph kept so (the 1 of a folio 10).
         let beside = Int((0.6 * t).rounded())
@@ -412,6 +433,19 @@ enum ShadowRemoval {
             self.width = w
         }
         private var width = 0
+
+        /// The pixels of blob `k` on its edge (paper or the page's side next to them,
+        /// left, right, above or below) in `p`, the page it was found on.
+        func edge(_ k: Int, in p: [UInt8]) -> Int {
+            var n = 0
+            let h = p.count / width
+            for i in runsOf[k] {
+                let y = Int(runRow[i]), x0 = Int(runStart[i]), x1 = Int(runEnd[i])
+                for x in x0...x1 where x == x0 || x == x1 || y == 0 || y == h - 1
+                    || p[(y - 1) * width + x] != 0 || p[(y + 1) * width + x] != 0 { n += 1 }
+            }
+            return n
+        }
 
         /// Paint blob `k` paper.
         func clear(_ k: Int, in p: inout [UInt8]) {
