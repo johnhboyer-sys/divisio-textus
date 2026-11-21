@@ -128,7 +128,9 @@ struct BWFoldTests {
         for line in 0..<20 { for x in stride(from: 150, to: 660, by: 45) { text += Self.pair(x, 100 + line * 50) } }
         for i in text { g[i] = 20 }
         for i in Self.box(879, 0, 21, Self.h) { g[i] = 10 }
-        let o = Self.box(855, 500, 8, 1) + Self.box(855, 519, 8, 1) + Self.box(855, 500, 1, 20) + Self.box(862, 500, 1, 20)
+        // Broken: a 2-px gap in the top stroke and one in the left stroke.
+        let o = Self.box(855, 500, 3, 1) + Self.box(860, 500, 3, 1) + Self.box(855, 519, 8, 1)
+            + Self.box(855, 500, 1, 8) + Self.box(855, 510, 1, 10) + Self.box(862, 500, 1, 20)
         for i in o { g[i] = 20 }
         let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
                                     removeShadows: true)
@@ -158,6 +160,22 @@ struct BWFoldTests {
         let streak = Self.box(800, 470, 2, 60)
         for i in streak { g[i] = 40 }
         let period = Self.box(807, 505, 2, 2)
+        for i in period { g[i] = 220 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(streak.allSatisfy { out[$0] > 225 }, "the streak is painted out")
+        #expect(period.allSatisfy { out[$0] <= 225 }, "\(period.map { out[$0] })")
+    }
+
+    @Test("Review 6c: in color a faint period 2 px from a removed streak piece is not painted out")
+    func faintPeriodTouchingRing() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var text: [Int] = []
+        for line in 0..<20 { for x in stride(from: 150, to: 660, by: 45) { text += Self.pair(x, 100 + line * 50) } }
+        for i in text { g[i] = 30 }
+        let streak = Self.box(800, 470, 2, 60)
+        for i in streak { g[i] = 40 }
+        let period = Self.box(804, 505, 2, 2)
         for i in period { g[i] = 220 }
         let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
         let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))

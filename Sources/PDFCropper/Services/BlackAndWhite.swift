@@ -593,16 +593,16 @@ enum BlackAndWhite {
 
     /// Whether a gray page holds tones worth reading (a grayscale scan) rather than
     /// black and white with a little gray at the edges of strokes: a twentieth of it
-    /// mid gray, or a thousandth of it mid gray away from any dark pixel (more than 2 px
-    /// from one under half gray): pale print, which the gray edges of black strokes,
-    /// always beside their dark cores, are not.
+    /// mid gray (between 40 and 215), or a thousandth of it mid gray more than 2 px from
+    /// any near-black pixel (40 or under): pale or gray print, or gray shading, which
+    /// the gray edges of black strokes, always beside their near-black cores, are not.
     static func holdsTones(_ gray: [UInt8], width w: Int, height h: Int) -> Bool {
         guard w > 0, h > 0, gray.count == w * h else { return false }
         var mid = 0
         for v in gray where v > 40 && v < 215 { mid += 1 }
         if mid * 20 > gray.count { return true }
         guard mid * 1000 > gray.count else { return false }
-        let nearDark = LayeredScan.minFilter(gray.map { $0 < 128 ? 0 : 255 }, w, h, radius: 2)
+        let nearDark = LayeredScan.minFilter(gray.map { $0 <= 40 ? 0 : 255 }, w, h, radius: 2)
         var alone = 0
         for i in 0..<(w * h) where gray[i] > 40 && gray[i] < 215 && nearDark[i] != 0 { alone += 1 }
         return alone * 1000 > gray.count

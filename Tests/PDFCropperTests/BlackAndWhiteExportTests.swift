@@ -219,6 +219,58 @@ struct BlackAndWhiteExportTests {
         #expect(Double(figure.filter { gray[$0] < 128 }.count) > 0.95 * Double(figure.count))
     }
 
+    @Test("Review 3c: a tall figure near the side stays though a separate dark strip runs down the crop's edge")
+    func tallFigureBesideEdgeStrip() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 380, y: 100, width: 480, height: 1000))
+        for i in text { g[i] = 0 }
+        var figure: [Int] = []
+        for y in 300..<900 { for x in 15..<315 { figure.append(y * Self.w + x) } }
+        for i in figure { g[i] = 10 }
+        for y in 300..<900 { for x in 0..<2 { g[y * Self.w + x] = 10 } }     // paper between it and the figure
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        for remove in [false, true] {
+            let bw = BlackAndWhite.page(image, dpi: Self.dpi, removeShadows: remove).map(BlackAndWhite.grayPixels) ?? g
+            #expect(Double(figure.filter { bw[$0] < 128 }.count) > 0.95 * Double(figure.count), "remove \(remove)")
+        }
+        let gray = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(figure.filter { gray[$0] < 128 }.count) > 0.95 * Double(figure.count))
+    }
+
+    @Test("Review 3d: a gray outline letter inside a small gray shadow is read as tones and stays")
+    func grayLetterInSmallShadow() {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        for y in 500..<596 { for x in 400..<496 { g[y * Self.w + x] = 125 } }
+        // A 20 x 22 outline letter, 1-px strokes, centred in it.
+        var letter: [Int] = []
+        for x in 438..<458 { letter += [537 * Self.w + x, 558 * Self.w + x] }
+        for y in 537..<559 { letter += [y * Self.w + 438, y * Self.w + 457] }
+        for i in letter { g[i] = 100 }
+        #expect(BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h))
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
+                                    width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, letter) > 0.9, "\(inkShare(out, letter))")
+    }
+
+    @Test("Review 4c: on a layered scan's shadow a hairline piece beside a letter stays; specks away from letters go")
+    func hairlineBesideLetterOnShadow() {
+        var g = Self.shadowed()
+        var sharp = [Bool](repeating: false, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 40, y: 100, width: 700, height: 1000))
+        for i in text { sharp[i] = true; g[i] = 0 }
+        // A broken-off hairline, 1 x 12 px, 2 px right of a letter's l (113..115), in the shadow.
+        var hair: [Int] = []
+        for y in 600..<612 { hair.append(y * Self.w + 118) }
+        for i in hair { sharp[i] = true; g[i] = 0 }
+        // Lone specks well away from any letter, in the darkest of the shadow.
+        let specks = [(20, 60), (25, 1150), (10, 1180)].map { $0.1 * Self.w + $0.0 }
+        for i in specks { sharp[i] = true; g[i] = 0 }
+        let out = BlackAndWhite.ink(gray: g, sharp: sharp, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi)
+        #expect(inkShare(out, hair) == 1, "\(inkShare(out, hair))")
+        #expect(inkShare(out, specks) == 0)
+        #expect(inkShare(out, text) > 0.99)
+    }
+
     @Test("Review 3: a black figure an inch square, 0.05 inch from the side, stays")
     func figureNearSide() throws {
         var g = [UInt8](repeating: 235, count: Self.w * Self.h)
