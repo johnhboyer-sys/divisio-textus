@@ -177,10 +177,10 @@ struct BlackAndWhiteExportTests {
         for i in text { g[i] = 150 }
         let share = Double(text.count) / Double(Self.w * Self.h)
         #expect(share > 0.005 && share < 0.02, "\(share)")
-        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
                                     width: Self.w, height: Self.h, dpi: Self.dpi)
         #expect(inkShare(out, text) > 0.95, "black and white: \(inkShare(out, text))")
-        let on = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+        let on = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
                                    width: Self.w, height: Self.h, dpi: Self.dpi, removeShadows: true)
         #expect(inkShare(on, text) > 0.95, "black and white, Remove shadows: \(inkShare(on, text))")
         let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
@@ -196,7 +196,7 @@ struct BlackAndWhiteExportTests {
         let black = Self.text(in: CGRect(x: 100, y: 700, width: 700, height: 150))
         for i in pale { g[i] = 150 }
         for i in black { g[i] = 0 }
-        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g),
+        let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
                                     width: Self.w, height: Self.h, dpi: Self.dpi)
         #expect(inkShare(out, pale) > 0.95, "\(inkShare(out, pale))")
         #expect(inkShare(out, black) > 0.95)

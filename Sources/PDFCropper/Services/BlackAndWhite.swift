@@ -492,7 +492,7 @@ enum BlackAndWhite {
         let w = image.width, h = image.height
         let gray = grayPixels(image)
         guard !holdsPicture(background(gray, w, h, dpi: dpi), w, h, dpi: dpi) else { return nil }
-        return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray), width: w, height: h, dpi: dpi,
+        return Self.image(ink(gray: gray, sharp: nil, tone: holdsTones(gray, width: w, height: h), width: w, height: h, dpi: dpi,
                               preview: preview, removeShadows: removeShadows),
                           width: w, height: h)
     }
@@ -585,11 +585,18 @@ enum BlackAndWhite {
 
     /// Whether a gray page holds tones worth reading (a grayscale scan) rather than
     /// black and white with a little gray at the edges of strokes: a twentieth of it
-    /// mid gray, or, on a page of sparse pale print, a thousandth of it mid gray and
-    /// twice as much as near black (the edges of black strokes never are).
-    static func holdsTones(_ gray: [UInt8]) -> Bool {
-        var mid = 0, dark = 0
-        for v in gray { if v > 40 && v < 215 { mid += 1 } else if v <= 40 { dark += 1 } }
-        return mid * 20 > gray.count || (mid * 1000 > gray.count && mid > 2 * dark)
+    /// mid gray, or a thousandth of it mid gray away from any dark pixel (more than 2 px
+    /// from one under half gray): pale print, which the gray edges of black strokes,
+    /// always beside their dark cores, are not.
+    static func holdsTones(_ gray: [UInt8], width w: Int, height h: Int) -> Bool {
+        guard w > 0, h > 0, gray.count == w * h else { return false }
+        var mid = 0
+        for v in gray where v > 40 && v < 215 { mid += 1 }
+        if mid * 20 > gray.count { return true }
+        guard mid * 1000 > gray.count else { return false }
+        let nearDark = LayeredScan.minFilter(gray.map { $0 < 128 ? 0 : 255 }, w, h, radius: 2)
+        var alone = 0
+        for i in 0..<(w * h) where gray[i] > 40 && gray[i] < 215 && nearDark[i] != 0 { alone += 1 }
+        return alone * 1000 > gray.count
     }
 }

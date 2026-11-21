@@ -264,7 +264,7 @@ enum ShadowRemoval {
             }
         }
         let paper = BlackAndWhite.background(gray, w, h, dpi: dpi)
-        let ink = BlackAndWhite.ink(gray: gray, sharp: nil, tone: BlackAndWhite.holdsTones(gray), width: w, height: h,
+        let ink = BlackAndWhite.ink(gray: gray, sharp: nil, tone: BlackAndWhite.holdsTones(gray, width: w, height: h), width: w, height: h,
                                     dpi: dpi, removeShadows: true)
         let reachPx = max(1, Int((0.004 * dpi).rounded()))
         let printNear = LayeredScan.minFilter(ink, w, h, radius: reachPx)        // 0 within reach of print
