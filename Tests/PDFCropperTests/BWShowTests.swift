@@ -6,7 +6,8 @@ import PDFKit
 
 /// Draws the shadow score's real cases (`HillClimbShadowTests.cases`) before and after
 /// Remove shadows, for the owner to judge by eye. Runs only when BW_SHOW_DIR and
-/// HILLCLIMB_DIR are set; BW_SHOW_ONLY=name,name picks cases. For each case:
+/// HILLCLIMB_DIR are set; BW_SHOW_ONLY=name,name picks cases; BW_SHOW_COMB=1 draws the comb
+/// cases (`combCases`) and adds Grayscale. For each case:
 /// * `<case>.png`: every output page, in Color and in Black and white, without the option
 ///   (as exported before it) and with it, scaled smoothly to 1400 px tall;
 /// * `<case>-100pct.png`: the fold side of each output page at 100%, 1.4 inch wide and
@@ -24,11 +25,14 @@ struct BWShowTests {
         let dir = URL(fileURLWithPath: env["BW_SHOW_DIR"]!, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let only = env["BW_SHOW_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
-        for c in HillClimbShadowTests.cases where only?.contains(c.name) ?? true {
+        let comb = env["BW_SHOW_COMB"] != nil
+        var modes = [("Color", EnhanceMode.color), ("Black and white", EnhanceMode.blackAndWhite)]
+        if comb { modes.insert(("Grayscale", .grayscale), at: 1) }
+        for c in (comb ? HillClimbShadowTests.combCases : HillClimbShadowTests.cases) where only?.contains(c.name) ?? true {
             guard let (m, url, page) = await HillClimbShadowTests.loadCase(c) else { continue }
             var variants: [(label: String, pages: [CGImage])] = []
             var dpi = 300.0
-            for (mode, enhance) in [("Color", EnhanceMode.color), ("Black and white", EnhanceMode.blackAndWhite)] {
+            for (mode, enhance) in modes {
                 for remove in [false, true] {
                     var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false,
                                                         reader: m.ocrReader, packs: m.ocrPacks, enhanceMode: enhance)
@@ -61,7 +65,7 @@ struct BWShowTests {
             var cropRows: [[(String, CGImage)]] = []
             let count = variants[0].pages.count
             for k in 0..<count {
-                let before = variants[2].pages[k]       // black and white without the option: shows the marks
+                let before = variants[variants.count - 2].pages[k]   // black and white without the option: shows the marks
                 let side = count == 2 ? (k == 0 ? 1 : -1) : Self.darkerSide(before)
                 let r = Self.foldRect(before, side: side,
                                       dpi: dpi * Double(before.width) / Double(variants[0].pages[k].width))

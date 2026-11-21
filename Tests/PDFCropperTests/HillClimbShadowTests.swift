@@ -415,6 +415,17 @@ struct HillClimbShadowTests {
                             mode == "bw" ? out[i] < 128 : abs(Int(out[i]) - paper) >= 30
                         }
                         let t = tally(out: out, ref: ref, mask: m, w: w, h: h, foldRight: k == 0, bw: mode == "bw")
+                        if HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] != nil, let ref,
+                           let refImage = BlackAndWhite.image(ref, width: w, height: h),
+                           let outImage = BlackAndWhite.image(out, width: w, height: h) {
+                            for b in t.newBoxes {
+                                let bx = max(0, b.0 - 60), by = max(0, b.1 - 60)
+                                let r = CGRect(x: bx, y: by, width: min(w, b.2 + 60) - bx, height: min(h, b.3 + 60) - by)
+                                if let a = image.cropping(to: r), let c = refImage.cropping(to: r), let d = outImage.cropping(to: r) {
+                                    triage.append([("comb b\(spec.book) i\(spec.index) leaf\(k) \(mode) scan", a), ("off", c), ("on", d)])
+                                }
+                            }
+                        }
                         totals[mode]!.add(CombTally(bandPx: bandPx, residuePx: residue, marks: marks,
                                                     glyphsLost: t.glyphsLost, glyphsLostNew: t.glyphsLostNew))
                     }
