@@ -39,7 +39,7 @@ enum ShadowRemoval {
     /// anything touching the side. A page with fewer than three text lines is left
     /// as it is. Returns whether it ran.
     @discardableResult
-    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
+    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double, keep: [Bool]? = nil) -> Bool {
         guard w > 2, h > 2, out.count == w * h else { return false }
         let cc = Components(out, w, h)
         let blobs = cc.blobs
@@ -191,6 +191,11 @@ enum ShadowRemoval {
             let mw = Double(m.maxX - m.minX + 1), mh = Double(m.maxY - m.minY + 1)
             return mh <= 0.35 * t && mw >= 1.5 * t && mw >= 5 * mh && !touchesSide(m)
         }
+        // Print a binding's teeth were judged by (see `clearTeeth`).
+        func kept(_ m: Mark) -> Bool {
+            guard let keep else { return false }
+            return m.blobs.contains { b in cc.count(b, where: { keep[$0] }) > 0 }
+        }
         let list = Array(marks.values)
         let shaped = list.map(glyphShaped)
         // Marks by place, for the crowd test.
@@ -223,7 +228,7 @@ enum ShadowRemoval {
         let around = Int(t.rounded())
         var keep = [Bool](repeating: false, count: list.count)
         for (n, m) in list.enumerated() {
-            if flatRule(m) { keep[n] = true; continue }
+            if flatRule(m) || kept(m) { keep[n] = true; continue }
             guard shaped[n] else { continue }
             var crowd = 0
             for o in near(m, around) where o != n {
@@ -251,6 +256,191 @@ enum ShadowRemoval {
         }
         for (n, m) in list.enumerated() where !keep[n] { for i in m.blobs { cc.clear(i, in: &out) } }
         return true
+    }
+
+    // MARK: Comb and spiral bindings
+
+    /// The teeth of a comb or spiral binding down a side of the page, and the zone each
+    /// leaves marks in. Teeth are solid dark blocks (under 55% of the page's paper,
+    /// still there after an opening that wipes out anything under 0.03 inch thick:
+    /// letters' strokes, rules; dark runs down a column over 0.8 inch, the spine's
+    /// band, left out), 0.06 to 0.6 inch tall and at least 0.03 inch wide,
+    /// three-fifths solid, within 0.8 inch of the left or right side, and four or more
+    /// of them in one column (all sharing its columns), alike in height (within half
+    /// to twice the middle one), at a steady pitch (each gap within 0.4 to 2.5 times the
+    /// middle gap). Once found, blocks under 75% of the paper in that column count
+    /// too: paler teeth, and the paler ends of the dark ones. A tooth's zone is its box
+    /// grown by 0.03 inch, and by 0.12 inch toward the page's middle, where a comb's
+    /// loops show through its holes; so are the gaps between teeth from their inner
+    /// ends out to the side, where the comb's back shows.
+    struct Teeth {
+        var core: [Bool]       // the teeth themselves, grown by 2 px
+        var zone: [Bool]
+        var found: Bool
+        var boxes: [Blob] = []  // each tooth's box, in the page's pixels
+    }
+
+    static func teeth(_ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, paper paperRef: Int) -> Teeth {
+        var core = [Bool](repeating: false, count: w * h), zone = core
+        var found = false
+        var boxes: [Blob] = []
+        let strip = min(w, Int((0.8 * dpi).rounded()))
+        guard strip > 4, h > 4 else { return Teeth(core: core, zone: zone, found: false) }
+        let open = max(1, Int((0.015 * dpi).rounded()))
+        let grow = Int((0.03 * dpi).rounded()), inward = Int((0.12 * dpi).rounded())
+        for right in [false, true] {
+            let x0 = right ? w - strip : 0
+            // Solid dark blocks under `level` percent of the paper, after an opening of
+            // the dark: what survives is 0.03 inch thick or more all through.
+            func blocks(_ level: Int) -> (opened: [UInt8], blobs: [Blob]) {
+                var map = [UInt8](repeating: 255, count: strip * h)
+                for y in 0..<h { for x in 0..<strip where Int(gray[y * w + x0 + x]) * 100 < paperRef * level { map[y * strip + x] = 0 } }
+                // Dark runs down a column longer than any tooth (the spine's band or the
+                // page's edge, which teeth may touch) are left out.
+                let long = Int((0.8 * dpi).rounded())
+                for x in 0..<strip {
+                    var y = 0
+                    while y < h {
+                        guard map[y * strip + x] == 0 else { y += 1; continue }
+                        let s = y
+                        while y < h, map[y * strip + x] == 0 { y += 1 }
+                        if y - s > long { for yy in s..<y { map[yy * strip + x] = 255 } }
+                    }
+                }
+                let opened = LayeredScan.minFilter(LayeredScan.maxFilter(map, strip, h, radius: open), strip, h, radius: open)
+                let blobs = Components(opened, strip, h).blobs.filter { b in
+                    let bh = Double(b.height), bw = Double(b.width)
+                    return bh >= 0.06 * dpi && bh <= 0.6 * dpi && bw >= 0.03 * dpi && bw <= 0.6 * dpi
+                        && Double(b.count) >= 0.6 * bw * bh
+                }
+                return (opened, blobs)
+            }
+            let (opened, candidates) = blocks(55)
+            guard candidates.count >= 4 else { continue }
+            // The largest series in one column.
+            var best: [Blob] = []
+            var mid = 0
+            for c in candidates {
+                let column = candidates.filter { $0.maxX >= c.minX && $0.minX <= c.maxX }.sorted { $0.minY < $1.minY }
+                let heights = column.map(\.height).sorted()
+                let m = heights[heights.count / 2]
+                let alike = column.filter { $0.height * 2 >= m && $0.height <= 2 * m }
+                guard alike.count >= 4 else { continue }
+                let gaps = zip(alike, alike.dropFirst()).map { $1.minY - $0.minY }.sorted()
+                let midGap = gaps[gaps.count / 2]
+                guard midGap > 0, gaps.allSatisfy({ Double($0) >= 0.4 * Double(midGap) && Double($0) <= 2.5 * Double(midGap) })
+                else { continue }
+                if alike.count > best.count { best = alike; mid = m }
+            }
+            guard best.count >= 4 else { continue }
+            found = true
+            var teeth = best.map { ($0, opened) }
+            // Paler teeth in the same column (a comb's teeth shade lighter where the
+            // page lifts off the glass), alike in height, under 75% of the paper.
+            let colMin = best.map(\.minX).min()!, colMax = best.map(\.maxX).max()!
+            let paler = blocks(75)
+            // A tooth's paler end, past its dark part, is the tooth too.
+            var ends: [Blob] = []
+            for b in paler.blobs where b.maxX >= colMin && b.minX <= colMax && b.height * 2 >= mid && b.height <= 2 * mid {
+                if let d = best.first(where: { $0.maxY >= b.minY && $0.minY <= b.maxY }) {
+                    if b.minY >= d.minY - grow, b.maxY <= d.maxY + grow,
+                       right ? b.minX >= d.minX - inward : b.maxX <= d.maxX + inward { ends.append(b) }
+                } else {
+                    teeth.append((b, paler.opened))
+                }
+            }
+            for b in ends {
+                for y in b.minY...b.maxY {
+                    for x in b.minX...b.maxX where paler.opened[y * strip + x] == 0 { core[y * w + x0 + x] = true }
+                }
+            }
+            teeth.sort { $0.0.minY < $1.0.minY }
+            // The gaps between the teeth, from their inner ends out to the side, and half
+            // a gap past the first and last: where the comb's back shows between them.
+            let pitch = zip(best, best.dropFirst()).map { $1.minY - $0.minY }.sorted()[(best.count - 1) / 2]
+            let inner = right ? best.map(\.minX).sorted()[best.count / 2] : best.map(\.maxX).sorted()[best.count / 2]
+            for y in max(0, teeth[0].0.minY - pitch / 2)...min(h - 1, teeth[teeth.count - 1].0.maxY + pitch / 2) {
+                for x in (right ? inner : 0)...(right ? strip - 1 : inner) { zone[y * w + x0 + x] = true }
+            }
+            for (b, opened) in teeth {
+                var page = b
+                page.minX += x0; page.maxX += x0
+                boxes.append(page)
+                for y in b.minY...b.maxY {
+                    for x in b.minX...b.maxX where opened[y * strip + x] == 0 { core[y * w + x0 + x] = true }
+                }
+                let zx0 = right ? b.minX - inward : b.minX - grow, zx1 = right ? b.maxX + grow : b.maxX + inward
+                for y in max(0, b.minY - grow)...min(h - 1, b.maxY + grow) {
+                    for x in max(0, zx0)...min(strip - 1, zx1) { zone[y * w + x0 + x] = true }
+                }
+            }
+        }
+        if found { core = LayeredScan.minFilter(core.map { $0 ? 0 : 255 }, w, h, radius: 2).map { $0 == 0 } }
+        return Teeth(core: core, zone: zone, found: found, boxes: boxes)
+    }
+
+    /// Black and white: what a binding's teeth leave. Ink on a tooth goes. A mark lying
+    /// (nine-tenths of it) in a tooth's zone goes when it is no print: when it holds no
+    /// stroke (a straight run of ink 0.02 inch long, across or down, as letters, rules
+    /// and brackets have), or when it is clearly paler than the page's print (its mean
+    /// gray in `gray` more than a quarter of the way from the print's to `paper`): the
+    /// loops and shading round a comb's teeth, which the scan turns to pale clumps. So does
+    /// a pale mark touching a tooth (within 3 px), and an upright mark over 0.15 inch
+    /// tall, three quarters a tooth's height or more, beside it within its rows: its
+    /// end. A letter or folio touching a tooth keeps all of it off the tooth; a dark
+    /// speck touching one is left to `clearSides` (losing print is worse than a speck).
+    /// Returns the print it judged there (marks reaching into a zone with a stroke, as
+    /// dark as print, but for thin upright lines), for `clearSides` to keep: a rule or
+    /// bracket by a comb's teeth.
+    @discardableResult
+    static func clearTeeth(_ out: inout [UInt8], _ t: Teeth, _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double,
+                           paper: Int) -> [Bool]? {
+        guard t.found else { return nil }
+        for i in 0..<(w * h) where t.core[i] { out[i] = 255 }
+        // The page's print: the middle gray of its ink outside the zones.
+        var counts = [Int](repeating: 0, count: 256), n = 0
+        for i in stride(from: 0, to: w * h, by: 3) where out[i] == 0 && !t.zone[i] { counts[Int(gray[i])] += 1; n += 1 }
+        var seen = 0, print = 0
+        for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { print = v; break } }
+        let pale = Double(print) + 0.25 * Double(max(0, paper - print))
+        let cc = Components(out, w, h)
+        let run = max(4, Int((0.02 * dpi).rounded()))
+        let nearTooth = LayeredScan.minFilter(t.core.map { $0 ? 0 : 255 }, w, h, radius: 3)
+        let grow = Int((0.03 * dpi).rounded()), inward = Int((0.12 * dpi).rounded()), tall = Int((0.15 * dpi).rounded())
+        let thin = Int((0.03 * dpi).rounded())
+        var drop: [Int] = [], printed: [Int] = []
+        for (k, b) in cc.blobs.enumerated() {
+            let inZone = cc.count(k, where: { t.zone[$0] })
+            guard inZone > 0 else { continue }
+            var sum = 0
+            _ = cc.count(k, where: { sum += Int(gray[$0]); return true })
+            let paler = Double(sum) > pale * Double(b.count)
+            // A tooth's end: an upright mark (over 0.15 inch tall, at most 0.6 times as wide)
+            // three quarters a tooth's height or more, within its rows (give or take 0.06
+            // inch, as its end curls) and within 0.15 inch of it across. A folio or letter
+            // beside a tooth is shorter, or wider.
+            if b.height >= tall, b.width * 5 <= b.height * 3, t.boxes.contains(where: { o in
+                b.minY >= o.minY - 2 * grow && b.maxY <= o.maxY + 2 * grow && b.height * 4 >= o.height * 3
+                    && b.minX >= o.minX - inward - grow && b.maxX <= o.maxX + inward + grow
+            }) {
+                drop.append(k); continue
+            }
+            if cc.count(k, where: { nearTooth[$0] == 0 }) > 0 {
+                // Touching a tooth: its loop if pale; else left to the side rule, never kept
+                // for it (a tooth's trimmed rim is dark and straight too).
+                if paler { drop.append(k) }
+                continue
+            }
+            let isPrint = cc.hasStroke(k, run, in: out) && !paler
+            // A thin upright line (under 0.03 inch wide, 0.15 inch tall or more) is left to
+            // the side rule, unkept: by a binding as by the fold, a page stack's stripe.
+            if isPrint { if b.width >= thin || b.height < tall { printed.append(k) } }
+            else if inZone * 10 >= b.count * 9 { drop.append(k) }
+        }
+        var keep = [Bool](repeating: false, count: w * h)
+        for k in printed { cc.mark(k, in: &keep) }
+        for k in drop { cc.clear(k, in: &out) }
+        return keep
     }
 
     // MARK: Color and grayscale
@@ -334,10 +524,12 @@ enum ShadowRemoval {
             }
         }
         let picture = BlackAndWhite.pictureMap(paper, gray, w, h, dpi: dpi)
+        // A binding's teeth and the marks round them: painted, but for print.
+        let comb = teeth(gray, w, h, dpi: dpi, paper: clean + 20)
         for i in 0..<(w * h) where !picture[i] {
             let isPrint = printNear[i] == 0
             let p = Double(paper[i])
-            if !isPrint && (paint[i] || p < floor) {
+            if !isPrint && (paint[i] || p < floor || comb.zone[i]) {
                 for c in 0..<channels { px[i * channels + c] = paperColor[c] }
             } else if p < paperRef {
                 // Paper is never brought up past the paper's color: beside a dark mark the
@@ -422,6 +614,39 @@ enum ShadowRemoval {
             self.width = w
         }
         private var width = 0
+
+        /// Whether blob `k` holds a straight run of `run` pixels of ink across or down
+        /// (`p` is the page it was found on; ink below one of its pixels is its own).
+        func hasStroke(_ k: Int, _ run: Int, in p: [UInt8]) -> Bool {
+            let h = p.count / width
+            for i in runsOf[k] {
+                let x0 = Int(runStart[i]), x1 = Int(runEnd[i]), y = Int(runRow[i])
+                if x1 - x0 + 1 >= run { return true }
+                guard y + run <= h else { continue }
+                for x in x0...x1 where y == 0 || p[(y - 1) * width + x] != 0 {
+                    if (1..<run).allSatisfy({ p[(y + $0) * width + x] == 0 }) { return true }
+                }
+            }
+            return false
+        }
+
+        /// How many of blob `k`'s pixels `inside` holds.
+        func count(_ k: Int, where inside: (Int) -> Bool) -> Int {
+            var n = 0
+            for i in runsOf[k] {
+                let row = Int(runRow[i]) * width
+                for x in Int(runStart[i])...Int(runEnd[i]) where inside(row + x) { n += 1 }
+            }
+            return n
+        }
+
+        /// Set blob `k`'s pixels in `mask`.
+        func mark(_ k: Int, in mask: inout [Bool]) {
+            for i in runsOf[k] {
+                let row = Int(runRow[i]) * width
+                for x in Int(runStart[i])...Int(runEnd[i]) { mask[row + x] = true }
+            }
+        }
 
         /// Paint blob `k` paper.
         func clear(_ k: Int, in p: inout [UInt8]) {

@@ -143,7 +143,11 @@ enum BlackAndWhite {
         if let sharp { clearHalo(&out, toneInk, sharp, gray, w, h, dpi: dpi, minGlyph: minGlyph) }
         clearRims(&out, cleared, w, h, dpi: dpi)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
-        if removeShadows { ShadowRemoval.clearSides(&out, w, h, dpi: dpi) }
+        if removeShadows {
+            let combPrint = ShadowRemoval.clearTeeth(&out, ShadowRemoval.teeth(gray, w, h, dpi: dpi, paper: clean + 20), gray, w, h, dpi: dpi,
+                                                     paper: clean + 20)
+            ShadowRemoval.clearSides(&out, w, h, dpi: dpi, keep: combPrint)
+        }
         if preview { for i in 0..<(w * h) where out[i] == 0 { out[i] = gray[i] } }
         return out
     }
