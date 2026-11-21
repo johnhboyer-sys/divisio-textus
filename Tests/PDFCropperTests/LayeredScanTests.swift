@@ -331,7 +331,13 @@ struct LayeredScanTests {
         let m = testModel()
         m.load(url: url); await waitUntilIdle(m)
         m.removeShadows = true
-        let page = try #require(m.pages.first)
+        var page = try #require(m.pages.first)
+        page.classification = .single
+        page.leftCrop = .full
+        let doc0 = try #require(PDFDocument(url: url))
+        let layers = try #require(LayeredScan.layers(of: doc0.page(at: 0)!))
+        #expect(LayeredScan.textPages(of: page, doc0.page(at: 0)!, layers: layers, direction: m.direction,
+                                      previewDPI: 40, bothLayers: true, removeShadows: true)?.first == .some(nil))
         let shown = try #require(m.outputPreview(for: page).first)
         // As the export makes it, at the view's 40 DPI.
         let doc = try #require(PDFDocument(url: url))
@@ -340,7 +346,8 @@ struct LayeredScanTests {
         let small = try #require(PDFRenderer.renderCGImage(page: doc.page(at: 0)!, dpi: 40))
         let plain = try #require(PDFExporter.outputImages(of: page, rendered: small, settings: settings)?.first)
         let want = try #require(ShadowRemoval.page(plain, dpi: 40))
-        #expect(HillClimb.rgbx(shown) == HillClimb.rgbx(want))
+        #expect(HillClimb.rgbx(shown) == HillClimb.rgbx(want),
+                "\(shown.width)x\(shown.height) \(shown.colorSpace?.model.rawValue ?? -1) want \(want.width)x\(want.height) plain-equal \(HillClimb.rgbx(shown) == HillClimb.rgbx(plain)) crops \(page.outputCrops(direction: m.direction).count) class \(page.classification)")
     }
 
     @Test("The Export view shows a layered page's text layer, gray at its small size")

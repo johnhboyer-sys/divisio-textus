@@ -575,7 +575,7 @@ final class AppModel: ObservableObject {
                                                 previewDPI: outputPreviewDPI, bothLayers: settings.bothLayers,
                                                 removeShadows: removeShadows),
                text.count == images.count {
-                images = zip(text, images).map { $0 ?? $1 }
+                images = zip(text, images).map { $0 ?? PDFExporter.pictureFinished($1, dpi: outputPreviewDPI, settings: settings) }
             }
         } else {
             images = images.map { PDFExporter.finished($0, dpi: outputPreviewDPI, settings: settings, preview: true) }

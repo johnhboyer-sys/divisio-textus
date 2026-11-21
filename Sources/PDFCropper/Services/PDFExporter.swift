@@ -170,7 +170,7 @@ enum PDFExporter {
                                 throw ExportError.renderFailed(page.sourceIndex)
                             }
                             // A picture page: never black and white.
-                            color = settings.removeShadows ? out.map { ShadowRemoval.page($0, dpi: dpi) ?? $0 } : out
+                            color = out.map { pictureFinished($0, dpi: dpi, settings: settings) }
                         }
                         for (k, image) in text.enumerated() {
                             images.append(image ?? color[k])
@@ -294,7 +294,14 @@ enum PDFExporter {
            let bw = BlackAndWhite.page(image, dpi: dpi, preview: preview, removeShadows: settings.removeShadows) {
             return bw
         }
-        return settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
+        return pictureFinished(image, dpi: dpi, settings: settings)
+    }
+
+    /// An output page that keeps its color or gray (a layered page whose color layer
+    /// holds a picture, or a picture page in black and white), its shadows removed
+    /// if the settings ask. The export and the Export view both make it here.
+    static func pictureFinished(_ image: CGImage, dpi: Double, settings: Settings) -> CGImage {
+        settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages
