@@ -207,6 +207,9 @@ enum ShadowRemoval {
             for o in near(m, around) where o != n {
                 let q = list[o]
                 if (shaped[o] || letterTall(q)) && sameRow(m, q) { continue }
+                // A stripe or tick beside it is the fold's, not a crowd of glyph-like specks.
+                let qw = Double(q.maxX - q.minX + 1), qh = Double(q.maxY - q.minY + 1)
+                if qw < 0.3 * t && qh >= 0.5 * t { continue }
                 crowd += q.count
             }
             keep[n] = crowd * 10 <= m.count

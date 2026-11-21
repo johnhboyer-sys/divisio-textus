@@ -48,6 +48,15 @@ struct HillClimbShadowTests {
         if Self.only != "synthetic" { out["real"] = try await Self.real() }
         out["seconds"] = ["synthetic": HillClimb.r(t1 - t0, 1), "real": HillClimb.r(HillClimb.now() - t1, 1)]
         HillClimb.write(out, "shadow.json")
+        if let dir = HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            for start in stride(from: 0, to: Self.triage.count, by: 24) {
+                let rows = Array(Self.triage[start..<min(Self.triage.count, start + 24)])
+                if let im = BWShowTests.grid(rows, height: nil) {
+                    HillClimb.png(im, to: URL(fileURLWithPath: dir).appendingPathComponent("losses-\(start / 24).png"))
+                }
+            }
+        }
     }
 
     // MARK: Synthetic
@@ -151,8 +160,10 @@ struct HillClimbShadowTests {
 
     struct Tally {
         var zoneNonPrint = 0, zoneDark = 0, pageNonPrint = 0, pageDark = 0
-        var solid = 0, solidLost = 0, glyphs = 0, glyphsLost = 0
+        var solid = 0, solidLost = 0, glyphs = 0, glyphsLost = 0, glyphsLostNew = 0
+        var newBoxes: [(Int, Int, Int, Int)] = []
         mutating func add(_ o: Tally) {
+            glyphsLostNew += o.glyphsLostNew
             zoneNonPrint += o.zoneNonPrint; zoneDark += o.zoneDark; pageNonPrint += o.pageNonPrint; pageDark += o.pageDark
             solid += o.solid; solidLost += o.solidLost; glyphs += o.glyphs; glyphsLost += o.glyphsLost
         }
@@ -160,12 +171,13 @@ struct HillClimbShadowTests {
             ["residue": HillClimb.r(Double(zoneDark) / Double(max(1, zoneNonPrint)), 6),
              "residuePage": HillClimb.r(Double(pageDark) / Double(max(1, pageNonPrint)), 6),
              "printLoss": HillClimb.r(Double(solidLost) / Double(max(1, solid)), 7),
-             "printLossPx": solidLost, "glyphs": glyphs, "glyphsLost": glyphsLost]
+             "printLossPx": solidLost, "glyphs": glyphs, "glyphsLost": glyphsLost, "glyphsLostNew": glyphsLostNew]
         }
     }
 
     /// Score one leaf's output `out` against its print mask; the fold on the right if `foldRight`.
-    static func tally(out: [UInt8], mask: [UInt8], w: Int, h: Int, foldRight: Bool, bw: Bool) -> Tally {
+    /// `glyphsLostNew`: glyphs lost in `out` but not in `ref` (the leaf without the option).
+    static func tally(out: [UInt8], ref: [UInt8]?, mask: [UInt8], w: Int, h: Int, foldRight: Bool, bw: Bool) -> Tally {
         var t = Tally()
         // Print and 2 px about it.
         let near = LayeredScan.minFilter(mask.map { $0 < 250 ? 0 : 255 }, w, h, radius: 2)
@@ -206,10 +218,16 @@ struct HillClimbShadowTests {
         var stack: [Int] = []
         for start in 0..<(w * h) where mask[start] < 128 && !seen[start] {
             seen[start] = true; stack = [start]
-            var solid = 0, lost = 0
+            var solid = 0, lost = 0, refLost = 0
+            var bx0 = w, bx1 = 0, by0 = h, by1 = 0
             while let k = stack.popLast() {
-                if mask[k] < 60 { solid += 1; if Int(out[k]) >= lostCut { lost += 1 } }
+                if mask[k] < 60 {
+                    solid += 1
+                    if Int(out[k]) >= lostCut { lost += 1 }
+                    if let ref, Int(ref[k]) >= lostCut { refLost += 1 }
+                }
                 let x = k % w, y = k / w
+                bx0 = min(bx0, x); bx1 = max(bx1, x); by0 = min(by0, y); by1 = max(by1, y)
                 for ny in max(0, y - 1)...min(h - 1, y + 1) {
                     for nx in max(0, x - 1)...min(w - 1, x + 1) where mask[ny * w + nx] < 128 && !seen[ny * w + nx] {
                         seen[ny * w + nx] = true; stack.append(ny * w + nx)
@@ -218,7 +236,10 @@ struct HillClimbShadowTests {
             }
             guard solid >= 3 else { continue }
             t.glyphs += 1
-            if lost * 2 >= solid { t.glyphsLost += 1 }
+            if lost * 2 >= solid {
+                t.glyphsLost += 1
+                if ref != nil, refLost * 2 < solid { t.glyphsLostNew += 1; t.newBoxes.append((bx0, by0, bx1, by1)) }
+            }
         }
         return t
     }
@@ -253,8 +274,24 @@ struct HillClimbShadowTests {
                     var settings = PDFExporter.Settings()
                     settings.enhanceMode = enhance
                     settings.removeShadows = removeOn
-                    let out = BlackAndWhite.grayPixels(PDFExporter.finished(image, dpi: synthDPI, settings: settings))
-                    let t = tally(out: out, mask: m, w: w, h: h, foldRight: k == 0, bw: mode == "bw")
+                    let outImage = PDFExporter.finished(image, dpi: synthDPI, settings: settings)
+                    let out = BlackAndWhite.grayPixels(outImage)
+                    var ref: [UInt8]?
+                    if removeOn {
+                        settings.removeShadows = false
+                        ref = BlackAndWhite.grayPixels(PDFExporter.finished(image, dpi: synthDPI, settings: settings))
+                    }
+                    let t = tally(out: out, ref: ref, mask: m, w: w, h: h, foldRight: k == 0, bw: mode == "bw")
+                    if HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] != nil,
+                       let refImage = ref.flatMap({ BlackAndWhite.image($0, width: w, height: h) }) {
+                        for b in t.newBoxes {
+                            let x0 = max(0, b.0 - 60), y0 = max(0, b.1 - 60)
+                            let r = CGRect(x: x0, y: y0, width: min(w, b.2 + 60) - x0, height: min(h, b.3 + 60) - y0)
+                            if let a = image.cropping(to: r), let c = refImage.cropping(to: r), let d = outImage.cropping(to: r) {
+                                triage.append([("b\(spec.book) i\(spec.index) leaf\(k) \(mode) scan", a), ("off", c), ("on", d)])
+                            }
+                        }
+                    }
                     totals[mode]!.add(t)
                     for tag in tags { byTag[tag, default: [:]][mode, default: Tally()].add(t) }
                     record[mode] = t.json
@@ -321,8 +358,11 @@ struct HillClimbShadowTests {
         return out
     }
 
-    /// Glyphs with a row neighbour (overlapping half the shorter height, no further off than the taller is tall).
+    /// Glyphs with a row neighbour (overlapping half the shorter height, no further off than the
+    /// taller is tall) that isn't thin (a third as wide as tall): pieces of the page stack's
+    /// stripes side by side are not a line.
     static func inLines(_ gs: [HCGlyph]) -> [Bool] {
+        func thin(_ g: HCGlyph) -> Bool { 3 * (g.x1 - g.x0 + 1) < g.y1 - g.y0 + 1 }
         let byX = gs.indices.sorted { gs[$0].x0 < gs[$1].x0 }
         let maxH = gs.map { $0.y1 - $0.y0 + 1 }.max() ?? 0
         var mate = [Bool](repeating: false, count: gs.count)
@@ -335,7 +375,10 @@ struct HillClimbShadowTests {
                 let ha = a.y1 - a.y0 + 1, hb = b.y1 - b.y0 + 1
                 let overlap = min(a.y1, b.y1) - max(a.y0, b.y0) + 1
                 let gap = max(0, b.x0 - a.x1 - 1)
-                if 2 * overlap >= min(ha, hb), gap <= max(ha, hb) { mate[i] = true; mate[j] = true }
+                if 2 * overlap >= min(ha, hb), gap <= max(ha, hb) {
+                    if !thin(b) { mate[i] = true }
+                    if !thin(a) { mate[j] = true }
+                }
             }
         }
         return mate
@@ -372,10 +415,18 @@ struct HillClimbShadowTests {
             return n
         }
         for (i, g) in gb.enumerated() {
-            let before = dark(b, g), now = dark(a, g)
-            guard before > 0, now * 10 < before * 3 else { continue }
+            let was = dark(b, g), now = dark(a, g)
+            guard was > 0, now * 10 < was * 3 else { continue }
             if lineB[i] { t.lostInLines += 1 } else { t.lostAlone += 1 }
-            if losses.count < 60 { losses.append(["page": name, "box": [g.x0, g.y0, g.x1, g.y1], "inLine": lineB[i]]) }
+            if losses.count < 400 { losses.append(["page": name, "box": [g.x0, g.y0, g.x1, g.y1], "inLine": lineB[i]]) }
+            if HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] != nil, lineB[i] || HillClimb.env["HILLCLIMB_SHADOW_TRIAGE_ALL"] != nil {
+                let pad = 2 * (g.y1 - g.y0 + 1) + 20
+                let x0 = max(0, g.x0 - pad), y0 = max(0, g.y0 - pad)
+                let r = CGRect(x: x0, y: y0, width: min(w, g.x1 + pad) - x0, height: min(h, g.y1 + pad) - y0)
+                if let pb = before.cropping(to: r), let pa = after.cropping(to: r) {
+                    triage.append([("\(name) \(lineB[i] ? "LINE" : "alone") \(g.x0),\(g.y0)", pb), ("after", pa)])
+                }
+            }
         }
         // The text block's edges, from lines of 5 glyphs or more.
         let ga = HCGlyphDetector.withoutVerticalMarks(HCGlyphDetector.glyphs(a, width: w, height: h), gray: a, width: w, height: h)
@@ -428,6 +479,9 @@ struct HillClimbShadowTests {
         }
         return t
     }
+
+    /// HILLCLIMB_SHADOW_TRIAGE=<folder>: each lost glyph before and after, for checking by eye.
+    nonisolated(unsafe) static var triage: [[(String, CGImage)]] = []
 
     static func real() async throws -> [String: Any] {
         var totals: [String: RealTally] = ["bw": RealTally(), "color": RealTally()]
