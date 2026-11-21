@@ -105,6 +105,26 @@ struct BWCombTests {
         #expect(Double(offTooth.filter { color[$0] < 100 }.count) > 0.95 * Double(offTooth.count))
     }
 
+    /// Cherniss, cropped tight: the bold first letters of the lines stand in a column at
+    /// a steady pitch, as teeth do, but are no thicker than the page's strokes allow.
+    @Test("Bold letters starting the lines of a tight crop are no teeth")
+    func lineStartsStay() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var starts: [Int] = [], text: [Int] = []
+        for line in 0..<20 {
+            let y = 100 + line * 50
+            starts += Self.box(6, y, 12, 32) + Self.box(6, y, 26, 8)       // a bold T's stem and bar
+            for x in stride(from: 50, to: 660, by: 45) {
+                text += Self.box(x, y + 8, 10, 24) + Self.box(x + 18, y + 8, 10, 24) + Self.box(x, y + 8, 28, 8)
+            }
+        }
+        for i in starts + text { g[i] = 30 }
+        let bw = BlackAndWhite.ink(gray: g, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, starts) > 0.99, "\(share(bw, starts))")
+        #expect(!ShadowRemoval.teeth(g, Self.w, Self.h, dpi: Self.dpi, paper: 255).found)
+    }
+
     /// A lone upright rule beside the block is not tried: by the fold it can't be told
     /// from a fold's line or a page stack's stripe, and goes, with or without teeth.
     @Test("A printed rule across, a bracket and a dash near the teeth stay")

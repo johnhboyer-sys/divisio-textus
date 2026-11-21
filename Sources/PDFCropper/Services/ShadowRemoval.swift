@@ -262,14 +262,16 @@ enum ShadowRemoval {
 
     /// The teeth of a comb or spiral binding down a side of the page, and the zone each
     /// leaves marks in. Teeth are solid dark blocks (under 55% of the page's paper,
-    /// still there after an opening that wipes out anything under 0.03 inch thick:
-    /// letters' strokes, rules; dark runs down a column over 0.8 inch, the spine's
-    /// band, left out), 0.06 to 0.6 inch tall and at least 0.03 inch wide,
-    /// three-fifths solid, within 0.8 inch of the left or right side, and four or more
-    /// of them in one column (all sharing its columns), alike in height (within half
-    /// to twice the middle one), at a steady pitch (each gap within 0.4 to 2.5 times the
-    /// middle gap). Once found, blocks under 75% of the paper in that column count
-    /// too: paler teeth, and the paler ends of the dark ones. A tooth's zone is its box
+    /// still there after an opening that wipes out anything under 0.03 inch or twice
+    /// the page's stroke thick: letters' strokes, rules; dark runs down a column over
+    /// 0.8 inch, the spine's band, left out), 0.06 to 0.6 inch tall and at least 0.03
+    /// inch wide, three-fifths solid, within 0.8 inch of the left or right side, and
+    /// four or more of them in one column (all sharing its columns), alike in height and
+    /// width (within half to twice the middle one), apart, at a steady pitch (each gap
+    /// one to four times the middle gap, give or take a fifth of a pitch each: teeth
+    /// may be missed), spanning 1.5 inch or more (not a dark corner's or a shadow's
+    /// speckle). Once found, blocks under 75% of the paper in that column count too:
+    /// paler teeth on the pitch, and the paler ends of the dark ones. A tooth's zone is its box
     /// grown by 0.03 inch, and by 0.12 inch toward the page's middle, where a comb's
     /// loops show through its holes; so are the gaps between teeth from their inner
     /// ends out to the side, where the comb's back shows.
@@ -286,7 +288,21 @@ enum ShadowRemoval {
         var boxes: [Blob] = []
         let strip = min(w, Int((0.8 * dpi).rounded()))
         guard strip > 4, h > 4 else { return Teeth(core: core, zone: zone, found: false) }
-        let open = max(1, Int((0.015 * dpi).rounded()))
+        // The page's stroke: the middle length of dark runs across its middle half. The
+        // opening wipes out anything up to twice that thick (bold letters at the line
+        // starts of a tight crop, which stand in a column at a steady pitch too).
+        var runs: [Int] = []
+        for y in stride(from: 0, to: h, by: 4) {
+            var x = w / 4
+            while x < 3 * w / 4 {
+                guard Int(gray[y * w + x]) * 100 < paperRef * 55 else { x += 1; continue }
+                let s = x
+                while x < 3 * w / 4, Int(gray[y * w + x]) * 100 < paperRef * 55 { x += 1 }
+                runs.append(x - s)
+            }
+        }
+        let stroke = runs.isEmpty ? 0 : runs.sorted()[runs.count / 2]
+        let open = max(1, Int((0.015 * dpi).rounded()), stroke)
         let grow = Int((0.03 * dpi).rounded()), inward = Int((0.12 * dpi).rounded())
         for right in [false, true] {
             let x0 = right ? w - strip : 0
@@ -317,26 +333,42 @@ enum ShadowRemoval {
             }
             let (opened, candidates) = blocks(55)
             guard candidates.count >= 4 else { continue }
-            // The largest series in one column.
+            // The largest series in one column (most dark pixels: the teeth, not a thin
+            // strip of their backs along the side).
             var best: [Blob] = []
-            var mid = 0
+            var mid = 0, midW = 0, pitch = 0
             for c in candidates {
                 let column = candidates.filter { $0.maxX >= c.minX && $0.minX <= c.maxX }.sorted { $0.minY < $1.minY }
                 let heights = column.map(\.height).sorted()
                 let m = heights[heights.count / 2]
-                let alike = column.filter { $0.height * 2 >= m && $0.height <= 2 * m }
+                let tall = column.filter { $0.height * 2 >= m && $0.height <= 2 * m }
+                guard tall.count >= 4 else { continue }
+                let mw = tall.map(\.width).sorted()[tall.count / 2]
+                let alike = tall.filter { $0.width * 2 >= mw && $0.width <= 2 * mw }
                 guard alike.count >= 4 else { continue }
-                let gaps = zip(alike, alike.dropFirst()).map { $1.minY - $0.minY }.sorted()
+                // Teeth cut off by the page's top or foot are left out of the pitch.
+                let whole = alike.filter { $0.minY > 0 && $0.maxY < h - 1 }
+                guard whole.count >= 4 else { continue }
+                let gaps = zip(whole, whole.dropFirst()).map { $1.minY - $0.minY }.sorted()
                 let midGap = gaps[gaps.count / 2]
-                guard midGap > 0, gaps.allSatisfy({ Double($0) >= 0.4 * Double(midGap) && Double($0) <= 2.5 * Double(midGap) })
+                // Each gap one pitch, or a few (teeth missed), give or take a fifth of each.
+                guard midGap > 0, gaps.allSatisfy({ g in
+                          let r = Double(g) / Double(midGap), k = r.rounded()
+                          return k >= 1 && k <= 4 && abs(r - k) <= 0.05 + 0.15 * k
+                      }),
+                      zip(whole, whole.dropFirst()).allSatisfy({ ($1.minY - $0.maxY) * 10 >= midGap }),
+                      Double(alike[alike.count - 1].maxY - alike[0].minY) >= 1.5 * dpi
                 else { continue }
-                if alike.count > best.count { best = alike; mid = m }
+                if alike.reduce(0, { $0 + $1.count }) > best.reduce(0, { $0 + $1.count }) {
+                    best = alike; mid = m; midW = mw; pitch = midGap
+                }
             }
             guard best.count >= 4 else { continue }
             found = true
             var teeth = best.map { ($0, opened) }
             // Paler teeth in the same column (a comb's teeth shade lighter where the
-            // page lifts off the glass), alike in height, under 75% of the paper.
+            // page lifts off the glass), under 75% of the paper, alike in size and on
+            // the series' pitch.
             let colMin = best.map(\.minX).min()!, colMax = best.map(\.maxX).max()!
             let paler = blocks(75)
             // A tooth's paler end, past its dark part, is the tooth too.
@@ -346,7 +378,8 @@ enum ShadowRemoval {
                     if b.minY >= d.minY - grow, b.maxY <= d.maxY + grow,
                        right ? b.minX >= d.minX - inward : b.maxX <= d.maxX + inward { ends.append(b) }
                 } else {
-                    teeth.append((b, paler.opened))
+                    let r = Double(b.minY - best[best.count / 2].minY) / Double(pitch)
+                    if b.width * 2 >= midW, b.width <= 2 * midW, abs(r - r.rounded()) <= 0.2 { teeth.append((b, paler.opened)) }
                 }
             }
             for b in ends {
@@ -357,7 +390,6 @@ enum ShadowRemoval {
             teeth.sort { $0.0.minY < $1.0.minY }
             // The gaps between the teeth, from their inner ends out to the side, and half
             // a gap past the first and last: where the comb's back shows between them.
-            let pitch = zip(best, best.dropFirst()).map { $1.minY - $0.minY }.sorted()[(best.count - 1) / 2]
             let inner = right ? best.map(\.minX).sorted()[best.count / 2] : best.map(\.maxX).sorted()[best.count / 2]
             for y in max(0, teeth[0].0.minY - pitch / 2)...min(h - 1, teeth[teeth.count - 1].0.maxY + pitch / 2) {
                 for x in (right ? inner : 0)...(right ? strip - 1 : inner) { zone[y * w + x0 + x] = true }
