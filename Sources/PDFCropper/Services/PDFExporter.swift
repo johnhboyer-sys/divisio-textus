@@ -179,7 +179,7 @@ enum PDFExporter {
                     // upright strokes; it is made from a render twice as fine (a page
                     // holding a picture is made as below).
                     let fineDPI = min(600, 2 * dpi)
-                    if settings.enhanceMode == .blackAndWhite, dpi < 400,
+                    if settings.enhanceMode == .blackAndWhite, dpi < 250,
                        abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
                        let fine = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
                        let out = outputImages(of: page, rendered: fine, settings: settings) {
