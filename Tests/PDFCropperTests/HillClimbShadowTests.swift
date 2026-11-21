@@ -44,9 +44,13 @@ struct HillClimbShadowTests {
         HillClimb.prepare()
         var out: [String: Any] = ["removeShadows": Self.removeOn]
         let t0 = HillClimb.now()
-        if Self.only != "real" { out["synthetic"] = Self.synthetic() }
+        if Self.only != "real" && Self.only != "comb" { out["synthetic"] = Self.synthetic() }
         let t1 = HillClimb.now()
-        if Self.only != "synthetic" { out["real"] = try await Self.real() }
+        if Self.only != "synthetic" && Self.only != "comb" { out["real"] = try await Self.real() }
+        if Self.only == nil || Self.only == "comb" {
+            out["combSynthetic"] = Self.combSynthetic()
+            out["combReal"] = try await Self.combReal()
+        }
         out["seconds"] = ["synthetic": HillClimb.r(t1 - t0, 1), "real": HillClimb.r(HillClimb.now() - t1, 1)]
         HillClimb.write(out, "shadow.json")
         if let dir = HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] {
@@ -306,6 +310,229 @@ struct HillClimbShadowTests {
         print("SHADOW synthetic color \(totals["color"]!.json)")
         return ["leaves": pages.count, "bw": totals["bw"]!.json, "color": totals["color"]!.json,
                 "byTag": tagJSON, "pages": pages]
+    }
+
+    // MARK: Comb bindings
+
+    /// Residue inside a comb or spiral binding's marks: the pixels in them (each mark
+    /// grown by `grow` px) that aren't print (2 px from it) and end up darker than paper
+    /// (black in black and white, 30 or more off the page's paper elsewhere, or 30 off
+    /// its hue), their groups of 4 px or more (`marks`), and glyphs lost.
+    struct CombTally {
+        var bandPx = 0, residuePx = 0, marks = 0, glyphsLost = 0, glyphsLostNew = 0, lostInLines = 0, lostAlone = 0
+        mutating func add(_ o: CombTally) {
+            bandPx += o.bandPx; residuePx += o.residuePx; marks += o.marks; glyphsLost += o.glyphsLost
+            glyphsLostNew += o.glyphsLostNew; lostInLines += o.lostInLines; lostAlone += o.lostAlone
+        }
+        var json: [String: Any] {
+            ["bandPx": bandPx, "residuePx": residuePx, "marks": marks, "glyphsLost": glyphsLost,
+             "glyphsLostNew": glyphsLostNew, "lostInLines": lostInLines, "lostAlone": lostAlone]
+        }
+    }
+
+    /// Residue and its groups in `band`: `off(i)` says a pixel is not paper.
+    static func combResidue(band: [Bool], keep: [Bool], w: Int, h: Int, off: (Int) -> Bool) -> (Int, Int, Int) {
+        var dark = [Bool](repeating: false, count: w * h)
+        var bandPx = 0, residue = 0
+        for i in 0..<(w * h) where band[i] && !keep[i] {
+            bandPx += 1
+            if off(i) { dark[i] = true; residue += 1 }
+        }
+        var seen = [Bool](repeating: false, count: w * h), marks = 0
+        for s in 0..<(w * h) where dark[s] && !seen[s] {
+            seen[s] = true
+            var stack = [s], n = 0
+            while let k = stack.popLast() {
+                n += 1
+                let x = k % w, y = k / w
+                for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) where dark[ny * w + nx] && !seen[ny * w + nx] {
+                        seen[ny * w + nx] = true; stack.append(ny * w + nx)
+                    }
+                }
+            }
+            if n >= 4 { marks += 1 }
+        }
+        return (bandPx, residue, marks)
+    }
+
+    /// The synthetic spreads with a comb or spiral binding (all of them, six books),
+    /// each leaf through `PDFExporter.finished` in Black and white and Color, its comb
+    /// residue (the drawn binding marks grown by 6 px) and glyphs lost.
+    static func combSynthetic() -> [String: Any] {
+        var totals: [String: CombTally] = ["bw": CombTally(), "color": CombTally()]
+        var leaves = 0
+        for b in 0..<6 {
+            for spec in HCSynth.book(b, pages: 52).specs where spec.isSpread && spec.binding != nil {
+                let s = scaled(spec, scale)
+                guard let bind = s.binding, let scanImage = HCSynth.render(s, .scan) else { continue }
+                let scan = HillClimb.gray(scanImage)
+                let masks = s.leaves.indices.compactMap { HCSynth.render(s, .print($0)).map(HillClimb.gray) }
+                guard masks.count == s.leaves.count else { continue }
+                var rects: [CGRect] = []
+                var y = s.paperRows.lowerBound + 14
+                while y < s.paperRows.upperBound - 14 {
+                    rects.append(CGRect(x: bind.x - bind.size / 2, y: y, width: bind.size,
+                                        height: bind.spiral ? bind.size : bind.size * 1.8))
+                    y += bind.pitch
+                }
+                for (k, leaf) in s.leaves.enumerated() {
+                    let x0 = max(0, Int(leaf.paper.minX.rounded())), x1 = min(s.W, Int(leaf.paper.maxX.rounded()))
+                    let y0 = max(0, Int(s.paperRows.lowerBound.rounded())), y1 = min(s.H, Int(s.paperRows.upperBound.rounded()))
+                    let w = x1 - x0, h = y1 - y0
+                    guard w > 10, h > 10 else { continue }
+                    var band = [Bool](repeating: false, count: w * h)
+                    for r in rects {
+                        let g = r.offsetBy(dx: -CGFloat(x0), dy: -CGFloat(y0)).insetBy(dx: -6, dy: -6)
+                        let ya = max(0, Int(g.minY)), yb = min(h, Int(g.maxY.rounded(.up)))
+                        let xa = max(0, Int(g.minX)), xb = min(w, Int(g.maxX.rounded(.up)))
+                        guard ya < yb, xa < xb else { continue }
+                        for yy in ya..<yb { for xx in xa..<xb { band[yy * w + xx] = true } }
+                    }
+                    guard band.contains(true) else { continue }
+                    leaves += 1
+                    var g = [UInt8](repeating: 255, count: w * h), m = g
+                    for yy in 0..<h {
+                        for xx in 0..<w { g[yy * w + xx] = scan[(yy + y0) * s.W + xx + x0]; m[yy * w + xx] = masks[k][(yy + y0) * s.W + xx + x0] }
+                    }
+                    guard let image = BlackAndWhite.image(g, width: w, height: h) else { continue }
+                    let near = LayeredScan.minFilter(m.map { $0 < 250 ? 0 : 255 }, w, h, radius: 2).map { $0 == 0 }
+                    for (mode, enhance) in [("bw", EnhanceMode.blackAndWhite), ("color", EnhanceMode.color)] {
+                        var settings = PDFExporter.Settings()
+                        settings.enhanceMode = enhance
+                        settings.removeShadows = removeOn
+                        let out = BlackAndWhite.grayPixels(PDFExporter.finished(image, dpi: synthDPI, settings: settings))
+                        var ref: [UInt8]?
+                        if removeOn {
+                            settings.removeShadows = false
+                            ref = BlackAndWhite.grayPixels(PDFExporter.finished(image, dpi: synthDPI, settings: settings))
+                        }
+                        var sample: [Int] = []
+                        for i in stride(from: 0, to: w * h, by: 5) where !near[i] && !band[i] { sample.append(Int(out[i])) }
+                        sample.sort()
+                        let paper = sample.isEmpty ? 255 : sample[sample.count / 2]
+                        let (bandPx, residue, marks) = combResidue(band: band, keep: near, w: w, h: h) { i in
+                            mode == "bw" ? out[i] < 128 : abs(Int(out[i]) - paper) >= 30
+                        }
+                        let t = tally(out: out, ref: ref, mask: m, w: w, h: h, foldRight: k == 0, bw: mode == "bw")
+                        totals[mode]!.add(CombTally(bandPx: bandPx, residuePx: residue, marks: marks,
+                                                    glyphsLost: t.glyphsLost, glyphsLostNew: t.glyphsLostNew))
+                    }
+                }
+            }
+        }
+        print("SHADOW comb synthetic bw \(totals["bw"]!.json)")
+        print("SHADOW comb synthetic color \(totals["color"]!.json)")
+        return ["leaves": leaves, "bw": totals["bw"]!.json, "color": totals["color"]!.json]
+    }
+
+    /// Oesterle's comb-bound pages, exported in Color, Grayscale and Black and white,
+    /// without and with the option. The teeth are found on the source (the Color export
+    /// without the option), within 1.2 inch of the fold: groups of dark or strongly
+    /// colored pixels (gray under 110, or channels 60 apart) of 200 px or more, at least
+    /// 20 px each way and two-fifths solid. Their boxes grown by 12 px are the band.
+    static let combCases: [(name: String, book: String, page: Int)] = [
+        ("oesterle-p26", "Oesterle-1955", 26), ("oesterle-p50", "Oesterle-1955", 50), ("oesterle-p74", "Oesterle-1955", 74),
+        ("oesterle-p82", "Oesterle-1955", 82), ("oesterle-p114", "Oesterle-1955", 114),
+    ]
+
+    static func teethBand(_ image: CGImage, side: Int) -> [Bool] {
+        let w = image.width, h = image.height
+        let px = HillClimb.rgbx(image)
+        let reach = Int(1.2 * Double(w) / 5.5)      // about 1.2 inch on a 5.5-inch page
+        var mark = [Bool](repeating: false, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w where side > 0 ? x >= w - reach : x < reach {
+                let i = y * w + x
+                let r = Int(px[4 * i]), g = Int(px[4 * i + 1]), b = Int(px[4 * i + 2])
+                let lum = (r * 299 + g * 587 + b * 114) / 1000
+                if lum < 110 || max(r, g, b) - min(r, g, b) > 60 { mark[i] = true }
+            }
+        }
+        var band = [Bool](repeating: false, count: w * h)
+        var seen = [Bool](repeating: false, count: w * h)
+        for s in 0..<(w * h) where mark[s] && !seen[s] {
+            seen[s] = true
+            var stack = [s], n = 0, x0 = w, x1 = 0, y0 = h, y1 = 0
+            while let k = stack.popLast() {
+                n += 1
+                let x = k % w, y = k / w
+                x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y)
+                for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) where mark[ny * w + nx] && !seen[ny * w + nx] {
+                        seen[ny * w + nx] = true; stack.append(ny * w + nx)
+                    }
+                }
+            }
+            let bw = x1 - x0 + 1, bh = y1 - y0 + 1
+            guard n >= 200, bw >= 20, bh >= 20, n * 5 >= bw * bh * 2 else { continue }
+            for y in max(0, y0 - 12)...min(h - 1, y1 + 12) { for x in max(0, x0 - 12)...min(w - 1, x1 + 12) { band[y * w + x] = true } }
+        }
+        return band
+    }
+
+    static func combReal() async throws -> [String: Any] {
+        var totals: [String: [String: CombTally]] = [:]
+        var records: [[String: Any]] = []
+        for c in combCases {
+            guard let (m, url, page) = await loadCase(c) else { continue }
+            var outputs: [String: [CGImage]] = [:]
+            for (mode, enhance) in [("color", EnhanceMode.color), ("gray", EnhanceMode.grayscale), ("bw", EnhanceMode.blackAndWhite)] {
+                for remove in [false, true] {
+                    var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false,
+                                                        reader: m.ocrReader, packs: m.ocrPacks, enhanceMode: enhance)
+                    settings.matchScanResolution = m.matchScanResolution
+                    settings.removeShadows = remove
+                    outputs["\(mode)-\(remove ? "on" : "off")"] = try exported(page, from: url, settings: settings,
+                                                                             name: "comb-\(c.name)-\(mode)-\(remove).pdf")
+                }
+            }
+            guard let source = outputs["color-off"] else { continue }
+            for k in source.indices {
+                let side = source.count == 2 ? (k == 0 ? 1 : -1) : 1
+                let band = teethBand(source[k], side: side)
+                let w = source[k].width, h = source[k].height
+                var noLosses: [[String: Any]] = []
+                for mode in ["color", "gray", "bw"] {
+                    for state in ["off", "on"] {
+                        guard let im = outputs["\(mode)-\(state)"]?[k], im.width == w, im.height == h else { continue }
+                        let rgb = HillClimb.rgbx(im), gray = HillClimb.gray(im)
+                        // The page's paper: the upper quarter of the grays outside the band, and
+                        // its hue (red less green, green less blue) there.
+                        var sample: [Int] = [], rg: [Int] = [], gb: [Int] = []
+                        for i in stride(from: 0, to: w * h, by: 7) where !band[i] { sample.append(Int(gray[i])) }
+                        sample.sort()
+                        let paper = sample.isEmpty ? 255 : sample[sample.count * 3 / 4]
+                        for i in stride(from: 0, to: w * h, by: 7) where !band[i] && abs(Int(gray[i]) - paper) < 15 {
+                            rg.append(Int(rgb[4 * i]) - Int(rgb[4 * i + 1])); gb.append(Int(rgb[4 * i + 1]) - Int(rgb[4 * i + 2]))
+                        }
+                        rg.sort(); gb.sort()
+                        let prg = rg.isEmpty ? 0 : rg[rg.count / 2], pgb = gb.isEmpty ? 0 : gb[gb.count / 2]
+                        let none = [Bool](repeating: false, count: w * h)
+                        let (bandPx, residue, marks) = combResidue(band: band, keep: none, w: w, h: h) { i in
+                            if mode == "bw" { return gray[i] < 128 }
+                            let r = Int(rgb[4 * i]), g = Int(rgb[4 * i + 1]), b = Int(rgb[4 * i + 2])
+                            return abs(Int(gray[i]) - paper) >= 30 || abs((r - g) - prg) > 30 || abs((g - b) - pgb) > 30
+                        }
+                        var t = CombTally(bandPx: bandPx, residuePx: residue, marks: marks)
+                        if state == "on", let before = outputs["\(mode)-off"]?[k] {
+                            let r = realTally(before: before, after: im, side: side, losses: &noLosses, name: "\(c.name)-\(mode)-\(k + 1)")
+                            t.lostInLines = r.lostInLines; t.lostAlone = r.lostAlone
+                        }
+                        totals["\(mode)-\(state)", default: [:]][c.name, default: CombTally()].add(t)
+                        records.append(["case": c.name, "page": k + 1, "mode": mode, "state": state] .merging(t.json) { a, _ in a })
+                    }
+                }
+            }
+        }
+        var summary: [String: Any] = [:]
+        for (key, byCase) in totals {
+            var all = CombTally()
+            for (_, t) in byCase { all.add(t) }
+            summary[key] = all.json
+            print("SHADOW comb real \(key) \(all.json)")
+        }
+        return ["totals": summary, "pages": records]
     }
 
     // MARK: Real
