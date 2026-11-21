@@ -92,19 +92,20 @@ enum ShadowRemoval {
         // beyond those (a tick or a piece of a fold line chained to the line's end)
         // is judged with the rest beside the block.
         var lineMembers = Set<Int>(), chained = Set<Int>()
-        var starts: [Int] = [], ends: [Int] = []
+        var starts: [Int] = [], ends: [Int] = [], tops: [Int] = [], bottoms: [Int] = []
         for (_, ms) in lineOf where ms.count >= 3 {
             let wide = ms.filter { !thin(blobs[$0]) }
             guard wide.count >= 2, wide.count * 3 >= ms.count else { continue }
-            let bottoms = ms.map { blobs[$0].maxY }.sorted()
-            let base = bottoms[bottoms.count / 2]
-            let onBase = bottoms.filter { Double(abs($0 - base)) <= 0.3 * t }.count
+            let feet = ms.map { blobs[$0].maxY }.sorted()
+            let base = feet[feet.count / 2]
+            let onBase = feet.filter { Double(abs($0 - base)) <= 0.3 * t }.count
             guard onBase * 5 >= ms.count * 3 else { continue }
             let lo = wide.map { blobs[$0].minX }.min()!, hi = wide.map { blobs[$0].maxX }.max()!
             lineMembers.formUnion(ms.filter { blobs[$0].maxX >= lo && blobs[$0].minX <= hi })
             chained.formUnion(ms)
             starts.append(lo)
             ends.append(hi)
+            tops.append(ms.map { blobs[$0].minY }.min()!); bottoms.append(ms.map { blobs[$0].maxY }.max()!)
         }
         guard starts.count >= 3 else { return false }
         starts.sort(); ends.sort(by: >)
@@ -221,6 +222,16 @@ enum ShadowRemoval {
         let beside = Int((0.6 * t).rounded())
         for (n, m) in list.enumerated() where !keep[n] && letterTall(m) {
             keep[n] = near(m, beside).contains { o in o != n && keep[o] && shaped[o] && sameRow(m, list[o]) }
+        }
+        // And a thin letter on its own in the head or foot margin, above or below every
+        // text line, with nothing within two letters of it: a folio 1. A tick beside
+        // the text lines still goes.
+        let textTop = tops.min() ?? 0, textBottom = bottoms.max() ?? h
+        for (n, m) in list.enumerated() where !keep[n] {
+            let mh = Double(m.maxY - m.minY + 1)
+            guard mh >= 0.5 * t, mh <= 1.6 * t, m.maxX - m.minX + 1 >= 2, !touchesSide(m),
+                  m.maxY < textTop || m.minY > textBottom else { continue }
+            keep[n] = near(m, Int((2 * t).rounded())).allSatisfy { $0 == n }
         }
         for (n, m) in list.enumerated() where !keep[n] { for i in m.blobs { cc.clear(i, in: &out) } }
         return true
