@@ -165,6 +165,17 @@ struct BWFoldTests {
         #expect(period.allSatisfy { out[$0] <= 225 }, "\(period.map { out[$0] })")
     }
 
+    @Test("A big capital starting a line beside the block (a title's P, a drop cap) stays")
+    func bigCapitalStartingLine() {
+        var p = Self.page()
+        // A P 35 wide, 60 tall, 5-px strokes, its foot on line 1's baseline, 20 px before it.
+        p.keep += Self.box(95, 70, 5, 60) + Self.box(95, 70, 30, 5) + Self.box(95, 100, 30, 5) + Self.box(125, 70, 5, 35)
+        p.ink(p.keep)
+        ShadowRemoval.clearSides(&p.out, Self.w, Self.h, dpi: Self.dpi)
+        #expect(share(p.out, p.keep) == 1, "\(share(p.out, p.keep))")
+        #expect(share(p.out, p.text) == 1)
+    }
+
     @Test("A page with no text is left as it is")
     func noText() {
         var out = [UInt8](repeating: 255, count: Self.w * Self.h)

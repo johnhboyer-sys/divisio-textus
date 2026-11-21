@@ -129,12 +129,21 @@ enum ShadowRemoval {
         let small = 1.2 * t
         for i in zone {
             let b = blobs[i]
-            guard Double(b.width) <= small, Double(b.height) <= small,
-                  Double(b.height) < 0.5 * t || b.width * 4 >= b.height else { continue }
-            for m in nearMembers {
-                let gap = max(0, b.minX - m.maxX - 1, m.minX - b.maxX - 1)
-                if Double(gap) <= t, Double(b.minY) >= Double(m.minY) - 0.8 * t, Double(b.maxY) <= Double(m.maxY) + 0.5 * t {
-                    attached.insert(i); break
+            if Double(b.width) <= small, Double(b.height) <= small,
+               Double(b.height) < 0.5 * t || b.width * 4 >= b.height {
+                for m in nearMembers {
+                    let gap = max(0, b.minX - m.maxX - 1, m.minX - b.maxX - 1)
+                    if Double(gap) <= t, Double(b.minY) >= Double(m.minY) - 0.8 * t, Double(b.maxY) <= Double(m.maxY) + 0.5 * t {
+                        attached.insert(i); break
+                    }
+                }
+            } else if Double(b.width) >= 0.3 * t, b.width * 5 >= b.height {
+                // A big letter starting or ending a line (a title's capital, a drop cap):
+                // not thin, within a letter of a line's mark, sharing its row.
+                for m in nearMembers {
+                    let gap = max(0, b.minX - m.maxX - 1, m.minX - b.maxX - 1)
+                    let overlap = min(b.maxY, m.maxY) - max(b.minY, m.minY) + 1
+                    if Double(gap) <= t, 2 * overlap >= m.height { attached.insert(i); break }
                 }
             }
         }
