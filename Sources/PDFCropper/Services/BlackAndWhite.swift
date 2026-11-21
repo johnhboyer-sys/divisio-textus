@@ -421,6 +421,11 @@ enum BlackAndWhite {
             }
             let atSide = minX < near || maxX >= cw - near, atEdge = minY < near || maxY >= ch - near
             guard atSide || atEdge else { continue }
+            // It runs off the crop, or along a side for 0.4 of it: a figure printed
+            // near the side does neither.
+            let runsOff = minX == 0 || maxX == cw - 1 || minY == 0 || maxY == ch - 1
+            let runsAlong = (atSide && (maxY - minY + 1) * 5 >= ch * 2) || (atEdge && (maxX - minX + 1) * 5 >= cw * 2)
+            guard runsOff || runsAlong else { continue }
             let side = atSide && maxY - minY + 1 >= inch && group.contains { hRun[$0] >= thick }
             let edge = atEdge && maxX - minX + 1 >= inch && group.contains { vRun[$0] >= thick }
             for k in group where solid(k) || (side && vRun[k] >= longRun) || (edge && hRun[k] >= longRun) {
@@ -546,8 +551,10 @@ enum BlackAndWhite {
                     stack.append(ny * sw + nx)
                 }
             }
-            let atSide = minX < edge || minY < edge || maxX >= sw - edge || maxY >= sh - edge
-            if !atSide, maxX - minX >= span, maxY - minY >= span {
+            // A band or shadow runs along a side; a picture near one doesn't.
+            let alongSide = (minX < edge || maxX >= sw - edge) && (maxY - minY + 1) * 5 >= sh * 2
+            let alongEdge = (minY < edge || maxY >= sh - edge) && (maxX - minX + 1) * 5 >= sw * 2
+            if !alongSide, !alongEdge, maxX - minX >= span, maxY - minY >= span {
                 area += size
                 for k in group { picture[k] = true }
             }
