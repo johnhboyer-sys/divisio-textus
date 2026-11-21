@@ -240,4 +240,32 @@ struct BWCombTests {
             }
         }
     }
+
+    // MARK: Print beside a tooth
+
+    @Test("A folio 1 with a serif foot beside a tooth stays")
+    func serifOneStays() throws {
+        var p = Self.page(clumps: false)
+        let one = Self.box(815, 490, 4, 46) + Self.box(808, 532, 18, 4)
+        for i in one { p.gray[i] = 30 }
+        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, one) > 0.95, "\(share(bw, one))")
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(one.filter { color[$0] < 100 }.count) > 0.95 * Double(one.count), "1 in color")
+    }
+
+    @Test("A short gray rule running up to a tooth, nearly all in its zone, stays")
+    func shortGrayRuleStays() throws {
+        var p = Self.page(clumps: false)
+        let rule = Self.box(802, 510, 34, 2)
+        for i in rule { p.gray[i] = 100 }
+        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, rule) > 0.95, "\(share(bw, rule))")
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(rule.filter { color[$0] < 160 }.count) > 0.95 * Double(rule.count), "rule in color")
+    }
 }

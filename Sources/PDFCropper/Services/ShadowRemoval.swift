@@ -425,12 +425,13 @@ enum ShadowRemoval {
             // the series' pitch.
             let colMin = best.map(\.minX).min()!, colMax = best.map(\.maxX).max()!
             let paler = blocks(75)
-            // A tooth's paler end, past its dark part, is the tooth too.
+            // A tooth's paler end, past its dark part (curling up to 0.06 inch past its
+            // rows, and reaching up to 0.15 inch past it toward the page), is the tooth too.
             var ends: [Blob] = []
             for b in paler.blobs where b.maxX >= colMin && b.minX <= colMax && b.height * 2 >= mid && b.height <= 2 * mid {
                 if let d = best.first(where: { $0.maxY >= b.minY && $0.minY <= b.maxY }) {
-                    if b.minY >= d.minY - grow, b.maxY <= d.maxY + grow,
-                       right ? b.minX >= d.minX - inward : b.maxX <= d.maxX + inward { ends.append(b) }
+                    if b.minY >= d.minY - 2 * grow, b.maxY <= d.maxY + 2 * grow,
+                       right ? b.minX >= d.minX - inward - grow : b.maxX <= d.maxX + inward + grow { ends.append(b) }
                 } else {
                     let r = Double(b.minY - best[best.count / 2].minY) / Double(pitch)
                     if b.width * 2 >= midW, b.width <= 2 * midW, abs(r - r.rounded()) <= 0.2 { teeth.append((b, paler.opened)) }
@@ -471,10 +472,11 @@ enum ShadowRemoval {
     /// and brackets have), or when it is clearly paler than the page's print (its mean
     /// gray in `gray` more than a quarter of the way from the print's to `paper`): the
     /// loops and shading round a comb's teeth, which the scan turns to pale clumps. So does
-    /// a pale mark touching a tooth (within 3 px), and an upright mark over 0.15 inch
-    /// tall, three quarters a tooth's height or more, beside it within its rows: its
-    /// end. A letter or folio touching a tooth keeps all of it off the tooth; a dark
-    /// speck touching one is left to `clearSides` (losing print is worse than a speck).
+    /// a pale mark touching a tooth (within 3 px) and lying in its zone. Nothing that
+    /// looks like print goes (a stroke and print's darkness, or, however pale, a solid
+    /// rule-shaped mark with a straight run 0.06 inch long); a tooth's ends go as part of the tooth (see
+    /// `teeth`). A letter or folio touching a tooth keeps all of it off the tooth; a
+    /// dark speck touching one is left to `clearSides` (losing print is worse than a speck).
     /// Returns the print it judged there (marks reaching into a zone with a stroke, as
     /// dark as print, but for thin upright lines), for `clearSides` to keep: a rule or
     /// bracket by a comb's teeth.
@@ -492,7 +494,7 @@ enum ShadowRemoval {
         let cc = Components(out, w, h)
         let run = max(4, Int((0.02 * dpi).rounded()))
         let nearTooth = LayeredScan.minFilter(t.core.map { $0 ? 0 : 255 }, w, h, radius: 3)
-        let grow = Int((0.03 * dpi).rounded()), inward = Int((0.12 * dpi).rounded()), tall = Int((0.15 * dpi).rounded())
+        let grow = Int((0.03 * dpi).rounded()), tall = Int((0.15 * dpi).rounded())
         let thin = Int((0.03 * dpi).rounded())
         var drop: [Int] = [], printed: [Int] = []
         for (k, b) in cc.blobs.enumerated() {
@@ -501,24 +503,19 @@ enum ShadowRemoval {
             var sum = 0
             _ = cc.count(k, where: { sum += Int(gray[$0]); return true })
             let paler = Double(sum) > pale * Double(b.count)
-            // A tooth's end: an upright mark (over 0.15 inch tall, 0.06 inch wide or more
-            // but at most 0.6 times its height) three quarters a tooth's height or more,
-            // within its rows (give or take 0.06 inch, as its end curls) and within 0.15
-            // inch of it across. A folio or letter beside a tooth is shorter, or wider, or
-            // a stem thinner than that (a 1).
-            if b.height >= tall, b.width >= 2 * grow, b.width * 5 <= b.height * 3, t.boxes.contains(where: { o in
-                b.minY >= o.minY - 2 * grow && b.maxY <= o.maxY + 2 * grow && b.height * 4 >= o.height * 3
-                    && b.minX >= o.minX - inward - grow && b.maxX <= o.maxX + inward + grow
-            }) {
-                drop.append(k); continue
-            }
+            // Print: as dark as the page's print with a stroke in it; or, paler, a gray rule:
+            // three times as long as it is thick, solid (half its box or more, not a loop's
+            // speckle), with a straight run 0.06 inch long. Nothing that looks like print goes.
+            let isPrint = cc.hasStroke(k, run, in: out) && !paler
+            let ruleLike = 3 * min(b.width, b.height) <= max(b.width, b.height) && b.count * 2 >= b.width * b.height
+            let looksPrint = isPrint || (ruleLike && cc.hasStroke(k, 2 * grow, in: out))
             if cc.count(k, where: { nearTooth[$0] == 0 }) > 0 {
-                // Touching a tooth: its loop if pale and lying in its zone; else left to the
-                // side rule, never kept for it (a tooth's trimmed rim is dark and straight too).
-                if paler && inZone * 10 >= b.count * 9 { drop.append(k) }
+                // Touching a tooth: its loop if pale, lying in its zone and no print; else left
+                // to the side rule, never kept for it (a tooth's trimmed rim is dark and
+                // straight too).
+                if paler && inZone * 10 >= b.count * 9 && !looksPrint { drop.append(k) }
                 continue
             }
-            let isPrint = cc.hasStroke(k, run, in: out) && !paler
             // A thin upright line (under 0.03 inch wide, 0.15 inch tall or more) is left to
             // the side rule, unkept, when it is 0.3 inch tall or more or has other ink above
             // or below it within 0.3 inch: by a binding as by the fold, a page stack's
@@ -531,7 +528,7 @@ enum ShadowRemoval {
                 }
             }
             if isPrint { if b.width >= thin || b.height < tall || !stripe() { printed.append(k) } }
-            else if inZone * 10 >= b.count * 9 { drop.append(k) }
+            else if inZone * 10 >= b.count * 9 && !looksPrint { drop.append(k) }
         }
         var keep = [Bool](repeating: false, count: w * h)
         for k in printed { cc.mark(k, in: &keep) }
