@@ -551,17 +551,23 @@ enum BlackAndWhite {
                     stack.append(ny * sw + nx)
                 }
             }
-            // A band or shadow runs off the crop: beside it, 30% or more of the crop's
-            // outer 2 px is as dark. A picture near a side has paper between it and the edge.
-            func darkStrip(_ xs: Range<Int>, _ ys: Range<Int>) -> Bool {
-                var dark = 0, n = 0
-                for y in ys { for x in xs { n += 1; if Int(gray[y * w + x]) * 5 <= usual * 4 { dark += 1 } } }
-                return n > 0 && dark * 10 >= n * 3
+            // A band or shadow runs off the crop: on 30% or more of its rows (or columns)
+            // the scan is as dark without a break from the crop's edge inward for 0.1
+            // inch. A picture near a side has paper between it and the edge, even with a
+            // thin dark strip (a page's edge) along the edge itself.
+            let inward = max(1, Int((0.1 * dpi).rounded()))
+            func dark(_ x: Int, _ y: Int) -> Bool { Int(gray[y * w + x]) * 5 <= usual * 4 }
+            func runsIn(_ lines: Range<Int>, _ at: (Int, Int) -> Bool) -> Bool {
+                guard !lines.isEmpty else { return false }
+                var joined = 0
+                for l in lines where (0..<inward).allSatisfy({ at(l, $0) }) { joined += 1 }
+                return joined * 10 >= lines.count * 3
             }
             let x0 = minX * step, x1 = min(w, (maxX + 1) * step), y0 = minY * step, y1 = min(h, (maxY + 1) * step)
-            let bw = min(2, w), bh = min(2, h)
-            let runsOff = (minX < edge && darkStrip(0..<bw, y0..<y1)) || (maxX >= sw - edge && darkStrip((w - bw)..<w, y0..<y1))
-                || (minY < edge && darkStrip(x0..<x1, 0..<bh)) || (maxY >= sh - edge && darkStrip(x0..<x1, (h - bh)..<h))
+            let runsOff = (minX < edge && inward < w && runsIn(y0..<y1) { y, d in dark(d, y) })
+                || (maxX >= sw - edge && inward < w && runsIn(y0..<y1) { y, d in dark(w - 1 - d, y) })
+                || (minY < edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, d) })
+                || (maxY >= sh - edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, h - 1 - d) })
             if !runsOff, maxX - minX >= span, maxY - minY >= span {
                 area += size
                 for k in group { picture[k] = true }
