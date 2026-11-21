@@ -10,7 +10,7 @@ import CoreGraphics
 ///   how much darker the paper under it is than the page's paper color, but paper
 ///   never past that color), and what black and white would call ink but
 ///   `clearSides` and the steps before it found not to be print is painted the
-///   page's paper color, with 0.025 inch about it.
+///   page's paper color, with its rim and fringe (up to 0.025 inch, where joined to it).
 enum ShadowRemoval {
 
     // MARK: The sides
@@ -274,7 +274,7 @@ enum ShadowRemoval {
             let b = Int(paper[i])
             if ink[i] != 0, gray[i] < 128 || Int(gray[i]) < b - max(20, b * 12 / 100) { junk[i] = 0 }
         }
-        // Its soft rim and colored fringe (a comb tooth's pink edge) go with it.
+        // How far painting may reach (see `paint` below), and kept out of the paper's color.
         let junkNear = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.025 * dpi).rounded())))
         let clean = BlackAndWhite.cleanLevel(paper)
         // The page's paper color: the mean of clean paper away from any ink.
@@ -292,11 +292,33 @@ enum ShadowRemoval {
         let paperRef = channels == 1 ? Double(paperColor[0])
             : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
         let floor = paperRef * 0.35
+        // What is painted: what isn't print, and 0.01 inch about it; then on out to
+        // 0.025 inch through pixels joined to it that aren't paper (darker than the
+        // paper under them, or off the paper's hue): its soft rim and colored fringe (a
+        // comb tooth's pink edge). Faint print apart from it has paper between and stays.
+        var paint = LayeredScan.minFilter(junk, w, h, radius: max(reachPx, Int((0.01 * dpi).rounded()))).map { $0 == 0 }
+        func offPaper(_ i: Int) -> Bool {
+            if Int(gray[i]) < Int(paper[i]) - 6 { return true }
+            guard channels == 4 else { return false }
+            let r = Int(px[4 * i]), g = Int(px[4 * i + 1]), b = Int(px[4 * i + 2])
+            let pr = Int(paperColor[0]), pg = Int(paperColor[1]), pb = Int(paperColor[2])
+            return abs((r - g) - (pr - pg)) > 12 || abs((g - b) - (pg - pb)) > 12
+        }
+        var stack = paint.indices.filter { paint[$0] }
+        while let k = stack.popLast() {
+            let x = k % w, y = k / w
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < w, ny < h else { continue }
+                let n = ny * w + nx
+                if !paint[n], junkNear[n] == 0, offPaper(n) { paint[n] = true; stack.append(n) }
+            }
+        }
         let picture = BlackAndWhite.pictureMap(paper, gray, w, h, dpi: dpi)
         for i in 0..<(w * h) where !picture[i] {
             let isPrint = printNear[i] == 0
             let p = Double(paper[i])
-            if !isPrint && (junkNear[i] == 0 || p < floor) {
+            if !isPrint && (paint[i] || p < floor) {
                 for c in 0..<channels { px[i * channels + c] = paperColor[c] }
             } else if p < paperRef {
                 // Paper is never brought up past the paper's color: beside a dark mark the
