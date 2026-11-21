@@ -146,6 +146,30 @@ struct BWCombTests {
         }
     }
 
+    /// No comb: a list's square bullets stand in a column at a steady pitch, as teeth
+    /// do, but start text lines.
+    @Test("Square bullets starting a list's lines are no teeth")
+    func bulletsStay() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var bullets: [Int] = [], text: [Int] = []
+        for k in 0..<8 {
+            let y = 100 + k * 75
+            bullets += Self.box(20, y, 20, 20)
+            for x in stride(from: 60, to: 660, by: 45) {
+                text += Self.box(x, y - 1, 3, 22) + Self.box(x + 17, y - 1, 3, 22) + Self.box(x, y - 1, 20, 3)
+                    + Self.box(x, y + 18, 20, 3)
+            }
+        }
+        for i in bullets + text { g[i] = 30 }
+        let bw = BlackAndWhite.ink(gray: g, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, bullets) > 0.99, "bullets \(share(bw, bullets))")
+        #expect(share(bw, text) > 0.99, "text \(share(bw, text))")
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        #expect(Double(bullets.filter { color[$0] < 100 }.count) > 0.99 * Double(bullets.count), "bullets in color")
+    }
+
     @Test("A folio 1 beside a tooth, as tall as its end, stays")
     func folioOneStays() throws {
         var p = Self.page(clumps: false)

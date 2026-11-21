@@ -43,28 +43,10 @@ enum ShadowRemoval {
         guard w > 2, h > 2, out.count == w * h else { return false }
         let cc = Components(out, w, h)
         let blobs = cc.blobs
-        guard !blobs.isEmpty else { return false }
-        // The text height.
-        let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
-        var heights: [Int] = []
-        for b in blobs where b.count >= minGlyph {
-            let bh = b.height, bw = b.width
-            if Double(bh) >= 0.03 * dpi, Double(bh) <= 0.3 * dpi, Double(bw) <= 0.5 * dpi, bw * 4 >= bh {
-                heights.append(bh)
-            }
-        }
-        guard heights.count >= 20 else { return false }
-        heights.sort()
-        let t = Double(heights[heights.count / 2])
-
-        // Text lines.
-        func letter(_ b: Blob) -> Bool {
-            Double(b.height) >= 0.45 * t && Double(b.height) <= 2.2 * t && b.count >= minGlyph
-        }
-        func thin(_ b: Blob) -> Bool { Double(b.width) < 0.3 * t }
-        let members = blobs.indices.filter { letter(blobs[$0]) }.sorted { blobs[$0].minX < blobs[$1].minX }
-        var parent = [Int](repeating: 0, count: blobs.count)
-        for i in parent.indices { parent[i] = i }
+        guard let lines = textLines(blobs, dpi: dpi) else { return false }
+        let t = lines.t, minGlyph = lines.minGlyph, lineMembers = lines.lineMembers, chained = lines.chained
+        let left = lines.left, right = lines.right
+        var parent = lines.parent
         func find(_ i: Int) -> Int {
             var r = i
             while parent[r] != r { r = parent[r] }
@@ -73,45 +55,6 @@ enum ShadowRemoval {
             return r
         }
         func union(_ a: Int, _ b: Int) { let ra = find(a), rb = find(b); if ra != rb { parent[max(ra, rb)] = min(ra, rb) } }
-        let gapMax = Int((1.5 * t).rounded())
-        for (k, i) in members.enumerated() {
-            let a = blobs[i]
-            var m = k + 1
-            while m < members.count, blobs[members[m]].minX <= a.maxX + gapMax {
-                let j = members[m], b = blobs[j]
-                m += 1
-                let lo = min(a.height, b.height), hi = max(a.height, b.height)
-                guard Double(hi) <= 2.5 * Double(lo) else { continue }
-                let overlap = min(a.maxY, b.maxY) - max(a.minY, b.minY) + 1
-                if 2 * overlap >= lo { union(i, j) }
-            }
-        }
-        var lineOf = [Int: [Int]]()
-        for i in members { lineOf[find(i), default: []].append(i) }
-        // A line runs from its first mark that isn't thin to its last: a thin mark
-        // beyond those (a tick or a piece of a fold line chained to the line's end)
-        // is judged with the rest beside the block.
-        var lineMembers = Set<Int>(), chained = Set<Int>()
-        var starts: [Int] = [], ends: [Int] = []
-        for (_, ms) in lineOf where ms.count >= 3 {
-            let wide = ms.filter { !thin(blobs[$0]) }
-            guard wide.count >= 2, wide.count * 3 >= ms.count else { continue }
-            let feet = ms.map { blobs[$0].maxY }.sorted()
-            let base = feet[feet.count / 2]
-            let onBase = feet.filter { Double(abs($0 - base)) <= 0.3 * t }.count
-            guard onBase * 5 >= ms.count * 3 else { continue }
-            let lo = wide.map { blobs[$0].minX }.min()!, hi = wide.map { blobs[$0].maxX }.max()!
-            lineMembers.formUnion(ms.filter { blobs[$0].maxX >= lo && blobs[$0].minX <= hi })
-            chained.formUnion(ms)
-            starts.append(lo)
-            ends.append(hi)
-        }
-        guard starts.count >= 3 else { return false }
-        starts.sort(); ends.sort(by: >)
-        let k = max(2, min(5, starts.count / 8))
-        let left = starts[k - 1], right = ends[k - 1]
-        guard left < right else { return false }
-
         // Marks wholly beside the text block, past a letter's width (a line's last
         // letter can be thin), and line marks near them.
         let margin = Int((0.6 * t).rounded())
@@ -258,6 +201,94 @@ enum ShadowRemoval {
         return true
     }
 
+    /// A page's text lines, as `clearSides` measures them: its text height `t`, the
+    /// marks of its lines (`lineMembers`, and `chained` with a line's stray ends), the
+    /// text block's left and right edges, and the line-chaining groups (`parent`).
+    struct TextLines {
+        var t: Double
+        var minGlyph: Int
+        var lineMembers: Set<Int>
+        var chained: Set<Int>
+        var left: Int
+        var right: Int
+        var parent: [Int]
+    }
+
+    /// See `TextLines`; nil for a page with fewer than three text lines.
+    static func textLines(_ blobs: [Blob], dpi: Double) -> TextLines? {
+        guard !blobs.isEmpty else { return nil }
+        // The text height.
+        let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
+        var heights: [Int] = []
+        for b in blobs where b.count >= minGlyph {
+            let bh = b.height, bw = b.width
+            if Double(bh) >= 0.03 * dpi, Double(bh) <= 0.3 * dpi, Double(bw) <= 0.5 * dpi, bw * 4 >= bh {
+                heights.append(bh)
+            }
+        }
+        guard heights.count >= 20 else { return nil }
+        heights.sort()
+        let t = Double(heights[heights.count / 2])
+
+        // Text lines.
+        func letter(_ b: Blob) -> Bool {
+            Double(b.height) >= 0.45 * t && Double(b.height) <= 2.2 * t && b.count >= minGlyph
+        }
+        func thin(_ b: Blob) -> Bool { Double(b.width) < 0.3 * t }
+        let members = blobs.indices.filter { letter(blobs[$0]) }.sorted { blobs[$0].minX < blobs[$1].minX }
+        var parent = [Int](repeating: 0, count: blobs.count)
+        for i in parent.indices { parent[i] = i }
+        func find(_ i: Int) -> Int {
+            var r = i
+            while parent[r] != r { r = parent[r] }
+            var c = i
+            while parent[c] != r { let n = parent[c]; parent[c] = r; c = n }
+            return r
+        }
+        func union(_ a: Int, _ b: Int) { let ra = find(a), rb = find(b); if ra != rb { parent[max(ra, rb)] = min(ra, rb) } }
+        let gapMax = Int((1.5 * t).rounded())
+        for (k, i) in members.enumerated() {
+            let a = blobs[i]
+            var m = k + 1
+            while m < members.count, blobs[members[m]].minX <= a.maxX + gapMax {
+                let j = members[m], b = blobs[j]
+                m += 1
+                let lo = min(a.height, b.height), hi = max(a.height, b.height)
+                guard Double(hi) <= 2.5 * Double(lo) else { continue }
+                let overlap = min(a.maxY, b.maxY) - max(a.minY, b.minY) + 1
+                if 2 * overlap >= lo { union(i, j) }
+            }
+        }
+        var lineOf = [Int: [Int]]()
+        for i in members { lineOf[find(i), default: []].append(i) }
+        // A line runs from its first mark that isn't thin to its last: a thin mark
+        // beyond those (a tick or a piece of a fold line chained to the line's end)
+        // is judged with the rest beside the block.
+        var lineMembers = Set<Int>(), chained = Set<Int>()
+        var starts: [Int] = [], ends: [Int] = []
+        for (_, ms) in lineOf where ms.count >= 3 {
+            let wide = ms.filter { !thin(blobs[$0]) }
+            guard wide.count >= 2, wide.count * 3 >= ms.count else { continue }
+            let feet = ms.map { blobs[$0].maxY }.sorted()
+            let base = feet[feet.count / 2]
+            let onBase = feet.filter { Double(abs($0 - base)) <= 0.3 * t }.count
+            guard onBase * 5 >= ms.count * 3 else { continue }
+            let lo = wide.map { blobs[$0].minX }.min()!, hi = wide.map { blobs[$0].maxX }.max()!
+            lineMembers.formUnion(ms.filter { blobs[$0].maxX >= lo && blobs[$0].minX <= hi })
+            chained.formUnion(ms)
+            starts.append(lo)
+            ends.append(hi)
+        }
+        guard starts.count >= 3 else { return nil }
+        starts.sort(); ends.sort(by: >)
+        let k = max(2, min(5, starts.count / 8))
+        let left = starts[k - 1], right = ends[k - 1]
+        guard left < right else { return nil }
+        return TextLines(t: t, minGlyph: minGlyph, lineMembers: lineMembers, chained: chained, left: left, right: right,
+                         parent: parent)
+    }
+
+
     // MARK: Comb and spiral bindings
 
     /// The teeth of a comb or spiral binding down a side of the page, and the zone each
@@ -270,7 +301,8 @@ enum ShadowRemoval {
     /// width (within half to twice the middle one), apart, at a steady pitch (each gap
     /// one to four times the middle gap, give or take a fifth of a pitch each: teeth
     /// may be missed), spanning 1.5 inch or more (not a dark corner's or a shadow's
-    /// speckle). Once found, blocks under 75% of the paper in that column count too:
+    /// speckle), and, given the page's ink, beside its text block (`textLines`). Once
+    /// found, blocks under 75% of the paper in that column count too:
     /// paler teeth on the pitch, and the paler ends of the dark ones. A tooth's zone is its box
     /// grown by 0.03 inch, and by 0.12 inch toward the page's middle, where a comb's
     /// loops show through its holes; so are the gaps between teeth from their inner
@@ -282,10 +314,11 @@ enum ShadowRemoval {
         var boxes: [Blob] = []  // each tooth's box, in the page's pixels
     }
 
-    static func teeth(_ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, paper paperRef: Int) -> Teeth {
+    static func teeth(_ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, paper paperRef: Int, ink: [UInt8]? = nil) -> Teeth {
         var core = [Bool](repeating: false, count: w * h), zone = core
         var found = false
         var boxes: [Blob] = []
+        var block: TextLines?? = nil       // the text block in `ink`, measured when first needed
         let strip = min(w, Int((0.8 * dpi).rounded()))
         guard strip > 4, h > 4 else { return Teeth(core: core, zone: zone, found: false) }
         // The page's stroke: the middle length of dark runs across its middle half. The
@@ -364,6 +397,15 @@ enum ShadowRemoval {
                 }
             }
             guard best.count >= 4 else { continue }
+            // Teeth stand beside the text block: blocks in it (a list's square bullets,
+            // starting its lines) are no teeth.
+            if let ink {
+                if block == nil { block = .some(textLines(Components(ink, w, h).blobs, dpi: dpi)) }
+                if let b = block ?? nil {
+                    best = best.filter { x0 + $0.maxX < b.left || x0 + $0.minX > b.right }
+                    guard best.count >= 4 else { continue }
+                }
+            }
             found = true
             var teeth = best.map { ($0, opened) }
             // Paler teeth in the same column (a comb's teeth shade lighter where the
@@ -559,7 +601,7 @@ enum ShadowRemoval {
         }
         let picture = BlackAndWhite.pictureMap(paper, gray, w, h, dpi: dpi)
         // A binding's teeth and the marks round them: painted, but for print.
-        let comb = teeth(gray, w, h, dpi: dpi, paper: clean + 20)
+        let comb = teeth(gray, w, h, dpi: dpi, paper: clean + 20, ink: ink)
         for i in 0..<(w * h) where !picture[i] {
             let isPrint = printNear[i] == 0
             let p = Double(paper[i])
