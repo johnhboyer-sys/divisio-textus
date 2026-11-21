@@ -170,6 +170,30 @@ struct BlackAndWhiteExportTests {
         #expect(px.filter { $0 == 255 }.count * 10 > px.count * 8)
     }
 
+    @Test("Black and white of a straightened low-resolution scan is made twice as fine")
+    func turnedLowResolution() throws {
+        let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let scan = Fixtures.image(1275, 1650, gray: true) { c in      // 150 DPI
+            c.setFillColor(CGColor(gray: 0, alpha: 1))
+            for i in 0..<30 { c.fill(CGRect(x: 300, y: 165 + i * 41, width: 800, height: 12)) }
+        }
+        let url = Fixtures.writePDF("bw-turned.pdf", media: letter, pages: [{ $0.draw(scan, in: letter) }])
+        let doc = try #require(PDFDocument(url: url))
+        var settings = PDFExporter.Settings()
+        settings.ocr = false
+        settings.enhanceMode = .blackAndWhite
+        func width(_ page: BookPage, _ name: String) throws -> Int {
+            let out = Fixtures.url(name)
+            _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: settings)
+            let made = try #require(PDFDocument(url: out)?.page(at: 0))
+            return try #require(PDFRenderer.drawnContent(made.pageRef!)?.images.first).pixelWidth
+        }
+        let level = try width(BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true), "bw-level.pdf")
+        let turned = try width(BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.8,
+                                        analyzed: true), "bw-turned-out.pdf")
+        #expect(turned == 2 * level, "\(level) \(turned)")
+    }
+
     @Test("Scans not stored in layers: Color as before, Black and white 1 bit")
     func plainUnchanged() throws {
         #expect(PDFExporter.Settings().enhanceMode == .color && !PDFExporter.Settings().removeShadows)

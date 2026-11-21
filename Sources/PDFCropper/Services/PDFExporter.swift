@@ -174,6 +174,22 @@ enum PDFExporter {
                         }
                         return
                     }
+                    // Black and white of a straightened page at a low scan resolution
+                    // would turn the straightening's half pixels into steps that lean
+                    // upright strokes; it is made from a render twice as fine (a page
+                    // holding a picture is made as below).
+                    let fineDPI = min(600, 2 * dpi)
+                    if settings.enhanceMode == .blackAndWhite, dpi < 400,
+                       abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
+                       let fine = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
+                       let out = outputImages(of: page, rendered: fine, settings: settings) {
+                        let bw = out.map { BlackAndWhite.page($0, dpi: fineDPI, removeShadows: settings.removeShadows) }
+                        if bw.allSatisfy({ $0 != nil }) {
+                            images += bw.compactMap { $0 }
+                            dpis += Array(repeating: fineDPI, count: bw.count)
+                            return
+                        }
+                    }
                     // A crop that fails would silently drop an output page: fail the export.
                     guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {

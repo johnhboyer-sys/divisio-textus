@@ -7,9 +7,10 @@ import CoreGraphics
 ///
 /// - Black and white: `clearSides` runs on the page's ink after `BlackAndWhite.ink`.
 /// - Color and grayscale (`page`): the paper is evened out (each pixel brightened by
-///   how much darker the paper under it is than the page's clean paper), and what
-///   black and white would call ink but `clearSides` and the steps before it found
-///   not to be print is painted the page's paper color.
+///   how much darker the paper under it is than the page's paper color, but paper
+///   never past that color), and what black and white would call ink but
+///   `clearSides` and the steps before it found not to be print is painted the
+///   page's paper color, with 0.01 inch about it.
 enum ShadowRemoval {
 
     // MARK: The sides
@@ -29,7 +30,9 @@ enum ShadowRemoval {
     /// - a rule: flat, 1.5 `t` long or more, not touching the page's side;
     /// - a glyph or word on its own (a folio, a marginal number or note): 0.5 to 2.2
     ///   `t` tall, not thin, solid enough, not touching the side, with no other
-    ///   marks about it but those of its own row (a fold's junk comes in crowds).
+    ///   marks about it but those of its own row and thin upright ones (a fold's
+    ///   specks come in crowds; a stripe or tick beside a folio is no crowd); and a
+    ///   letter beside such a glyph (the 1 of a folio 10).
     /// Specks within 0.1 `t` of each other are judged together, so print broken
     /// into pieces by a pale scan is judged whole. Everything else goes: streaks,
     /// ticks, broken lines, the striped edges of the page stack, specks, and
