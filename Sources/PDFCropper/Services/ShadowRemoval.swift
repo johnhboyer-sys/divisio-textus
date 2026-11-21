@@ -507,10 +507,18 @@ enum ShadowRemoval {
                 continue
             }
             let isPrint = cc.hasStroke(k, run, in: out) && !paler
-            // A thin upright line (under 0.03 inch wide, 0.3 inch tall or more: taller than
-            // a folio's 1) is left to the side rule, unkept: by a binding as by the fold, a
-            // page stack's stripe.
-            if isPrint { if b.width >= thin || b.height < 2 * tall { printed.append(k) } }
+            // A thin upright line (under 0.03 inch wide, 0.15 inch tall or more) is left to
+            // the side rule, unkept, when it is 0.3 inch tall or more or has other ink above
+            // or below it within 0.3 inch: by a binding as by the fold, a page stack's
+            // stripe, whole or broken. A folio's 1 stands alone.
+            func stripe() -> Bool {
+                b.height >= 2 * tall || cc.blobs.indices.contains { j in
+                    let o = cc.blobs[j]
+                    return j != k && o.maxX >= b.minX - 1 && o.minX <= b.maxX + 1
+                        && max(o.minY - b.maxY, b.minY - o.maxY) <= 2 * tall
+                }
+            }
+            if isPrint { if b.width >= thin || b.height < tall || !stripe() { printed.append(k) } }
             else if inZone * 10 >= b.count * 9 { drop.append(k) }
         }
         var keep = [Bool](repeating: false, count: w * h)
