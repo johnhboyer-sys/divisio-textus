@@ -760,7 +760,8 @@ struct HillClimbShadowTests {
     // MARK: Whole books
 
     /// The print-loss gate over every output page of every corpus book (HILLCLIMB_SHADOW_BOOKS=
-    /// Book,Book to run fewer). The `real` cases above are eleven chosen fold pages, and their
+    /// Book,Book to run fewer, in that order; HILLCLIMB_SHADOW_JOBS pages judged at once, for a
+    /// busy or small machine: Cherniss's pages are drawn 5,000 px wide). The `real` cases above are eleven chosen fold pages, and their
     /// hard gate counts only glyphs with a row neighbour, so a column of page numbers on a
     /// contents page (Wallace p3), alone on its rows, was never looked at.
     ///
@@ -782,10 +783,13 @@ struct HillClimbShadowTests {
     /// HILLCLIMB_SHADOW_TRIAGE=<folder> draws each lost letter, dot and large mark before and
     /// after (`pages-<book>-<n>.png`), to judge by eye.
     static func pages() async throws -> [String: Any] {
-        let wanted = HillClimb.env["HILLCLIMB_SHADOW_BOOKS"].map { Set($0.split(separator: ",").map(String.init)) }
+        let urls = HillClimb.bookURLs()
+        let chosen = HillClimb.env["HILLCLIMB_SHADOW_BOOKS"].map { list in
+            list.split(separator: ",").compactMap { b in urls.first { HillClimb.shortName($0) == String(b) } }
+        } ?? urls
         var books: [[String: Any]] = []
         var all: [String: Int] = [:]
-        for url in HillClimb.bookURLs() where wanted?.contains(HillClimb.shortName(url)) ?? true {
+        for url in chosen {
             let name = HillClimb.shortName(url)
             let m = HillClimb.makeModel()
             await HillClimb.load(url, into: m)
@@ -803,7 +807,7 @@ struct HillClimbShadowTests {
                 sheet = []; sheets += 1
             }
             // Pages drawn one at a time, then judged several at once.
-            let batch = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
+            let batch = Int(HillClimb.env["HILLCLIMB_SHADOW_JOBS"] ?? "") ?? max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
             for start in stride(from: 0, to: m.pages.count, by: batch) {
               let chunk = Array(m.pages[start..<min(m.pages.count, start + batch)])
               let drawnPages = chunk.map { page in
