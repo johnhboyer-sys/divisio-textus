@@ -146,15 +146,27 @@ private struct PageSections: View {
             .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
         } else {
             if let readout { LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() } }
-            HStack(spacing: 6) {
-                Text("Apply crop")
-                Spacer(minLength: 0)
-                Button("All single pages") { model.applySingleCrop(alternate: false) }
-                Button("Alternate pages") { model.applySingleCrop(alternate: true) }
+            // At the narrowest sidebar the buttons drop under the label.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text("Apply crop")
+                    Spacer(minLength: 0)
+                    applyCropButtons
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Apply crop")
+                    HStack(spacing: 6) { applyCropButtons }
+                }
             }
             .controlSize(.small)
             .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
         }
+    }
+
+    @ViewBuilder
+    private var applyCropButtons: some View {
+        Button("All single pages") { model.applySingleCrop(alternate: false) }
+        Button("Alternate pages") { model.applySingleCrop(alternate: true) }
     }
 
     /// A row: the side's name, its slider, its angle and a reset to 0°.
@@ -508,18 +520,8 @@ private struct StackSections: View {
                 }
                 .disabled(stack.members.isEmpty)
             }
-            // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(pages) { member in
-                        Toggle("p. \(member.page.sourceIndex + 1)", isOn: Binding(
-                            get: { !(model.stackExclusions[stack.id]?.contains(member.id) ?? false) },
-                            set: { model.setStackPage(member.id, included: $0, in: stack.id) }))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: min(180, Double(pages.count) * 24 + 4))
+            // A long book has hundreds of pages: the list scrolls rather than grow the sidebar.
+            StackThumbList(stack: stack, pages: pages)
             let left = stack.excludedMembers.count
             if left > 0 {
                 Text("\(left) \(left == 1 ? "page" : "pages") left out of Apply; still exported.")
