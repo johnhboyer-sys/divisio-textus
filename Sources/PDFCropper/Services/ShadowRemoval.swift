@@ -30,10 +30,11 @@ enum ShadowRemoval {
     /// - a rule: flat, 1.5 `t` long or more, not touching the page's side;
     /// - a glyph or word on its own (a folio, a marginal number or note): 0.5 to 2.2
     ///   `t` tall, not thin, solid enough, not touching the side, with no other
-    ///   marks about it but those of its own row and thin upright ones (a fold's
-    ///   specks come in crowds; a stripe or tick beside a folio is no crowd); and a
-    ///   letter beside such a glyph (the 1 of a folio 10), or punctuation within its rows
-    ///   (the full stop of a hanging list number).
+    ///   marks about it but those of its own row or column (a column of page or line
+    ///   numbers) and thin upright ones (a fold's specks come in crowds, near the side
+    ///   or many; a stripe or tick beside a folio is no crowd); and a letter beside such
+    ///   a glyph (the 1 of a folio 10), punctuation within its rows (the full stop of a
+    ///   hanging list number), or a dot or accent over a kept letter.
     /// Specks within 0.1 `t` of each other are judged together, so print broken
     /// into pieces by a pale scan is judged whole. Everything else goes: streaks,
     /// ticks, broken lines, the striped edges of the page stack, specks, and
@@ -163,27 +164,35 @@ enum ShadowRemoval {
             let overlap = min(a.maxY, b.maxY) - max(a.minY, b.minY) + 1
             return 2 * overlap >= min(a.maxY - a.minY + 1, b.maxY - b.minY + 1)
         }
+        func sameColumn(_ a: Mark, _ b: Mark) -> Bool {
+            let overlap = min(a.maxX, b.maxX) - max(a.minX, b.minX) + 1
+            return 2 * overlap >= min(a.maxX - a.minX + 1, b.maxX - b.minX + 1)
+        }
         func letterTall(_ m: Mark) -> Bool {
             let mh = Double(m.maxY - m.minY + 1)
             return mh >= 0.45 * t && mh <= 2.2 * t && !touchesSide(m)
         }
-        // A glyph on its own: other marks about it, but for its own row's, hold under
-        // a tenth of its ink.
-        let around = Int(t.rounded())
+        // A glyph on its own: other marks about it, but for its own row's and its own
+        // column's (a column of page or line numbers, a list's hanging numbers), hold under
+        // a tenth of its ink. Specks count against it only near a side (within 0.25 inch),
+        // where the fold is, or eight or more of them: a fold's shadow turns to speckle in
+        // black and white, while a few specks of dust on clean paper are no crowd.
+        let around = Int(t.rounded()), flank = Int((0.25 * dpi).rounded())
         var keep = [Bool](repeating: false, count: list.count)
         for (n, m) in list.enumerated() {
             if flatRule(m) || kept(m) { keep[n] = true; continue }
             guard shaped[n] else { continue }
-            var crowd = 0
+            var crowd = 0, specks = 0
             for o in near(m, around) where o != n {
                 let q = list[o]
-                if (shaped[o] || letterTall(q)) && sameRow(m, q) { continue }
+                if (shaped[o] || letterTall(q)) && (sameRow(m, q) || sameColumn(m, q)) { continue }
                 // A stripe or tick beside it is the fold's, not a crowd of glyph-like specks.
                 let qw = Double(q.maxX - q.minX + 1), qh = Double(q.maxY - q.minY + 1)
                 if qw < 0.3 * t && qh >= 0.5 * t { continue }
-                crowd += q.count
+                crowd += q.count; specks += 1
             }
-            keep[n] = crowd * 10 <= m.count
+            let bySide = m.minX < flank || m.maxX >= w - flank
+            keep[n] = (!bySide && specks < 8) || crowd * 10 <= m.count
         }
         // And a letter beside a glyph kept so (the 1 of a folio 10).
         let beside = Int((0.6 * t).rounded())
@@ -207,6 +216,16 @@ enum ShadowRemoval {
             let mh = Double(m.maxY - m.minY + 1)
             guard mh >= 0.5 * t, mh <= 1.6 * t, m.maxX - m.minX + 1 >= 2, !touchesSide(m) else { continue }
             keep[n] = near(m, Int((2 * t).rounded())).allSatisfy { $0 == n }
+        }
+        // And a dot or accent over a kept letter (the i of a folio vi): small, sharing its
+        // columns, at most 0.6 `t` above it.
+        for (n, m) in list.enumerated() where !keep[n] {
+            guard Double(m.maxX - m.minX + 1) <= 0.5 * t, Double(m.maxY - m.minY + 1) <= 0.5 * t else { continue }
+            keep[n] = near(m, beside).contains { o in
+                let g = list[o]
+                return o != n && keep[o] && letterTall(g) && sameColumn(m, g) && m.maxY < g.minY
+                    && Double(g.minY - m.maxY) <= 0.6 * t
+            }
         }
         for (n, m) in list.enumerated() where !keep[n] { for i in m.blobs { cc.clear(i, in: &out) } }
         return true

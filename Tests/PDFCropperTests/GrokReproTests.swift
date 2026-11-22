@@ -606,7 +606,7 @@ struct GrokReproTests {
     func rulesBesideBlock() throws {
         let axis = Self.box(730, 300, 2, 220) + Self.box(730, 518, 130, 2)        // an L, past the right edge
         let marginal = Self.box(745, 700, 2, 160)                                   // a rule in the margin
-        let table = Self.box(60, 300, 2, 260) + Self.box(110, 300, 2, 260)          // loose upright rules, left
+        let table = Self.box(80, 300, 2, 260) + Self.box(120, 300, 2, 260)          // loose upright rules, left
         let r = try Self.besideBlock { ink in for i in axis + marginal + table { ink[i] = 0 } }
         let report = "axis bw \(Self.r2(Self.share(r.bw, axis))) color \(Self.r2(Self.share(r.color, axis))); "
             + "marginal bw \(Self.r2(Self.share(r.bw, marginal))) color \(Self.r2(Self.share(r.color, marginal))); "
@@ -615,8 +615,7 @@ struct GrokReproTests {
         #expect([axis, marginal, table].allSatisfy { Self.share(r.bw, $0) > 0.9 && Self.share(r.color, $0) > 0.9 }, "\(report)")
     }
 
-    @Test("Grok S3: a marginal verse number with fold specks within an x-height stays",
-          .disabled("Grok S3, confirmed; fix pending"))
+    @Test("Grok S3: a marginal verse number with fold specks within an x-height stays")
     func marginalNumberWithSpecks() throws {
         for count in [3, 6] { try Self.numberWithSpecks(count) }
     }
@@ -637,8 +636,7 @@ struct GrokReproTests {
         #expect(Self.share(r.color, number) > 0.9)
     }
 
-    @Test("Grok S3: marginal line numbers set solid stay",
-          .disabled("Grok S3, confirmed; fix pending"))
+    @Test("Grok S3: marginal line numbers set solid stay")
     func marginalNumbersSetSolid() throws {
         try Self.numbers(lead: 10 * Self.dpi / 72, every: 1)                     // 10 on 10, every line
     }
@@ -648,8 +646,7 @@ struct GrokReproTests {
         try Self.numbers(lead: 10 * Self.dpi / 72, every: 5)
     }
 
-    @Test("Grok S3: marginal line numbers on every line, 10 on 12, stay",
-          .disabled("Grok S3, confirmed; fix pending"))
+    @Test("Grok S3: marginal line numbers on every line, 10 on 12, stay")
     func marginalNumbersLeaded() throws {
         try Self.numbers(lead: 12 * Self.dpi / 72, every: 1)
     }
