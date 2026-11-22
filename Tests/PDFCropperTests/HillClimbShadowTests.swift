@@ -802,13 +802,23 @@ struct HillClimbShadowTests {
                 }
                 sheet = []; sheets += 1
             }
-            for page in m.pages {
-                guard let pdfPage = doc.page(at: page.sourceIndex) else { continue }
-                let pairs = autoreleasepool { bwPairs(page, pdfPage, settings: settings) }
+            // Pages drawn one at a time, then judged several at once.
+            let batch = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
+            for start in stride(from: 0, to: m.pages.count, by: batch) {
+              let chunk = Array(m.pages[start..<min(m.pages.count, start + batch)])
+              let drawnPages = chunk.map { page in
+                  autoreleasepool { doc.page(at: page.sourceIndex).map { drawn(page, $0, settings: settings) } ?? Drawn() }
+              }
+              var judged = [[(BWPair, [(kind: String, box: HCGlyph)])]](repeating: [], count: chunk.count)
+              judged.withUnsafeMutableBufferPointer { buf in
+                  DispatchQueue.concurrentPerform(iterations: chunk.count) { i in
+                      buf[i] = pairs(drawnPages[i]).map { p in (p, lostMarks(p.off, p.on, p.paper, p.w, p.h, dpi: p.dpi)) }
+                  }
+              }
+              for (page, results) in zip(chunk, judged) {
                 let spread = page.outputCrops(direction: settings.direction).count > 1
-                for p in pairs {
+                for (p, lost) in results {
                     let tag = "\(name) p\(page.sourceIndex + 1)" + (spread ? (p.k == 0 ? "L" : "R") : "") + " \(p.mode)"
-                    let lost = lostMarks(p.off, p.on, p.paper, p.w, p.h, dpi: p.dpi)
                     var count: [String: Int] = [:]
                     for l in lost { count[l.kind, default: 0] += 1 }
                     for (kind, n) in count { totals["\(p.mode) \(kind)", default: 0] += n; all["\(p.mode) \(kind)", default: 0] += n }
@@ -833,6 +843,8 @@ struct HillClimbShadowTests {
                         }
                     }
                 }
+              }
+              print("SHADOWPROGRESS \(name) \(min(m.pages.count, start + batch)) of \(m.pages.count)")
             }
             flush()
             print("SHADOWBOOK \(name) \(totals.sorted { $0.key < $1.key })")
@@ -850,7 +862,31 @@ struct HillClimbShadowTests {
     /// The page's output pages made as `PDFExporter.export` makes them, in Black and white and in
     /// Color: a layered page's Color with the option is its Black and white, so only that; a page
     /// kept as a picture in Black and white is its Color export, so only that.
+    /// What `pairs` needs of a page, drawn (PDFKit draws one page at a time): a layered page's
+    /// pairs made already, or a plain page's output images at `dpi` and, for a turned page under
+    /// 250 DPI, at twice that (`fine`).
+    struct Drawn { var made: [BWPair] = [], images: [CGImage] = [], dpi = 0.0, fine: [CGImage]? = nil, fineDPI = 0.0 }
+
     static func bwPairs(_ page: BookPage, _ pdfPage: PDFPage, settings: PDFExporter.Settings) -> [BWPair] {
+        pairs(drawn(page, pdfPage, settings: settings))
+    }
+
+    /// Color with the option against Black and white without it, both from `image` at `d`.
+    static func colorPair(_ k: Int, _ image: CGImage, _ d: Double) -> BWPair? {
+        let p = BlackAndWhite.prepare(image, dpi: d)
+        let off = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: BlackAndWhite.holdsTones(p.gray, width: p.width, height: p.height),
+                                    width: p.width, height: p.height, dpi: d, paper: p.paper)
+        guard let made = ShadowRemoval.page(image, dpi: d) else { return nil }
+        let g = BlackAndWhite.grayPixels(made)
+        var counts = [Int](repeating: 0, count: 256), n = 0
+        for i in stride(from: 0, to: g.count, by: 5) where off[i] != 0 { counts[Int(g[i])] += 1; n += 1 }
+        var seen = 0, paperOut = 255
+        for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { paperOut = v; break } }
+        return BWPair(mode: "color", k: k, off: off, on: g.map { Int($0) <= paperOut - 25 ? 0 : 255 }, paper: p.paper,
+                      w: p.width, h: p.height, dpi: d)
+    }
+
+    static func drawn(_ page: BookPage, _ pdfPage: PDFPage, settings: PDFExporter.Settings) -> Drawn {
         let dpi = settings.matchScanResolution
             ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi : settings.dpi
         var color = settings; color.enhanceMode = .color
@@ -858,26 +894,12 @@ struct HillClimbShadowTests {
             guard let r = PDFRenderer.renderCGImage(page: pdfPage, dpi: d) else { return nil }
             return PDFExporter.outputImages(of: page, rendered: r, settings: color)
         }
-        /// Color with the option against Black and white without it, both from `image` at `d`.
-        func colorPair(_ k: Int, _ image: CGImage, _ d: Double) -> BWPair? {
-            let p = BlackAndWhite.prepare(image, dpi: d)
-            let off = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: BlackAndWhite.holdsTones(p.gray, width: p.width, height: p.height),
-                                        width: p.width, height: p.height, dpi: d, paper: p.paper)
-            guard let made = ShadowRemoval.page(image, dpi: d) else { return nil }
-            let g = BlackAndWhite.grayPixels(made)
-            var counts = [Int](repeating: 0, count: 256), n = 0
-            for i in stride(from: 0, to: g.count, by: 5) where off[i] != 0 { counts[Int(g[i])] += 1; n += 1 }
-            var seen = 0, paperOut = 255
-            for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { paperOut = v; break } }
-            return BWPair(mode: "color", k: k, off: off, on: g.map { Int($0) <= paperOut - 25 ? 0 : 255 }, paper: p.paper,
-                          w: p.width, h: p.height, dpi: d)
-        }
         var out: [BWPair] = []
         if let layers = LayeredScan.layers(of: pdfPage) {
             guard let off = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: settings.direction,
                                                   bothLayers: true, removeShadows: false),
                   let on = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: settings.direction,
-                                                 bothLayers: true, removeShadows: true) else { return [] }
+                                                 bothLayers: true, removeShadows: true) else { return Drawn() }
             let images = off.contains(where: { $0 == nil }) ? rendered(dpi) : nil
             for (k, (o, n)) in zip(off, on).enumerated() {
                 if let o, let n {
@@ -889,15 +911,22 @@ struct HillClimbShadowTests {
                     out.append(c)
                 }
             }
-            return out
+            return Drawn(made: out)
         }
-        guard let images = rendered(dpi) else { return [] }
-        let prepared = images.map { BlackAndWhite.prepare($0, dpi: dpi) }
-        // Black and white of a turned page under 250 DPI is made twice as fine, unless a page holds a picture.
+        guard let images = rendered(dpi) else { return Drawn() }
         let turned = abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01)
         let fineDPI = min(600, 2 * dpi)
+        return Drawn(images: images, dpi: dpi, fine: dpi < 250 && turned ? rendered(fineDPI) : nil, fineDPI: fineDPI)
+    }
+
+    /// `drawn`'s pairs; safe to run on several pages at once.
+    static func pairs(_ d: Drawn) -> [BWPair] {
+        var out = d.made
+        let images = d.images, dpi = d.dpi, fineDPI = d.fineDPI
+        let prepared = images.map { BlackAndWhite.prepare($0, dpi: dpi) }
+        // Black and white of a turned page under 250 DPI is made twice as fine, unless a page holds a picture.
         var fine: [BlackAndWhite.Prepared]?
-        if dpi < 250, turned, let f = rendered(fineDPI) {
+        if let f = d.fine {
             let p = f.map { BlackAndWhite.prepare($0, dpi: fineDPI) }
             if !p.contains(where: \.picture) { fine = p }
         }
