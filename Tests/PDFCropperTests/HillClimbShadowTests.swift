@@ -6,7 +6,8 @@ import PDFKit
 
 /// Hill-climb score for Remove shadows. Runs only when HILLCLIMB_DIR is set; writes
 /// results/<label>/shadow.json. HILLCLIMB_SHADOW=off scores the export without the
-/// option (the baseline); HILLCLIMB_SHADOW_ONLY=synthetic or =real runs half.
+/// option (the baseline); HILLCLIMB_SHADOW_ONLY=synthetic, real, pages or comb runs one part.
+/// **Whole books** (`pages`): the print-loss gate, every output page of every corpus book.
 ///
 /// **Synthetic.** Spreads from `HCSynth` (the split score's generator), drawn 3 times
 /// larger (330 DPI) and level, with the fold's distractors it draws (soft and hard
@@ -44,9 +45,10 @@ struct HillClimbShadowTests {
         HillClimb.prepare()
         var out: [String: Any] = ["removeShadows": Self.removeOn]
         let t0 = HillClimb.now()
-        if Self.only != "real" && Self.only != "comb" { out["synthetic"] = Self.synthetic() }
+        if Self.only == nil || Self.only == "synthetic" { out["synthetic"] = Self.synthetic() }
         let t1 = HillClimb.now()
-        if Self.only != "synthetic" && Self.only != "comb" { out["real"] = try await Self.real() }
+        if Self.only == nil || Self.only == "real" { out["real"] = try await Self.real() }
+        if Self.only == nil || Self.only == "pages" { out["pages"] = try await Self.pages() }
         if Self.only == nil || Self.only == "comb" {
             out["combSynthetic"] = Self.combSynthetic()
             out["combReal"] = try await Self.combReal()
@@ -753,5 +755,201 @@ struct HillClimbShadowTests {
         print("SHADOW real bw \(totals["bw"]!.json)")
         print("SHADOW real color \(totals["color"]!.json)")
         return ["bw": totals["bw"]!.json, "color": totals["color"]!.json, "pages": records, "losses": losses]
+    }
+
+    // MARK: Whole books
+
+    /// The print-loss gate over every output page of every corpus book (HILLCLIMB_SHADOW_BOOKS=
+    /// Book,Book to run fewer). The `real` cases above are eleven chosen fold pages, and their
+    /// hard gate counts only glyphs with a row neighbour, so a column of page numbers on a
+    /// contents page (Wallace p3), alone on its rows, was never looked at.
+    ///
+    /// Each output page is made as the export makes it, without and with the option, in Black
+    /// and white (`bw`) and in Color (`color`, the page with the option still darker than its
+    /// paper by 25; a page kept as a picture in Black and white is this too). Every mark of
+    /// the page in Black and white without the
+    /// option (8-connected ink at least a full stop in size, at most 0.5 inch each way) that
+    /// keeps under 30% of its pixels with it is lost. The text height `t` is the page's own
+    /// (`ShadowRemoval.textLines`, else 0.06 inch). Lost marks are sorted by shape and place
+    /// only, never by where the text block is:
+    /// * `side`: within 0.02 inch of the crop's left or right side (a stripe, a band's rim);
+    /// * `stripe`: thin (three times as tall as wide) and one of three or more lost thin
+    ///   marks in a column (within 0.03 inch) spanning 0.5 inch or more: the page stack's edge;
+    /// * `shadow`: on shadowed paper (the paper map under it below the page's clean level);
+    /// * `dot`: under 0.4 `t` tall (a full stop, an i's dot, a speck);
+    /// * `letter`: the rest, letter-sized (0.4 to 2.5 `t` tall), on clean paper, away from the
+    ///   sides: the gate. `large`: taller or wider (rules, figures, bands), listed.
+    /// HILLCLIMB_SHADOW_TRIAGE=<folder> draws each lost letter, dot and large mark before and
+    /// after (`pages-<book>-<n>.png`), to judge by eye.
+    static func pages() async throws -> [String: Any] {
+        let wanted = HillClimb.env["HILLCLIMB_SHADOW_BOOKS"].map { Set($0.split(separator: ",").map(String.init)) }
+        var books: [[String: Any]] = []
+        var all: [String: Int] = [:]
+        for url in HillClimb.bookURLs() where wanted?.contains(HillClimb.shortName(url)) ?? true {
+            let name = HillClimb.shortName(url)
+            let m = HillClimb.makeModel()
+            await HillClimb.load(url, into: m)
+            guard let doc = AppModel.reopen(url, password: nil) else { books.append(["book": name, "error": "not opened"]); continue }
+            var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false, enhanceMode: .blackAndWhite)
+            settings.matchScanResolution = m.matchScanResolution
+            var totals: [String: Int] = [:], listed: [[String: Any]] = []
+            var sheet: [[(String, CGImage)]] = [], sheets = 0
+            func flush() {
+                guard let dir = HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"], !sheet.isEmpty else { return }
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                if let im = BWShowTests.grid(sheet, height: nil) {
+                    HillClimb.png(im, to: URL(fileURLWithPath: dir).appendingPathComponent("pages-\(name)-\(sheets).png"))
+                }
+                sheet = []; sheets += 1
+            }
+            for page in m.pages {
+                guard let pdfPage = doc.page(at: page.sourceIndex) else { continue }
+                let pairs = autoreleasepool { bwPairs(page, pdfPage, settings: settings) }
+                let spread = page.outputCrops(direction: settings.direction).count > 1
+                for p in pairs {
+                    let tag = "\(name) p\(page.sourceIndex + 1)" + (spread ? (p.k == 0 ? "L" : "R") : "") + " \(p.mode)"
+                    let lost = lostMarks(p.off, p.on, p.paper, p.w, p.h, dpi: p.dpi)
+                    var count: [String: Int] = [:]
+                    for l in lost { count[l.kind, default: 0] += 1 }
+                    for (kind, n) in count { totals["\(p.mode) \(kind)", default: 0] += n; all["\(p.mode) \(kind)", default: 0] += n }
+                    totals["\(p.mode) pages", default: 0] += 1
+                    let shown = lost.filter { ["letter", "dot", "large"].contains($0.kind) }
+                    guard !shown.isEmpty else { continue }
+                    print("SHADOWPAGE \(tag): \(count.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))")
+                    listed.append(["page": tag, "mode": p.mode, "lost": count])
+                    guard HillClimb.env["HILLCLIMB_SHADOW_TRIAGE"] != nil else { continue }
+                    for l in shown.prefix(16) {
+                        let pad = Int(0.25 * p.dpi)
+                        let x0 = max(0, l.box.x0 - pad), y0 = max(0, l.box.y0 - pad)
+                        let x1 = min(p.w - 1, l.box.x1 + pad), y1 = min(p.h - 1, l.box.y1 + pad)
+                        func cut(_ px: [UInt8]) -> CGImage? {
+                            var c = [UInt8](repeating: 255, count: (x1 - x0 + 1) * (y1 - y0 + 1))
+                            for y in y0...y1 { for x in x0...x1 { c[(y - y0) * (x1 - x0 + 1) + x - x0] = px[y * p.w + x] } }
+                            return BlackAndWhite.image(c, width: x1 - x0 + 1, height: y1 - y0 + 1)
+                        }
+                        if let b = cut(p.off), let a = cut(p.on) {
+                            sheet.append([("\(tag) \(l.kind) \(l.box.x0),\(l.box.y0) off", b), ("on", a)])
+                            if sheet.count == 24 { flush() }
+                        }
+                    }
+                }
+            }
+            flush()
+            print("SHADOWBOOK \(name) \(totals.sorted { $0.key < $1.key })")
+            books.append(["book": name, "totals": totals, "pages": listed])
+        }
+        print("SHADOWPAGES all \(all.sorted { $0.key < $1.key })")
+        return ["all": all, "books": books]
+    }
+
+    /// One output page without and with Remove shadows in one mode: `off` is its Black and white
+    /// without the option (0 ink, 255 paper), `on` the same page with it, as ink (`bw`) or, for
+    /// the Color export, its pixels still darker than its paper by 25 or more (`color`).
+    struct BWPair { var mode: String, k: Int, off: [UInt8], on: [UInt8], paper: [UInt8], w: Int, h: Int, dpi: Double }
+
+    /// The page's output pages made as `PDFExporter.export` makes them, in Black and white and in
+    /// Color: a layered page's Color with the option is its Black and white, so only that; a page
+    /// kept as a picture in Black and white is its Color export, so only that.
+    static func bwPairs(_ page: BookPage, _ pdfPage: PDFPage, settings: PDFExporter.Settings) -> [BWPair] {
+        let dpi = settings.matchScanResolution
+            ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi : settings.dpi
+        var color = settings; color.enhanceMode = .color
+        func rendered(_ d: Double) -> [CGImage]? {
+            guard let r = PDFRenderer.renderCGImage(page: pdfPage, dpi: d) else { return nil }
+            return PDFExporter.outputImages(of: page, rendered: r, settings: color)
+        }
+        /// Color with the option against Black and white without it, both from `image` at `d`.
+        func colorPair(_ k: Int, _ image: CGImage, _ d: Double) -> BWPair? {
+            let p = BlackAndWhite.prepare(image, dpi: d)
+            let off = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: BlackAndWhite.holdsTones(p.gray, width: p.width, height: p.height),
+                                        width: p.width, height: p.height, dpi: d, paper: p.paper)
+            guard let made = ShadowRemoval.page(image, dpi: d) else { return nil }
+            let g = BlackAndWhite.grayPixels(made)
+            var counts = [Int](repeating: 0, count: 256), n = 0
+            for i in stride(from: 0, to: g.count, by: 5) where off[i] != 0 { counts[Int(g[i])] += 1; n += 1 }
+            var seen = 0, paperOut = 255
+            for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { paperOut = v; break } }
+            return BWPair(mode: "color", k: k, off: off, on: g.map { Int($0) <= paperOut - 25 ? 0 : 255 }, paper: p.paper,
+                          w: p.width, h: p.height, dpi: d)
+        }
+        var out: [BWPair] = []
+        if let layers = LayeredScan.layers(of: pdfPage) {
+            guard let off = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: settings.direction,
+                                                  bothLayers: true, removeShadows: false),
+                  let on = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: settings.direction,
+                                                 bothLayers: true, removeShadows: true) else { return [] }
+            let images = off.contains(where: { $0 == nil }) ? rendered(dpi) : nil
+            for (k, (o, n)) in zip(off, on).enumerated() {
+                if let o, let n {
+                    let a = BlackAndWhite.grayPixels(o)
+                    out.append(BWPair(mode: "bw", k: k, off: a, on: BlackAndWhite.grayPixels(n),
+                                      paper: [UInt8](repeating: 255, count: a.count), w: o.width, h: o.height,
+                                      dpi: LayeredScan.textDPI(layers)))
+                } else if let images, k < images.count, let c = colorPair(k, images[k], dpi) {
+                    out.append(c)
+                }
+            }
+            return out
+        }
+        guard let images = rendered(dpi) else { return [] }
+        let prepared = images.map { BlackAndWhite.prepare($0, dpi: dpi) }
+        // Black and white of a turned page under 250 DPI is made twice as fine, unless a page holds a picture.
+        let turned = abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01)
+        let fineDPI = min(600, 2 * dpi)
+        var fine: [BlackAndWhite.Prepared]?
+        if dpi < 250, turned, let f = rendered(fineDPI) {
+            let p = f.map { BlackAndWhite.prepare($0, dpi: fineDPI) }
+            if !p.contains(where: \.picture) { fine = p }
+        }
+        for (k, image) in images.enumerated() {
+            if let c = colorPair(k, image, dpi) { out.append(c) }
+            let (p, d) = fine.map { ($0[k], fineDPI) } ?? (prepared[k], dpi)
+            guard !p.picture else { continue }
+            let tone = BlackAndWhite.holdsTones(p.gray, width: p.width, height: p.height)
+            func ink(_ remove: Bool) -> [UInt8] {
+                BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: tone, width: p.width, height: p.height, dpi: d,
+                                  removeShadows: remove, paper: p.paper)
+            }
+            out.append(BWPair(mode: "bw", k: k, off: ink(false), on: ink(true), paper: p.paper, w: p.width, h: p.height, dpi: d))
+        }
+        return out
+    }
+
+    /// The marks of `off` that `on` loses (see `pages`), each with its kind.
+    static func lostMarks(_ off: [UInt8], _ on: [UInt8], _ paper: [UInt8], _ w: Int, _ h: Int, dpi: Double)
+        -> [(kind: String, box: HCGlyph)] {
+        let cc = ShadowRemoval.Components(off, w, h)
+        let blobs = cc.blobs
+        let t = ShadowRemoval.textLines(blobs, dpi: dpi)?.t ?? 0.06 * dpi
+        let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
+        let clean = BlackAndWhite.cleanLevel(paper)
+        let side = max(2, Int((0.02 * dpi).rounded())), most = Int(0.5 * dpi)
+        var lost: [(k: Int, kind: String)] = []
+        for (k, b) in blobs.enumerated() where b.count >= minGlyph && b.width <= most && b.height <= most {
+            let gone = cc.count(k, where: { on[$0] != 0 })
+            guard gone * 10 > b.count * 7 else { continue }
+            let mid = ((b.minY + b.maxY) / 2) * w + (b.minX + b.maxX) / 2
+            let kind: String
+            if b.minX <= side || b.maxX >= w - 1 - side { kind = "side" }
+            else if Int(paper[mid]) < clean { kind = "shadow" }
+            else if Double(b.height) < 0.4 * t { kind = "dot" }
+            else if Double(b.height) > 2.5 * t || Double(b.width) > 3 * t { kind = "large" }
+            else { kind = "letter" }
+            lost.append((k, kind))
+        }
+        // The page stack's edge: thin lost marks three or more to a column, over half an inch.
+        let thin = lost.filter { let b = blobs[$0.k]; return b.height >= 3 * b.width && $0.kind != "side" }
+        let col = max(1, Int((0.03 * dpi).rounded()))
+        var stripe = Set<Int>()
+        for a in thin {
+            let ax = (blobs[a.k].minX + blobs[a.k].maxX) / 2
+            let mates = thin.filter { abs((blobs[$0.k].minX + blobs[$0.k].maxX) / 2 - ax) <= col }
+            let lo = mates.map { blobs[$0.k].minY }.min()!, hi = mates.map { blobs[$0.k].maxY }.max()!
+            if mates.count >= 3, Double(hi - lo) >= 0.5 * dpi { stripe.insert(a.k) }
+        }
+        return lost.map { l in
+            let b = blobs[l.k]
+            return (stripe.contains(l.k) ? "stripe" : l.kind, HCGlyph(x0: b.minX, y0: b.minY, x1: b.maxX, y1: b.maxY))
+        }
     }
 }
