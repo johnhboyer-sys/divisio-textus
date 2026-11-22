@@ -24,6 +24,7 @@ struct WelcomeView: View {
                     Image(nsImage: model.appIcon ?? NSApp.applicationIconImage)
                         .resizable()
                         .frame(width: 116, height: 116)
+                        .accessibilityHidden(true)
                         .shadow(color: .black.opacity(0.35), radius: 14, y: 9)
 
                     nameSplit
@@ -111,7 +112,11 @@ private struct RecentCard: View {
     private let hover = State(initialValue: false)
 
     var body: some View {
-        Button { model.load(url: recent.url) } label: {
+        Button {
+            model.load(url: recent.url)
+            // A file deleted since Welcome appeared fails to open: drop its card.
+            model.refreshRecents()
+        } label: {
             VStack(spacing: 4) {
                 Group {
                     if let image = thumbnail.wrappedValue {

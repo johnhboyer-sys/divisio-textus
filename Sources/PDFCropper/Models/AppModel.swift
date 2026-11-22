@@ -93,7 +93,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var recents: [RecentPDF] = []
     /// Replaces the app's icon on the Welcome screen (the DEBUG shots build has no bundle icon).
     @Published var appIcon: NSImage?
-    func refreshRecents() { recents = RecentFiles.list() }
+    /// The file checks can stall on a slow network share, so they run off the main thread.
+    func refreshRecents() {
+        Task {
+            let list = await Task.detached(priority: .utility) { RecentFiles.list() }.value
+            if list != recents { recents = list }
+        }
+    }
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
