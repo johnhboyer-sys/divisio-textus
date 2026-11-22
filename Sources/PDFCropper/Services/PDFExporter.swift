@@ -28,8 +28,8 @@ enum PDFExporter {
         /// shadows (`LayeredScan.inkPages`): in Black and white, or with Remove shadows.
         /// Otherwise its text layer alone, as before those options.
         var bothLayers: Bool { enhanceMode == .blackAndWhite || removeShadows }
-        /// Straighten lines of print that curve into the binding (see Flatten). Scans
-        /// stored in layers are left as they are.
+        /// Straighten lines of print that curve into the binding (see Flatten). A scan
+        /// stored in layers is measured on its text layer, and both layers take the warp.
         var flattenPages = false
     }
 
@@ -165,13 +165,12 @@ enum PDFExporter {
                     if let layers = LayeredScan.layers(of: pdfPage),
                        let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
                                                         direction: settings.direction,
-                                                        bothLayers: settings.bothLayers, removeShadows: settings.removeShadows) {
+                                                        bothLayers: settings.bothLayers, removeShadows: settings.removeShadows,
+                                                        flatten: settings.flattenPages) {
                         var color: [CGImage] = []
                         if text.contains(where: { $0 == nil }) {
-                            var unflattened = settings      // layered scans are not flattened
-                            unflattened.flattenPages = false
                             guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
-                                  let out = outputImages(of: page, rendered: rendered, settings: unflattened) else {
+                                  let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                                 throw ExportError.renderFailed(page.sourceIndex)
                             }
                             // A picture page: never black and white.

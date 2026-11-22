@@ -6,15 +6,17 @@ import CoreGraphics
 ///
 /// 1. Find ink against the paper around it (so the fold's shadow is not ink), and its
 ///    connected pieces; the x-height is the commonest piece height.
-/// 2. Chain letter-sized pieces into text lines and trace each line's baseline from the
-///    bottoms of its letters (descenders left out), smoothed by a penalized spline.
+/// 2. Chain letter-sized pieces into text lines (never across the gap between two columns)
+///    and trace each line's baseline from the bottoms of its letters (descenders left out),
+///    smoothed by a penalized spline.
 /// 3. Model the vertical disparity: each long line's baseline less its height at the
 ///    outer end of the text, fitted column by column as a quadratic down the page.
 /// 4. Measure how letters narrow toward the gutter and widen them back, taking the room
 ///    from the blank margin by the gutter.
 /// 5. Remap. Where the shift would push print out at the crop's top or bottom edge it
 ///    fades to nothing at that edge, and the widening ends at the gutter edge, so no
-///    print leaves the crop.
+///    print leaves the crop. A layered scan is measured on its text layer and both its
+///    layers take the same warp (see LayeredScan.textPages).
 ///
 /// A page is left as it is (nil) when its text is too small to trace, it has few long
 /// lines, it holds a figure, its lines are already straight, the model is unsure, or
@@ -66,17 +68,30 @@ enum Flatten {
         var out = px.data
         var changed = [Bool](repeating: false, count: regions.count)
         for (k, r) in regions.enumerated() {
-            let rect = r.rect.integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
-            guard !rect.isNull, rect.width >= 32, rect.height >= 32 else { continue }
-            let x0 = Int(rect.minX), y0 = Int(rect.minY), rw = Int(rect.width), rh = Int(rect.height)
-            let g = px.gray(x0, y0, rw, rh)
-            let (model, _) = analyze(g, width: rw, height: rh, gutterOnRight: r.gutterOnRight)
-            guard let model else { continue }
-            remap(&out, from: px, x0: x0, y0: y0, rw: rw, rh: rh, model: model)
+            guard let (rect, model) = regionModel(px, r) else { continue }
+            remap(&out, from: px, x0: rect.x, y0: rect.y, rw: rect.w, rh: rect.h, model: model)
             changed[k] = true
         }
         guard changed.contains(true), let made = px.image(out) else { return nil }
         return (made, changed)
+    }
+
+    /// The model `pages` would use for each region; nil where it leaves the region as it is.
+    static func models(_ image: CGImage, regions: [(rect: CGRect, gutterOnRight: Bool?)]) -> [Model?] {
+        guard let px = Pixels(image) else { return regions.map { _ in nil } }
+        return regions.map { regionModel(px, $0)?.model }
+    }
+
+    private static func regionModel(_ px: Pixels, _ r: (rect: CGRect, gutterOnRight: Bool?))
+        -> (rect: (x: Int, y: Int, w: Int, h: Int), model: Model)? {
+        let w = px.width, h = px.height
+        let rect = r.rect.integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+        guard !rect.isNull, rect.width >= 32, rect.height >= 32 else { return nil }
+        let x0 = Int(rect.minX), y0 = Int(rect.minY), rw = Int(rect.width), rh = Int(rect.height)
+        let outside = Outside(above: y0 > 0 ? px.gray(x0, y0 - 1, rw, 1) : nil,
+                              below: y0 + rh < h ? px.gray(x0, y0 + rh, rw, 1) : nil)
+        let (model, _) = analyze(px.gray(x0, y0, rw, rh), width: rw, height: rh, gutterOnRight: r.gutterOnRight, outside: outside)
+        return model.map { ((x0, y0, rw, rh), $0) }
     }
 
     /// One page's analysis alone, read from the image as `pages` reads it; for the score.
@@ -89,6 +104,57 @@ enum Flatten {
     /// One page's analysis alone, on its gray pixels; for the score.
     static func report(_ g: [UInt8], width: Int, height: Int, gutterOnRight: Bool?) -> Report {
         analyze(g, width: width, height: height, gutterOnRight: gutterOnRight).1
+    }
+
+    /// The rows just outside a region, above and below, where the image has them. A piece
+    /// of print on the region's edge row is cut by the crop only if ink goes on there.
+    struct Outside {
+        var above: [UInt8]? = nil
+        var below: [UInt8]? = nil
+    }
+
+    /// Which side of a crop the gutter is on: nil for a single page.
+    static func gutterOnRight(_ crop: CropRect, of page: BookPage) -> Bool? {
+        let c = crop.normalized()
+        return page.isSpread ? c.x + c.width / 2 < page.splitX : nil
+    }
+
+    // MARK: Gray canvases (the layers of a layered scan)
+
+    /// The pixels of a region of an 8-bit gray canvas (top-left rows).
+    static func cut(_ g: [UInt8], width w: Int, _ x0: Int, _ y0: Int, _ rw: Int, _ rh: Int) -> [UInt8] {
+        var out = [UInt8](repeating: 255, count: rw * rh)
+        for y in 0..<rh { for x in 0..<rw { out[y * rw + x] = g[(y0 + y) * w + x0 + x] } }
+        return out
+    }
+
+    /// The model for a region of an 8-bit gray canvas, nil when it is left as it is.
+    /// `guardGray`, a canvas of the same size, holds print that must stay in the region too
+    /// (another layer's); the lines are traced on `g` alone.
+    static func model(gray g: [UInt8], width w: Int, height h: Int, region r: (x: Int, y: Int, w: Int, h: Int),
+                      gutterOnRight: Bool?, guardGray: [UInt8]? = nil) -> Model? {
+        guard r.w >= 32, r.h >= 32 else { return nil }
+        let edge = guardGray ?? g
+        let outside = Outside(above: r.y > 0 ? cut(edge, width: w, r.x, r.y - 1, r.w, 1) : nil,
+                              below: r.y + r.h < h ? cut(edge, width: w, r.x, r.y + r.h, r.w, 1) : nil)
+        return analyze(cut(g, width: w, r.x, r.y, r.w, r.h), width: r.w, height: r.h, gutterOnRight: gutterOnRight,
+                       outside: outside, guardGray: guardGray.map { cut($0, width: w, r.x, r.y, r.w, r.h) }).0
+    }
+
+    /// A region of an 8-bit gray canvas warped by `model`: its own r.w × r.h pixels.
+    static func warped(gray g: [UInt8], width w: Int, region r: (x: Int, y: Int, w: Int, h: Int), model: Model) -> [UInt8] {
+        let px = Pixels(gray: cut(g, width: w, r.x, r.y, r.w, r.h), width: r.w, height: r.h)
+        var out = px.data
+        remap(&out, from: px, x0: 0, y0: 0, rw: r.w, rh: r.h, model: model)
+        return out
+    }
+
+    /// `image` (one output page) warped by `model`, made for it or scaled to it (`Model.scaled`).
+    static func apply(_ model: Model, to image: CGImage) -> CGImage? {
+        guard let px = Pixels(image), model.ux.count == image.width else { return nil }
+        var out = px.data
+        remap(&out, from: px, x0: 0, y0: 0, rw: image.width, rh: image.height, model: model)
+        return px.image(out)
     }
 
     // MARK: Model
@@ -118,13 +184,32 @@ enum Flatten {
             for _ in 0..<3 { yo = y - shift(x, yo) }
             return (Double(lo), yo)
         }
+
+        /// The same model for the page drawn `s` times as large, `width` columns wide.
+        func scaled(_ s: Double, width: Int) -> Model {
+            let n = ux.count
+            let u = (0..<max(1, width)).map { x -> Double in
+                let f = min(Double(n - 1), max(0, Double(x) / s))
+                let i = min(max(0, n - 2), Int(f)), t = f - Double(i)
+                let v = n > 1 ? ux[i] * (1 - t) + ux[i + 1] * t : ux.first ?? 0
+                return min(Double(width - 1), max(0, v * s))
+            }
+            return Model(gx: gx.map { $0 * s }, gy: gy.map { $0 * s }, v: v.map { $0 * s }, ux: u)
+        }
     }
 
-    static func analyze(_ g: [UInt8], width w: Int, height h: Int, gutterOnRight: Bool?) -> (Model?, Report) {
+    /// `outside`: the rows beyond the region's top and bottom (of `guardGray` when given).
+    /// `guardGray`: the region in another layer, whose print must stay in it too.
+    static func analyze(_ g: [UInt8], width w: Int, height h: Int, gutterOnRight: Bool?,
+                        outside: Outside = Outside(), guardGray: [UInt8]? = nil) -> (Model?, Report) {
         var rep = Report(outcome: .tooSmall)
-        let bg = background(g, w, h)
-        var ink = [Bool](repeating: false, count: w * h)
-        for i in 0..<(w * h) where bg[i] >= 60 && Int(g[i]) * 255 < 150 * Int(bg[i]) { ink[i] = true }
+        func inkOf(_ g: [UInt8]) -> (ink: [Bool], bg: [UInt8]) {
+            let bg = background(g, w, h)
+            var ink = [Bool](repeating: false, count: w * h)
+            for i in 0..<(w * h) where bg[i] >= 60 && Int(g[i]) * 255 < 150 * Int(bg[i]) { ink[i] = true }
+            return (ink, bg)
+        }
+        let (ink, bg) = inkOf(g)
         let comps = components(ink, w, h)
 
         // x-height: the commonest height of letter-like pieces.
@@ -153,8 +238,9 @@ enum Flatten {
         let letters = comps.filter {
             Double($0.h) >= 0.7 * xh && Double($0.h) <= 2.3 * xh && Double($0.w) >= 0.2 * xh && Double($0.w) <= 4 * xh
         }
-        var traced = textLines(letters, xh: xh)
-        rep.note = "letters \(letters.count) lines \(traced.count)"
+        let gaps = columnGaps(letters, xh: xh, width: w)
+        var traced = textLines(letters, xh: xh, gaps: gaps)
+        rep.note = "letters \(letters.count) lines \(traced.count)" + (gaps.isEmpty ? "" : " columns \(gaps.count + 1)")
         traced = traced.filter { $0.misfit <= 0.12 * xh }
         rep.note += " fit \(traced.count)"
         rep.outcome = .fewLines
@@ -287,22 +373,40 @@ enum Flatten {
         // Print must not leave the region at its top or bottom edge: where the shift there
         // would push ink out, the shift fades to nothing at the edge instead, if it can do
         // so without stretching letters.
-        // Print: pieces from a full stop to a tall capital or a rule; specks, and the shadows
-        // and bed of the gutter (far taller), are not, nor is what the crop already cuts
-        // (the crop keeps print whole, so a piece touching its edge is the bed or a shadow).
-        // A lone speck, no bigger than half an x-height with nothing within two, is dirt:
-        // a full stop or a dot always sits by a letter.
+        // Print: every piece from a full stop up, a drop capital or a rule too, in this layer
+        // and the guarded one; not specks, nor what the crop already cuts: a piece on the
+        // region's edge row with ink beyond it (or the image's edge), such as the bed or a shadow.
+        // A lone speck, no bigger than half an x-height with no other print within two, is
+        // dirt: a full stop or a dot always sits by a letter (not by the bed or a shadow).
+        let (guardComps, guardBg): ([Comp], [UInt8]) = guardGray.map { gg in
+            let (gi, gb) = inkOf(gg)
+            return (components(gi, w, h), gb)
+        } ?? (comps, bg)
+        func cutByCrop(_ c: Comp) -> Bool {
+            func inkBeyond(_ row: [UInt8]?, _ y: Int) -> Bool {
+                guard let row else { return true }
+                for x in max(0, c.x0 - 1)...min(w - 1, c.x0 + c.w) where Int(row[x]) * 255 < 150 * Int(guardBg[y * w + x]) {
+                    return true
+                }
+                return false
+            }
+            return (c.y0 == 0 && inkBeyond(outside.above, 0)) || (c.y0 + c.h == h && inkBeyond(outside.below, h - 1))
+        }
+        let cut = guardComps.map(cutByCrop)
         func lone(_ c: Comp) -> Bool {
             guard Double(c.w) <= 0.5 * xh, Double(c.h) <= 0.5 * xh else { return false }
             let r = 2 * xh
-            return !comps.contains { o in
-                o.x0 != c.x0 || o.y0 != c.y0 ? Double(o.x0) <= Double(c.x0 + c.w) + r && Double(o.x0 + o.w) >= Double(c.x0) - r
-                    && Double(o.y0) <= Double(c.y0 + c.h) + r && Double(o.y0 + o.h) >= Double(c.y0) - r : false
+            return !guardComps.indices.contains { i in
+                let o = guardComps[i]
+                return !cut[i] && (o.x0 != c.x0 || o.y0 != c.y0) && Double(o.x0) <= Double(c.x0 + c.w) + r
+                    && Double(o.x0 + o.w) >= Double(c.x0) - r && Double(o.y0) <= Double(c.y0 + c.h) + r
+                    && Double(o.y0 + o.h) >= Double(c.y0) - r
             }
         }
-        let edgeInk = comps.filter {
-            Double($0.h) >= 0.2 * xh && Double($0.h) <= 4 * xh && $0.n >= 4 && $0.y0 > 0 && $0.y0 + $0.h < h && !lone($0)
-        }
+        let edgeInk = guardComps.indices.filter {
+            let c = guardComps[$0]
+            return Double(c.h) >= 0.2 * xh && c.n >= 4 && !cut[$0] && !lone(c)
+        }.map { guardComps[$0] }
         func pushesInkOut() -> (top: Bool, bottom: Bool) {
             var out = (top: false, bottom: false)
             for c in edgeInk {
@@ -330,7 +434,7 @@ enum Flatten {
         }
 
         // Horizontal: letters narrowed toward the gutter are widened back.
-        let ux = widening(long, comps: comps, xh: xh, lo: lo, hi: hi, width: w,
+        let ux = widening(long, comps: comps, xh: xh, lo: lo, hi: hi, width: w, height: h,
                           gutterOnRight: onRight, report: &rep)
         rep.outcome = .flattened
         let model = Model(gx: gx, gy: gy, v: v, ux: ux)
@@ -341,7 +445,7 @@ enum Flatten {
     /// Per output column, the input column: identity, or a widening of the band by the
     /// gutter where letters are narrower than in the middle of the lines.
     static func widening(_ lines: [Line], comps: [Comp], xh: Double, lo: Double, hi: Double,
-                         width w: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
+                         width w: Int, height: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
         let identity = (0..<w).map(Double.init)
         let span = hi - lo
         let bins = 10
@@ -380,11 +484,12 @@ enum Flatten {
         let margin = gutterOnRight ? Double(w - 1) - hi : lo
         var extra = 0.0
         for k in 0..<Int(3 * binW) { extra += factor(gutterOnRight ? hi - Double(k) : lo + Double(k)) - 1 }
-        // Print in the margin (a folio, a note) is squeezed at most 5%, blank paper 30%.
+        // Print in the margin (a folio, a note) is squeezed at most 5%, blank paper 30%. A
+        // piece running to the region's edge is the bed or the fold's shadow, not print.
         var marginInk = false
-        for c in comps where c.n >= 4 {
+        for c in comps where c.n >= 4 && c.x0 > 0 && c.y0 > 0 && c.x0 + c.w < w && c.y0 + c.h < height {
             let cx0 = Double(c.x0), cx1 = Double(c.x0 + c.w - 1)
-            if gutterOnRight ? cx1 > hi + xh : cx0 < lo - xh { marginInk = true; break }
+            if gutterOnRight ? cx1 > hi + xh : cx0 < lo - xh { marginInk = true; rep.note += " margin ink \(c.x0),\(c.y0)"; break }
         }
         let room = (marginInk ? 0.05 : 0.3) * margin
         guard room >= 1 else { return identity }
@@ -481,8 +586,35 @@ enum Flatten {
         }
     }
 
-    /// Letters chained into lines, each with its traced baseline.
-    static func textLines(_ cs: [Comp], xh: Double) -> [Line] {
+    /// The gaps between columns of text, as column ranges: runs at least an x-height wide that
+    /// under a tenth as many letters cross as cross a usual column of the text, with text on
+    /// both sides that at least half as many cross. A word space is never so for long.
+    static func columnGaps(_ cs: [Comp], xh: Double, width w: Int) -> [ClosedRange<Int>] {
+        guard w > 2 else { return [] }
+        var cover = [Int](repeating: 0, count: w + 1)
+        for c in cs { cover[max(0, c.x0)] += 1; cover[min(w, c.x0 + c.w)] -= 1 }
+        for x in 1...w { cover[x] += cover[x - 1] }
+        cover.removeLast()
+        let used = cover.filter { $0 > 0 }.sorted()
+        guard !used.isEmpty else { return [] }
+        let usual = used[used.count / 2]
+        let low = max(1, usual / 10), high = max(2, usual / 2)
+        // Text on both sides: the first and last columns that many letters cross.
+        guard let first = cover.firstIndex(where: { $0 >= high }), let last = cover.lastIndex(where: { $0 >= high }) else { return [] }
+        var gaps: [ClosedRange<Int>] = []
+        var x = first
+        while x <= last {
+            guard cover[x] <= low else { x += 1; continue }
+            let start = x
+            while x <= last, cover[x] <= low { x += 1 }
+            if Double(x - start) >= xh, x <= last { gaps.append(start...(x - 1)) }
+        }
+        return gaps
+    }
+
+    /// Letters chained into lines, each with its traced baseline. Letters on either side of a
+    /// gap between columns (`columnGaps`) are not chained.
+    static func textLines(_ cs: [Comp], xh: Double, gaps: [ClosedRange<Int>] = []) -> [Line] {
         let n = cs.count
         guard n > 1 else { return [] }
         var parent = Array(0..<n)
@@ -503,6 +635,11 @@ enum Flatten {
                 m += 1
                 let overlap = min(a.y0 + a.h, b.y0 + b.h) - max(a.y0, b.y0)
                 guard 2 * overlap >= min(a.h, b.h), abs(a.bottom - b.bottom) <= 0.6 * xh else { continue }
+                let between = gaps.contains { gap in
+                    let mid = (gap.lowerBound + gap.upperBound) / 2
+                    return min(a.x0 + a.w, b.x0 + b.w) <= mid && max(a.x0, b.x0) >= mid
+                }
+                guard !between else { continue }
                 let ra = find(i), rb = find(j)
                 if ra != rb { parent[max(ra, rb)] = min(ra, rb) }
             }
@@ -724,6 +861,13 @@ enum Flatten {
             }
             guard ok else { return nil }
             data = buf
+        }
+
+        /// 8-bit gray pixels as they are.
+        init(gray: [UInt8], width: Int, height: Int) {
+            self.width = width; self.height = height; bpp = 1
+            space = CGColorSpaceCreateDeviceGray()
+            data = gray
         }
 
         /// Luma of a region, top-left origin.

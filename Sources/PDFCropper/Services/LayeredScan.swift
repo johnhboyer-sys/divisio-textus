@@ -179,7 +179,7 @@ enum LayeredScan {
     }
 
     /// The crop's pixel rectangle in a `width` × `height` image, as `PDFRenderer.crop` cuts it.
-    private static func pixelRect(_ crop: CropRect, width: Int, height: Int) -> (x: Int, y: Int, w: Int, h: Int)? {
+    static func pixelRect(_ crop: CropRect, width: Int, height: Int) -> (x: Int, y: Int, w: Int, h: Int)? {
         let px = crop.normalized().pixelRect(in: CGSize(width: width, height: height)).integral
         let r = px.intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !r.isNull, r.width >= 1, r.height >= 1 else { return nil }
@@ -193,13 +193,14 @@ enum LayeredScan {
     /// half ink. With it, `inkPages`. An entry is nil where the color layer holds a
     /// picture inside that page (see `holdsPicture`): that page keeps the color
     /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
-    /// left gray: a small 1-bit page looks broken, a gray one doesn't.
+    /// left gray: a small 1-bit page looks broken, a gray one doesn't. With `flatten`
+    /// each page's print is flattened (see Flatten), the bend measured on the text layer.
     static func textPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
                           direction: ReadingDirection, previewDPI: Double? = nil,
-                          bothLayers: Bool = false, removeShadows: Bool = false) -> [CGImage?]? {
+                          bothLayers: Bool = false, removeShadows: Bool = false, flatten: Bool = false) -> [CGImage?]? {
         if bothLayers {
             return inkPages(of: page, pdfPage, layers: layers, direction: direction, previewDPI: previewDPI,
-                            removeShadows: removeShadows)
+                            removeShadows: removeShadows, flatten: flatten)
         }
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
@@ -211,11 +212,14 @@ enum LayeredScan {
         for (k, crop) in crops.enumerated() {
             guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
             if marked[k] { out.append(nil); continue }
+            let flat = flattenModel(flatten, crop, page, canvas, r).map {
+                Flatten.warped(gray: canvas.pixels, width: canvas.width, region: r, model: $0)
+            }
             var bits = [UInt8](repeating: 0, count: r.w * r.h)
             for y in 0..<r.h {
                 let row = (r.y + y) * canvas.width + r.x
                 for x in 0..<r.w {
-                    let v = canvas.pixels[row + x]
+                    let v = flat?[y * r.w + x] ?? canvas.pixels[row + x]
                     bits[y * r.w + x] = previewDPI != nil ? v : v < 128 ? 0 : 255
                 }
             }
@@ -241,10 +245,11 @@ enum LayeredScan {
     /// picture inside that page (see `holdsPicture`): that page keeps the color
     /// export. nil if a crop fails. With `previewDPI` the pages are drawn small and
     /// their ink left gray: a small 1-bit page looks broken, a gray one doesn't.
-    /// `removeShadows` as for `BlackAndWhite.ink`.
+    /// `removeShadows` as for `BlackAndWhite.ink`. With `flatten` both layers take the
+    /// same warp, measured on the text layer, so they stay in register.
     static func inkPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
                          direction: ReadingDirection, previewDPI: Double? = nil,
-                         removeShadows: Bool = false) -> [CGImage?]? {
+                         removeShadows: Bool = false, flatten: Bool = false) -> [CGImage?]? {
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
@@ -261,13 +266,16 @@ enum LayeredScan {
         for (k, crop) in crops.enumerated() {
             guard let r = pixelRect(crop, width: text.width, height: text.height) else { return nil }
             if marked[k] { out.append(nil); continue }
+            let model = flattenModel(flatten, crop, page, text, r, guardGray: both.pixels)
+            let flatText = model.map { Flatten.warped(gray: text.pixels, width: text.width, region: r, model: $0) }
+            let flatBoth = model.map { Flatten.warped(gray: both.pixels, width: both.width, region: r, model: $0) }
             var gray = [UInt8](repeating: 255, count: r.w * r.h)
             var sharp = [Bool](repeating: false, count: r.w * r.h)
             for y in 0..<r.h {
                 let row = (r.y + y) * text.width + r.x
                 for x in 0..<r.w {
-                    gray[y * r.w + x] = both.pixels[row + x]
-                    sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
+                    gray[y * r.w + x] = flatBoth?[y * r.w + x] ?? both.pixels[row + x]
+                    sharp[y * r.w + x] = (flatText?[y * r.w + x] ?? text.pixels[row + x]) < (previewDPI != nil ? 192 : 128)
                 }
             }
             let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
@@ -276,6 +284,15 @@ enum LayeredScan {
             out.append(image)
         }
         return out
+    }
+
+    /// The flatten model for one crop of a straightened text layer (see Flatten), when asked.
+    static func flattenModel(_ flatten: Bool, _ crop: CropRect, _ page: BookPage,
+                             _ text: (pixels: [UInt8], width: Int, height: Int), _ r: (x: Int, y: Int, w: Int, h: Int),
+                             guardGray: [UInt8]? = nil) -> Flatten.Model? {
+        guard flatten else { return nil }
+        return Flatten.model(gray: text.pixels, width: text.width, height: text.height, region: r,
+                             gutterOnRight: Flatten.gutterOnRight(crop, of: page), guardGray: guardGray)
     }
 
     /// The resolution text pages are made at: the text layer's own, within the

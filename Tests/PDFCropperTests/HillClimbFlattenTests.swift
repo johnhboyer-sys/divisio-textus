@@ -61,8 +61,8 @@ struct HillClimbFlattenTests {
         for (k, page) in m.pages.enumerated() where k % step == 0 {
             if let wanted, !wanted.contains(page.sourceIndex + 1) { continue }
             guard let pdfPage = doc.page(at: page.sourceIndex) else { continue }
-            // Layered scans are not flattened by the export; the score still measures the
-            // method on them (as a plain render) when asked.
+            // Layered scans are flattened by the export on their text layer (scored in
+            // HillClimbFlattenLayered); this score measures the method on them as a plain render.
             if LayeredScan.layers(of: pdfPage) != nil { layered += 1; if !includeLayered { continue } }
             seen += 1
             autoreleasepool {
