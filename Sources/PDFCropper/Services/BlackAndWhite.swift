@@ -34,8 +34,6 @@ enum BlackAndWhite {
         guard w > 0, h > 0, gray.count == w * h else { return gray }
         let paper = given ?? background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
-        let blur = boxBlur(gray, w, h, radius: Int((0.008 * dpi).rounded()))
-        let around = boxBlur(gray, w, h, radius: Int((0.05 * dpi).rounded()))
         let sharpCut = preview ? 192 : 128
         func isSharp(_ i: Int) -> Bool { sharp?[i] ?? (Int(gray[i]) < sharpCut) }
         var out = [UInt8](repeating: 255, count: w * h)
@@ -43,18 +41,38 @@ enum BlackAndWhite {
         // margin are ink wherever they are.
         var pending = [Bool](repeating: false, count: w * h)
         var toneInk = [Bool](repeating: false, count: w * h)
-        for i in 0..<(w * h) {
-            let b = Int(paper[i])
-            let sharpInk = isSharp(i)
-            if sharpInk, b >= clean {
-                out[i] = 0
-            } else if tone, sharp.map({ !$0[i] }) ?? true, Int(gray[i]) < b - max(20, b * 12 / 100) {
-                out[i] = 0
-                toneInk[i] = sharp != nil
-            } else if sharpInk {
-                pending[i] = true
+        out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
+        toneInk.withUnsafeMutableBufferPointer { toneInk in
+        paper.withUnsafeBufferPointer { paper in gray.withUnsafeBufferPointer { gray in
+            if let sharp {
+                sharp.withUnsafeBufferPointer { sharp in
+                    for i in 0..<(w * h) {
+                        let b = Int(paper[i])
+                        let sharpInk = sharp[i]
+                        if sharpInk, b >= clean {
+                            out[i] = 0
+                        } else if tone, !sharpInk, Int(gray[i]) < b - max(20, b * 12 / 100) {
+                            out[i] = 0
+                            toneInk[i] = true
+                        } else if sharpInk {
+                            pending[i] = true
+                        }
+                    }
+                }
+            } else {
+                for i in 0..<(w * h) {
+                    let b = Int(paper[i])
+                    let sharpInk = Int(gray[i]) < sharpCut
+                    if sharpInk, b >= clean {
+                        out[i] = 0
+                    } else if tone, Int(gray[i]) < b - max(20, b * 12 / 100) {
+                        out[i] = 0
+                    } else if sharpInk {
+                        pending[i] = true
+                    }
+                }
             }
-        }
+        }}}}}
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
         let cleared = bands(out.indices.map { out[$0] == 0 || pending[$0] }, w, h, dpi: dpi)
@@ -70,27 +88,37 @@ enum BlackAndWhite {
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
         var failed: [[Int]] = []
-        for start in 0..<(w * h) where pending[start] && !seen[start] {
-            seen[start] = true
-            stack = [start]; group = []
-            var sumBlur = 0, sumAround = 0
-            while let k = stack.popLast() {
-                group.append(k)
-                sumBlur += Int(blur[k]); sumAround += Int(around[k])
-                let x = k % w, y = k / w
-                for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) where sharpPx[ny * w + nx] && !seen[ny * w + nx] {
-                        seen[ny * w + nx] = true
-                        stack.append(ny * w + nx)
+        // The blurs serve this test alone: none are made for a page without such ink.
+        if pending.contains(true) {
+            let blur = boxBlur(gray, w, h, radius: Int((0.008 * dpi).rounded()))
+            let around = boxBlur(gray, w, h, radius: Int((0.05 * dpi).rounded()))
+            blur.withUnsafeBufferPointer { blur in around.withUnsafeBufferPointer { around in
+            sharpPx.withUnsafeBufferPointer { sharpPx in seen.withUnsafeMutableBufferPointer { seen in
+            pending.withUnsafeBufferPointer { pending in out.withUnsafeMutableBufferPointer { out in
+                for start in 0..<(w * h) where pending[start] && !seen[start] {
+                    seen[start] = true
+                    stack.removeAll(keepingCapacity: true); stack.append(start)
+                    group.removeAll(keepingCapacity: true)
+                    var sumBlur = 0, sumAround = 0
+                    while let k = stack.popLast() {
+                        group.append(k)
+                        sumBlur += Int(blur[k]); sumAround += Int(around[k])
+                        let x = k % w, y = k / w
+                        for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                            for nx in max(0, x - 1)...min(w - 1, x + 1) where sharpPx[ny * w + nx] && !seen[ny * w + nx] {
+                                seen[ny * w + nx] = true
+                                stack.append(ny * w + nx)
+                            }
+                        }
+                    }
+                    let mb = sumBlur / group.count, ma = sumAround / group.count
+                    if group.count >= minGlyph, mb < ma - max(20, ma / 6) {
+                        for k in group where pending[k] { out[k] = 0 }
+                    } else if sharp != nil {
+                        failed.append(group)
                     }
                 }
-            }
-            let mb = sumBlur / group.count, ma = sumAround / group.count
-            if group.count >= minGlyph, mb < ma - max(20, ma / 6) {
-                for k in group where pending[k] { out[k] = 0 }
-            } else if sharp != nil {
-                failed.append(group)
-            }
+            }}}}}}
         }
         // A layered scan's text layer is the publisher's own ink: a piece of it too
         // small or faint for the test above (a letter's hairline broken off) stays when
@@ -171,28 +199,35 @@ enum BlackAndWhite {
         let beside = boxBlur(sharpMap, w, h, radius: 2 * r)
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
-        for start in 0..<(w * h) where toneInk[start] && !seen[start] {
-            seen[start] = true
-            stack = [start]; group = []
-            var reaches = false, bordersPaper = false
-            var besides = 0, sum = 0
-            while let k = stack.popLast() {
-                group.append(k)
-                if near[k] == 255 { reaches = true }
-                if beside[k] < 255 { besides += 1 }
-                sum += Int(gray[k])
-                let x = k % w, y = k / w
-                for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) {
-                        let n = ny * w + nx
-                        if toneInk[n] { if !seen[n] { seen[n] = true; stack.append(n) } }
-                        else if !sharp[n] { bordersPaper = true }
+        toneInk.withUnsafeBufferPointer { toneInk in sharp.withUnsafeBufferPointer { sharp in
+        gray.withUnsafeBufferPointer { gray in near.withUnsafeBufferPointer { near in
+        beside.withUnsafeBufferPointer { beside in seen.withUnsafeMutableBufferPointer { seen in
+        out.withUnsafeMutableBufferPointer { out in
+            for start in 0..<(w * h) where toneInk[start] && !seen[start] {
+                seen[start] = true
+                stack.removeAll(keepingCapacity: true); stack.append(start)
+                group.removeAll(keepingCapacity: true)
+                var reaches = false, bordersPaper = false
+                var besides = 0, sum = 0
+                while let k = stack.popLast() {
+                    group.append(k)
+                    if near[k] == 255 { reaches = true }
+                    if beside[k] < 255 { besides += 1 }
+                    sum += Int(gray[k])
+                    let x = k % w, y = k / w
+                    for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                        for nx in max(0, x - 1)...min(w - 1, x + 1) {
+                            let n = ny * w + nx
+                            if toneInk[n] { if !seen[n] { seen[n] = true; stack.append(n) } }
+                            else if !sharp[n] { bordersPaper = true }
+                        }
                     }
                 }
+                let smudge = besides * 4 >= group.count * 3 && sum > 160 * group.count
+                if (!reaches && bordersPaper) || smudge || group.count < minGlyph { for k in group { out[k] = 255 } }
             }
-            let smudge = besides * 4 >= group.count * 3 && sum > 160 * group.count
-            if (!reaches && bordersPaper) || smudge || group.count < minGlyph { for k in group { out[k] = 255 } }
         }
+        }}}}}}
     }
 
     /// Lines and smudges along the page's sides that are not print: the edges of
