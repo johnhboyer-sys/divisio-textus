@@ -3,6 +3,7 @@ import Foundation
 import AppKit
 import PDFKit
 import CoreText
+import CryptoKit
 @testable import PDFCropper
 
 /// Grok's static review of 5f3bec5 (Black and white export, and Remove shadows), each
@@ -1022,6 +1023,50 @@ struct GrokReproCorpus {
                 HillClimb.png(image, to: Self.out.appendingPathComponent("\(f[0])-100pct.png"))
             }
             print("GROKC show \(f[0]) pages=\(count) dpi=\(HillClimb.r(dpi, 1)) layered=\(LayeredScan.layers(of: src) != nil)")
+        }
+    }
+}
+
+/// GROK_OFFHASH=Book,Book (with HILLCLIMB_DIR): each book Auto-detected and exported whole in
+/// Color, Grayscale and Black and white without Remove shadows; prints a SHA-256 of every
+/// page's image data per mode, to compare two builds (the options off must not change).
+@Suite("Grok off-mode hashes", .serialized,
+       .enabled(if: ProcessInfo.processInfo.environment["GROK_OFFHASH"] != nil
+                    && ProcessInfo.processInfo.environment["HILLCLIMB_DIR"] != nil))
+@MainActor
+struct GrokOffHashes {
+    @Test("Hash the off modes")
+    func hashes() async throws {
+        for name in ProcessInfo.processInfo.environment["GROK_OFFHASH"]!.split(separator: ",").map(String.init) {
+            guard let url = HillClimb.bookURLs().first(where: { HillClimb.shortName($0) == name }) else { continue }
+            let m = HillClimb.makeModel()
+            await HillClimb.load(url, into: m)
+            let doc = try #require(AppModel.reopen(url, password: nil))
+            for (label, mode) in [("color", EnhanceMode.color), ("gray", .grayscale), ("bw", .blackAndWhite)] {
+                var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false, enhanceMode: mode)
+                settings.matchScanResolution = m.matchScanResolution
+                let out = HillClimb.scratch.appendingPathComponent("offhash-\(name)-\(label).pdf")
+                _ = try PDFExporter.export(pages: m.pages, from: doc, to: out, settings: settings)
+                let made = try #require(CGPDFDocument(out as CFURL))
+                var hasher = SHA256()
+                for k in 1...max(1, made.numberOfPages) {
+                    guard let p = made.page(at: k), let dict = p.dictionary else { continue }
+                    var res: CGPDFDictionaryRef?, xo: CGPDFDictionaryRef?
+                    guard CGPDFDictionaryGetDictionary(dict, "Resources", &res), let res,
+                          CGPDFDictionaryGetDictionary(res, "XObject", &xo), let xo else { continue }
+                    var datas: [Data] = []
+                    CGPDFDictionaryApplyBlock(xo, { _, object, _ in
+                        var stream: CGPDFStreamRef?
+                        var format = CGPDFDataFormat.raw
+                        if CGPDFObjectGetValue(object, .stream, &stream), let stream,
+                           let data = CGPDFStreamCopyData(stream, &format) { datas.append(data as Data) }
+                        return true
+                    }, nil)
+                    for d in datas.sorted(by: { $0.count < $1.count }) { hasher.update(data: d) }
+                }
+                let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                print("GROKHASH \(name) \(label) pages=\(made.numberOfPages) \(digest)")
+            }
         }
     }
 }
