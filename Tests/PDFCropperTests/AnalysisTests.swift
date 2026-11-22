@@ -415,6 +415,24 @@ struct AnalysisTests {
         #expect(abs(r.splitX * 800 - 400) <= 4, "split \(r.splitX * 800) px")
     }
 
+    /// A book bound tight, its right page a list with a solid round bullet at
+    /// each line: the bullets are print, lined up with the text, no binding's
+    /// holes, and the split stays off them (Codex review of hc2).
+    @Test("A column of solid bullets beside a tight gutter is no binding: the split misses them (hill climb 2, review)")
+    func bulletsAreNoBinding() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 30, to: 530, by: 18) {
+                box(40, y, 350, 7)                                                                       // left text, to x389
+                box(408, y + 1, 4, 4)                                                                    // a bullet, x408-411
+                box(430, y, 330, 7)                                                                      // the list's text
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 < 407 || r.splitX * 800 > 413, "split \(r.splitX * 800) px")
+    }
+
     /// A contents page's column of page numbers, one under the next, evenly
     /// spaced (Wallace 1992 p4): print, thin strokes, not a binding's holes.
     @Test("A column of page numbers by the gutter is no binding: the split stays beside it (hill climb 2)")

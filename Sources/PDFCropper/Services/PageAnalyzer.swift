@@ -381,15 +381,19 @@ enum PageAnalyzer {
         // uneven). The fold hides among them, and facing pages' inner margins
         // match, so it lies midway between the two pages' text: the gaps on
         // either side of the band are one, its middle the fold, if that middle
-        // is clear of print and there is text beyond both.
-        func binding(_ xs: Range<Int>) -> Bool {
-            guard !xs.isEmpty, xs.count <= max(2, rw / 25) else { return false }
+        // is clear of print and there is text beyond both. The middle may fall
+        // among the marks only if they are clearly bigger than the text's
+        // x-height (taken as half its lines' height): a column of bullets is
+        // print-sized and, unlike holes, must not be split.
+        // Returns the marks' usual height, or nil for no binding.
+        func binding(_ xs: Range<Int>) -> Int? {
+            guard !xs.isEmpty, xs.count <= max(2, rw / 25) else { return nil }
             var marks: [(top: Int, length: Int)] = [], run = 0
             for y in y0...y1 {
                 if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
                 else if run > 0 { marks.append((y - run, run)); run = 0 }
             }
-            guard marks.count >= 10 else { return false }
+            guard marks.count >= 10 else { return nil }
             // Each mark solid (a tooth, a hole; digits fill far less of their
             // box), and none wider than the rest (a folio against a hole).
             var widths: [Int] = [], solid = 0
@@ -408,8 +412,19 @@ enum PageAnalyzer {
             let alike = marks.filter { 2 * $0.length >= length && $0.length <= 2 * length }.count
             let even = pitches.filter { 4 * abs($0 - pitch) <= pitch }.count
             let reach = marks[marks.count - 1].top + marks[marks.count - 1].length - marks[0].top
-            return 10 * alike >= 9 * marks.count && 10 * even >= 8 * pitches.count && 10 * reach >= 8 * (y1 - y0)
+            let found = 10 * alike >= 9 * marks.count && 10 * even >= 8 * pitches.count && 10 * reach >= 8 * (y1 - y0)
                 && 10 * solid >= 9 * marks.count && widths.allSatisfy { 2 * $0 <= 3 * width }
+            return found ? length : nil
+        }
+        // The usual height of the lines of print in columns xs.
+        func lineHeight(_ xs: Range<Int>) -> Int? {
+            guard !xs.isEmpty else { return nil }
+            var lines: [Int] = [], run = 0
+            for y in y0...y1 {
+                if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
+                else if run > 0 { lines.append(run); run = 0 }
+            }
+            return lines.isEmpty ? nil : lines.sorted()[lines.count / 2]
         }
         var gaps: [(start: Int, length: Int, fold: Int?)] = []
         var k = 0
@@ -421,7 +436,8 @@ enum PageAnalyzer {
                 gaps.append((runs[k].start, runs[k + 1].start + runs[k + 1].length - runs[k].start, x))
                 k += 2
             } else if links.indices.contains(k), links[k] == nil, runs[k].start > lo, runs[k].start + span < hi,
-                      binding(band), band.contains(runs[k].start + span / 2) || isEmpty(runs[k].start + span / 2) {
+                      let holes = binding(band), isEmpty(runs[k].start + span / 2) || (band.contains(runs[k].start + span / 2)
+                        && lineHeight((runs[k].start + span)..<min(g.width, runs[k].start + span + rw / 20)).map { 4 * holes >= 3 * $0 } == true) {
                 gaps.append((runs[k].start, span, runs[k].start + span / 2))
                 k += 2
             } else {
