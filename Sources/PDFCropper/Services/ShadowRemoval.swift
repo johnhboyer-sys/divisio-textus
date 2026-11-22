@@ -305,8 +305,8 @@ enum ShadowRemoval {
     /// one to four times the middle gap, give or take a fifth of a pitch each: teeth
     /// may be missed), spanning 1.5 inch or more (not a dark corner's or a shadow's
     /// speckle), and, given the page's ink, beside its text block (`textLines`). Once
-    /// found, blocks under 75% of the paper in that column count too:
-    /// paler teeth on the pitch, and the paler ends of the dark ones. A tooth's zone is its box
+    /// found, blocks under 75% of the paper in that column on the pitch count too, as
+    /// paler teeth: their zones are kept, but only the dark teeth's bodies are the core. A tooth's zone is its box
     /// grown by 0.03 inch, and by 0.12 inch toward the page's middle, where a comb's
     /// loops show through its holes; so are the gaps between teeth from their inner
     /// ends out to the side, where the comb's back shows.
@@ -425,22 +425,12 @@ enum ShadowRemoval {
             // the series' pitch.
             let colMin = best.map(\.minX).min()!, colMax = best.map(\.maxX).max()!
             let paler = blocks(75)
-            // A tooth's paler end, past its dark part (curling up to 0.06 inch past its
-            // rows, and reaching up to 0.15 inch past it toward the page), is the tooth too.
-            var ends: [Blob] = []
-            for b in paler.blobs where b.maxX >= colMin && b.minX <= colMax && b.height * 2 >= mid && b.height <= 2 * mid {
-                if let d = best.first(where: { $0.maxY >= b.minY && $0.minY <= b.maxY }) {
-                    if b.minY >= d.minY - 2 * grow, b.maxY <= d.maxY + 2 * grow,
-                       right ? b.minX >= d.minX - inward - grow : b.maxX <= d.maxX + inward + grow { ends.append(b) }
-                } else {
-                    let r = Double(b.minY - best[best.count / 2].minY) / Double(pitch)
-                    if b.width * 2 >= midW, b.width <= 2 * midW, abs(r - r.rounded()) <= 0.2 { teeth.append((b, paler.opened)) }
-                }
-            }
-            for b in ends {
-                for y in b.minY...b.maxY {
-                    for x in b.minX...b.maxX where paler.opened[y * strip + x] == 0 { core[y * w + x0 + x] = true }
-                }
+            // Only their dark bodies are the core, erased without a test; what lies about
+            // them, paler teeth and curled ends too, is judged by `clearTeeth`'s print test.
+            for b in paler.blobs where b.maxX >= colMin && b.minX <= colMax && b.height * 2 >= mid && b.height <= 2 * mid
+                && !best.contains(where: { $0.maxY >= b.minY && $0.minY <= b.maxY }) {
+                let r = Double(b.minY - best[best.count / 2].minY) / Double(pitch)
+                if b.width * 2 >= midW, b.width <= 2 * midW, abs(r - r.rounded()) <= 0.2 { teeth.append((b, paler.opened)) }
             }
             teeth.sort { $0.0.minY < $1.0.minY }
             // The gaps between the teeth, from their inner ends out to the side, and half
@@ -453,8 +443,10 @@ enum ShadowRemoval {
                 var page = b
                 page.minX += x0; page.maxX += x0
                 boxes.append(page)
-                for y in b.minY...b.maxY {
-                    for x in b.minX...b.maxX where opened[y * strip + x] == 0 { core[y * w + x0 + x] = true }
+                if best.contains(where: { $0.minY == b.minY && $0.minX == b.minX && $0.count == b.count }) {
+                    for y in b.minY...b.maxY {
+                        for x in b.minX...b.maxX where opened[y * strip + x] == 0 { core[y * w + x0 + x] = true }
+                    }
                 }
                 let zx0 = right ? b.minX - inward : b.minX - grow, zx1 = right ? b.maxX + grow : b.maxX + inward
                 for y in max(0, b.minY - grow)...min(h - 1, b.maxY + grow) {
@@ -473,9 +465,9 @@ enum ShadowRemoval {
     /// gray in `gray` more than a quarter of the way from the print's to `paper`): the
     /// loops and shading round a comb's teeth, which the scan turns to pale clumps. So does
     /// a pale mark touching a tooth (within 3 px) and lying in its zone. Nothing that
-    /// looks like print goes (a stroke and print's darkness, or, however pale, a solid
-    /// rule-shaped mark with a straight run 0.06 inch long); a tooth's ends go as part of the tooth (see
-    /// `teeth`). A letter or folio touching a tooth keeps all of it off the tooth; a
+    /// looks like print goes (a stroke and print's darkness, or, however pale, a straight
+    /// run 0.06 inch long in solid strokes: a gray rule or a faded glyph); only the dark
+    /// teeth's bodies go untested (see `teeth`). A letter or folio touching a tooth keeps all of it off the tooth; a
     /// dark speck touching one is left to `clearSides` (losing print is worse than a speck).
     /// Returns the print it judged there (marks reaching into a zone with a stroke, as
     /// dark as print, but for thin upright lines), for `clearSides` to keep: a rule or
@@ -503,12 +495,16 @@ enum ShadowRemoval {
             var sum = 0
             _ = cc.count(k, where: { sum += Int(gray[$0]); return true })
             let paler = Double(sum) > pale * Double(b.count)
-            // Print: as dark as the page's print with a stroke in it; or, paler, a gray rule:
-            // three times as long as it is thick, solid (half its box or more, not a loop's
-            // speckle), with a straight run 0.06 inch long. Nothing that looks like print goes.
+            // Print: as dark as the page's print with a stroke in it; or, paler (faded print),
+            // a straight run 0.06 inch long in solid strokes: a gray rule (three times as
+            // long as thick, half its box or more) or a faded glyph (three fifths of its box
+            // or more, not a loop's speckle, but not a solid block, as a pale tooth or a
+            // tooth's end is: under 85%). Nothing that looks like print goes.
             let isPrint = cc.hasStroke(k, run, in: out) && !paler
-            let ruleLike = 3 * min(b.width, b.height) <= max(b.width, b.height) && b.count * 2 >= b.width * b.height
-            let looksPrint = isPrint || (ruleLike && cc.hasStroke(k, 2 * grow, in: out))
+            let box = b.width * b.height
+            let ruleLike = 3 * min(b.width, b.height) <= max(b.width, b.height) && b.count * 2 >= box
+            let stroked = b.count * 5 >= box * 3 && b.count * 20 < box * 17
+            let looksPrint = isPrint || ((ruleLike || stroked) && cc.hasStroke(k, 2 * grow, in: out))
             if cc.count(k, where: { nearTooth[$0] == 0 }) > 0 {
                 // Touching a tooth: its loop if pale, lying in its zone and no print; else left
                 // to the side rule, never kept for it (a tooth's trimmed rim is dark and
