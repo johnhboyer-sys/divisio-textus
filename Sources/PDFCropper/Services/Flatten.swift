@@ -241,9 +241,9 @@ enum Flatten {
         for j in gy.indices {
             for k in gx.indices {
                 var s = 0.0, n = 0.0
-                for dk in -2...2 {
+                for dk in -1...1 {
                     let kk = min(max(k + dk, 0), nc - 1)
-                    let wt = Double(3 - abs(dk))
+                    let wt = Double(2 - abs(dk))
                     s += wt * v[j * nc + kk]; n += wt
                 }
                 smooth[j * nc + k] = s / n
@@ -522,13 +522,13 @@ enum Flatten {
             guard px.count >= 8, let a = px.first, let b = px.last, b - a >= 8 * xh else { continue }
             let segments = min(40, max(2, Int(((b - a) / (4 * xh)).rounded())))
             let knots = (0...segments).map { a + (b - a) * Double($0) / Double(segments) }
-            guard var coef = penalizedFit(px, py, knots: knots, lambda: 20) else { continue }
+            guard var coef = penalizedFit(px, py, knots: knots, lambda: 8) else { continue }
             var line = Line(letters: g, knots: knots, coef: coef, a: a, b: b, misfit: 0)
             // One robust pass.
             let res = zip(px, py).map { abs($1 - line.at($0)) }
             let keep = res.indices.filter { res[$0] <= max(1.5, 0.1 * xh) }
             if keep.count < px.count, keep.count >= 8,
-               let c2 = penalizedFit(keep.map { px[$0] }, keep.map { py[$0] }, knots: knots, lambda: 20) {
+               let c2 = penalizedFit(keep.map { px[$0] }, keep.map { py[$0] }, knots: knots, lambda: 8) {
                 coef = c2
                 line.coef = c2
             }
