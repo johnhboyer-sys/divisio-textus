@@ -243,6 +243,15 @@ struct BWCombTests {
         }
     }
 
+    @Test("Numbers hanging at x 20, text from x 100, are no teeth")
+    func hangingNumbersStay() throws {
+        // A digit (an 8 drawn as a box with a bar, 3-px strokes) and its full stop.
+        try listStays { y in
+            Self.box(20, y - 1, 14, 3) + Self.box(20, y + 9, 14, 3) + Self.box(20, y + 18, 14, 3)
+                + Self.box(20, y - 1, 3, 22) + Self.box(31, y - 1, 3, 22) + Self.box(38, y + 17, 4, 4)
+        }
+    }
+
     // MARK: Print beside a tooth
 
     @Test("A folio 1 with a short rule below it stays")
