@@ -257,12 +257,20 @@ enum Flatten {
         if rep.misfit > maxMisfit * xh || rep.misfit > maxMisfitShare * rep.droop {
             rep.outcome = .unsure; rep.note = "misfit"; return (nil, rep)
         }
+        // Grid cells holding ink: only there does a stretch show (blank paper may stretch).
+        var inked = [Bool](repeating: false, count: gy.count * nc)
+        for c in comps where c.n >= 4 {
+            let k0 = max(0, Int(Double(c.x0) / step)), k1 = min(nc - 1, Int(Double(c.x0 + c.w) / step) + 1)
+            let j0 = max(0, Int(Double(c.y0) / step)), j1 = min(gy.count - 1, Int(Double(c.y0 + c.h) / step) + 1)
+            guard k0 <= k1, j0 <= j1 else { continue }
+            for j in j0...j1 { for k in k0...k1 { inked[j * nc + k] = true } }
+        }
         func steepest(_ v: [Double]) -> (slope: Double, x: Double, y: Double) {
             var worst = (0.0, 0.0, 0.0)
             for j in 1..<gy.count {
                 let dy = gy[j] - gy[j - 1]
                 guard dy > 0 else { continue }
-                for k in gx.indices {
+                for k in gx.indices where inked[j * nc + k] || inked[(j - 1) * nc + k] {
                     let s = abs(v[j * nc + k] - v[(j - 1) * nc + k]) / dy
                     if s > worst.0 { worst = (s, gx[k], gy[j]) }
                 }
@@ -280,24 +288,37 @@ enum Flatten {
         // Print: pieces from a full stop to a tall capital or a rule; specks, and the shadows
         // and bed of the gutter (far taller), are not, nor is what the crop already cuts
         // (the crop keeps print whole, so a piece touching its edge is the bed or a shadow).
-        let edgeInk = comps.filter {
-            Double($0.h) >= 0.2 * xh && Double($0.h) <= 4 * xh && $0.n >= 4 && $0.y0 > 0 && $0.y0 + $0.h < h
+        // A lone speck, no bigger than half an x-height with nothing within two, is dirt:
+        // a full stop or a dot always sits by a letter.
+        func lone(_ c: Comp) -> Bool {
+            guard Double(c.w) <= 0.5 * xh, Double(c.h) <= 0.5 * xh else { return false }
+            let r = 2 * xh
+            return !comps.contains { o in
+                o.x0 != c.x0 || o.y0 != c.y0 ? Double(o.x0) <= Double(c.x0 + c.w) + r && Double(o.x0 + o.w) >= Double(c.x0) - r
+                    && Double(o.y0) <= Double(c.y0 + c.h) + r && Double(o.y0 + o.h) >= Double(c.y0) - r : false
+            }
         }
-        func pushesInkOut() -> Bool {
+        let edgeInk = comps.filter {
+            Double($0.h) >= 0.2 * xh && Double($0.h) <= 4 * xh && $0.n >= 4 && $0.y0 > 0 && $0.y0 + $0.h < h && !lone($0)
+        }
+        func pushesInkOut() -> (top: Bool, bottom: Bool) {
+            var out = (top: false, bottom: false)
             for c in edgeInk {
                 for (k, x) in gx.enumerated() where Double(c.x0) <= x + step && Double(c.x0 + c.w) >= x - step {
                     let top = v[k], bottom = v[(gy.count - 1) * nc + k]
-                    if (top > 0 && Double(c.y0) < top + 1) || (bottom < 0 && Double(c.y0 + c.h - 1) > Double(h - 1) + bottom - 1) {
-                        rep.note = "ink \(c.x0),\(c.y0) \(c.w)x\(c.h); "
-                        return true
+                    if top > 0 && Double(c.y0) < top + 1 { if !out.top { rep.note += "ink \(c.x0),\(c.y0) \(c.w)x\(c.h); " }; out.top = true }
+                    if bottom < 0 && Double(c.y0 + c.h - 1) > Double(h - 1) + bottom - 1 {
+                        if !out.bottom { rep.note += "ink \(c.x0),\(c.y0) \(c.w)x\(c.h); " }; out.bottom = true
                     }
                 }
             }
-            return false
+            return out
         }
-        if pushesInkOut() {
+        let pushed = pushesInkOut()
+        if pushed.top || pushed.bottom {
             for (j, y) in gy.enumerated() {
-                let fade = y < yA ? y / max(1, yA) : y > yB ? (Double(h - 1) - y) / max(1, Double(h - 1) - yB) : 1
+                let fade = pushed.top && y < yA ? y / max(1, yA)
+                    : pushed.bottom && y > yB ? (Double(h - 1) - y) / max(1, Double(h - 1) - yB) : 1
                 for k in gx.indices { v[j * nc + k] *= fade }
             }
             let sf = steepest(v)
