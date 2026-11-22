@@ -333,8 +333,23 @@ enum BlackAndWhite {
     /// against the page's own paper, its lightest twentieth (a shadow or a dark
     /// board can cover most of a page), so tinted paper counts as clean.
     static func cleanLevel(_ paper: [UInt8]) -> Int {
+        // Counted in four tallies, a pixel to each in turn, then added: paper is mostly
+        // one gray, and four tallies don't each wait on the last pixel's count.
         var counts = [Int](repeating: 0, count: 256)
-        counts.withUnsafeMutableBufferPointer { c in paper.withUnsafeBufferPointer { p in for v in p { c[Int(v)] += 1 } } }
+        var tallies = [Int](repeating: 0, count: 4 * 256)
+        tallies.withUnsafeMutableBufferPointer { c in
+            paper.withUnsafeBufferPointer { p in
+                let n = p.count, whole = n & ~3
+                var i = 0
+                while i < whole {
+                    c[Int(p[i])] += 1; c[256 + Int(p[i + 1])] += 1
+                    c[512 + Int(p[i + 2])] += 1; c[768 + Int(p[i + 3])] += 1
+                    i += 4
+                }
+                while i < n { c[Int(p[i])] += 1; i += 1 }
+            }
+        }
+        for v in 0..<256 { counts[v] = tallies[v] + tallies[256 + v] + tallies[512 + v] + tallies[768 + v] }
         var seen = 0, level = 255
         for v in 0..<256 {
             seen += counts[v]
