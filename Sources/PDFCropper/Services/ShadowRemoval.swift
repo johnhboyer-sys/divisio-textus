@@ -182,7 +182,7 @@ enum ShadowRemoval {
             guard let keep else { return false }
             return m.blobs.contains { b in cc.count(b, where: { keep[$0] }) > 0 }
         }
-        let list = Array(marks.values)
+        let list = marks.keys.sorted().map { marks[$0]! }   // in a fixed order: the keep loops below read earlier verdicts
         let shaped = list.map(glyphShaped)
         // Marks by place, for the crowd test.
         let cell = max(1, Int((2 * t).rounded()))
