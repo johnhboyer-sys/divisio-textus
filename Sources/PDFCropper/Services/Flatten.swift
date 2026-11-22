@@ -348,8 +348,9 @@ enum Flatten {
         // Print: every piece from a full stop up, a drop capital or a rule too, in this layer
         // and the guarded one; not specks, nor what the crop already cuts: a piece on the
         // region's edge row with ink beyond it, such as the bed or a shadow. On the image's
-        // own edge nothing is beyond: there a piece wider than tall is a band or wedge along
-        // the edge (the bed, the page's edge, a shadow) and is cut; a folio or capital is print.
+        // own edge nothing is beyond: there a piece wider than tall, or running to the region's
+        // side edge, is a band or wedge (the bed, the page's edge, a shadow) and is cut; a folio
+        // or capital is print.
         // A lone speck, no bigger than half an x-height with no other print within two, is
         // dirt: a full stop or a dot always sits by a letter (not by the bed or a shadow).
         let (guardComps, guardBg): ([Comp], [UInt8]) = guardGray.map { gg in
@@ -358,7 +359,7 @@ enum Flatten {
         } ?? (comps, bg)
         func cutByCrop(_ c: Comp) -> Bool {
             func inkBeyond(_ row: [UInt8]?, _ y: Int) -> Bool {
-                guard let row else { return c.w > c.h }
+                guard let row else { return c.w > c.h || c.x0 == 0 || c.x0 + c.w == w }
                 for x in max(0, c.x0 - 1)...min(w - 1, c.x0 + c.w) where Int(row[x]) * 255 < 150 * Int(guardBg[y * w + x]) {
                     return true
                 }
@@ -381,11 +382,14 @@ enum Flatten {
             let c = guardComps[$0]
             return Double(c.h) >= 0.2 * xh && c.n >= 4 && !cut[$0] && !lone(c)
         }.map { guardComps[$0] }
+        // The guarded layer's print (a stamp or a big letter only in color), but not a piece
+        // running to within half an x-height of the region's side edge: the bed, the page's
+        // edge or the fold's shadow.
+        let guardPrint = guardGray == nil ? [] : edgeInk.filter {
+            Double($0.x0) >= 0.5 * xh && Double($0.x0 + $0.w) <= Double(w) - 0.5 * xh
+        }
         // Grid cells holding ink: only there does a stretch show (blank paper may stretch).
-        // The guarded layer's print counts too (a stamp or a big letter only in color), but
-        // not a piece running to the region's side edge: the bed or the fold's shadow.
         var inked = [Bool](repeating: false, count: gy.count * nc)
-        let guardPrint = guardGray == nil ? [] : edgeInk.filter { $0.x0 > 0 && $0.x0 + $0.w < w }
         for c in comps.filter({ $0.n >= 4 }) + guardPrint {
             let k0 = max(0, Int(Double(c.x0) / step)), k1 = min(nc - 1, Int(Double(c.x0 + c.w) / step) + 1)
             let j0 = max(0, Int(Double(c.y0) / step)), j1 = min(gy.count - 1, Int(Double(c.y0 + c.h) / step) + 1)
@@ -439,9 +443,8 @@ enum Flatten {
         }
 
         // Horizontal: letters narrowed toward the gutter are widened back.
-        // Margin print: of two layers, print as the edge guard reads it (the color layer
-        // has specks of its own); of one, every piece the crop does not cut.
-        let marginPrint = guardGray == nil ? comps.indices.filter { !cut[$0] }.map { comps[$0] } : edgeInk
+        // Margin print: every piece of this layer the crop does not cut, and the guarded layer's print.
+        let marginPrint = comps.filter { !cutByCrop($0) } + guardPrint
         let ux = widening(long, print: marginPrint, xh: xh, lo: lo, hi: hi, width: w, gutterOnRight: onRight, report: &rep)
         rep.outcome = .flattened
         let model = Model(gx: gx, gy: gy, v: v, ux: ux)
