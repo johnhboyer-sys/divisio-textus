@@ -245,6 +245,24 @@ enum LayeredScan {
     static func inkPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
                          direction: ReadingDirection, previewDPI: Double? = nil,
                          removeShadows: Bool = false) -> [CGImage?]? {
+        guard let work = inkWork(of: page, pdfPage, layers: layers, direction: direction, previewDPI: previewDPI,
+                                 removeShadows: removeShadows) else { return nil }
+        var out: [CGImage?] = []
+        for make in work {
+            guard let make else { out.append(nil); continue }
+            guard let image = make() else { return nil }
+            out.append(image)
+        }
+        return out
+    }
+
+    /// `inkPages` in two steps: the drawing, done here, and for each crop not holding
+    /// a picture (nil entries) the work that turns it black and white, which needs
+    /// nothing but that drawing and may run on any thread. A page whose work gives
+    /// nil fails as `inkPages` does. nil if the drawing or a crop fails.
+    static func inkWork(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
+                        direction: ReadingDirection, previewDPI: Double? = nil,
+                        removeShadows: Bool = false) -> [(() -> CGImage?)?]? {
         let crops = page.outputCrops(direction: direction)
         let layers = widened(layers)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
@@ -258,23 +276,24 @@ enum LayeredScan {
               let both = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
                   drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
                   drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) }) else { return nil }
-        var out: [CGImage?] = []
+        var out: [(() -> CGImage?)?] = []
         for (k, crop) in crops.enumerated() {
             guard let r = pixelRect(crop, width: text.width, height: text.height) else { return nil }
             if marked[k] { out.append(nil); continue }
-            var gray = [UInt8](repeating: 255, count: r.w * r.h)
-            var sharp = [Bool](repeating: false, count: r.w * r.h)
-            for y in 0..<r.h {
-                let row = (r.y + y) * text.width + r.x
-                for x in 0..<r.w {
-                    gray[y * r.w + x] = both.pixels[row + x]
-                    sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
+            out.append({
+                var gray = [UInt8](repeating: 255, count: r.w * r.h)
+                var sharp = [Bool](repeating: false, count: r.w * r.h)
+                for y in 0..<r.h {
+                    let row = (r.y + y) * text.width + r.x
+                    for x in 0..<r.w {
+                        gray[y * r.w + x] = both.pixels[row + x]
+                        sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
+                    }
                 }
-            }
-            let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
-                                        dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
-            guard let image = BlackAndWhite.image(ink, width: r.w, height: r.h) else { return nil }
-            out.append(image)
+                let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
+                                            dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
+                return BlackAndWhite.image(ink, width: r.w, height: r.h)
+            })
         }
         return out
     }
