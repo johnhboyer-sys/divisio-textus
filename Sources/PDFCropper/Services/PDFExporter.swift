@@ -152,14 +152,19 @@ enum PDFExporter {
             // would turn the straightening's half pixels into steps that lean
             // upright strokes; it is made from a render twice as fine (a page
             // holding a picture is made as below).
+            // Only the render needs PDFKit: straightening and cutting it (once, by the
+            // first of the page's crops to need it) is part of each crop's work, and a
+            // crop failing there fails the work (see step 1).
+            let crops = page.outputCrops(direction: settings.direction).count
             let fineDPI = min(600, 2 * dpi)
             if fine, settings.enhanceMode == .blackAndWhite, dpi < 250,
                abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
-               let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
-               let out = outputImages(of: page, rendered: rendered, settings: settings) {
+               let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI) {
+                let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
                 // nil when it holds a picture: then none is made at this size.
-                let slots = out.map { image in
+                let slots = (0..<crops).map { k in
                     Slot(make: {
+                        guard let image = out.value?[k] else { return nil }
                         let prepared = BlackAndWhite.prepare(image, dpi: fineDPI)
                         return prepared.picture ? nil
                             : BlackAndWhite.page(prepared, dpi: fineDPI, removeShadows: settings.removeShadows)
@@ -168,11 +173,13 @@ enum PDFExporter {
                 return PagePlan(slots: slots, kind: .fine, page: page, pdfPage: pdfPage, dpi: dpi)
             }
             // A crop that fails would silently drop an output page: fail the export.
-            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
-                  let out = outputImages(of: page, rendered: rendered, settings: settings) else {
+            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
                 throw ExportError.renderFailed(page.sourceIndex)
             }
-            let slots = out.map { image in Slot(make: { finished(image, dpi: dpi, settings: settings) }, dpi: dpi) }
+            let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
+            let slots = (0..<crops).map { k in
+                Slot(make: { out.value.map { finished($0[k], dpi: dpi, settings: settings) } }, dpi: dpi)
+            }
             return PagePlan(slots: slots, kind: .ready, page: page, pdfPage: pdfPage, dpi: dpi)
         }
         func plan(_ page: BookPage) throws -> PagePlan {
@@ -241,9 +248,9 @@ enum PDFExporter {
             batchStart += batch.count
 
             // 1. Render, straighten and crop serially: PDFKit can't draw one document
-            //    from several threads at once. What needs no PDFKit (black and white,
-            //    removing shadows) is left as work, done for the whole batch at once in
-            //    parallel; the result is the same, made in any order.
+            //    from several threads at once. What needs no PDFKit (straightening,
+            //    black and white, removing shadows) is left as work, done for the whole
+            //    batch at once in parallel; the result is the same, made in any order.
             //    The autorelease pool matters: PDFKit autoreleases while drawing, and a
             //    background thread doesn't drain until the whole export ends, which
             //    kept every rendered page alive.
