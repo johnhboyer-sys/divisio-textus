@@ -308,22 +308,27 @@ enum PDFExporter {
             var next = 0
             for var plan in plans {
                 var done = Array(made[next..<(next + plan.slots.count)])
+                var doneDPI = plan.slots.map { $0.dpi }
                 next += plan.slots.count
                 try autoreleasepool {
                     // A layered page whose black and white failed, or a fine black and
                     // white holding a picture, is made again as the page would have been
-                    // without that path, its work done here.
+                    // without that path, its work done here. Of a fine page, only the
+                    // crops not made are: the other side of a spread keeps its fine pages.
                     while done.contains(where: { $0 == nil }) {
                         if plan.kind == .layered, plan.colorFailed, !plan.inkFailed(done) {
                             throw ExportError.renderFailed(plan.page.sourceIndex)
                         }
                         guard plan.kind != .ready else { throw ExportError.renderFailed(plan.page.sourceIndex) }
+                        let fine = plan.kind == .fine
                         plan = try plainPlan(plan.page, plan.pdfPage, dpi: plan.dpi, fine: plan.kind == .layered)
-                        done = plan.slots.map { $0.make() }
+                        for k in done.indices where !fine || done[k] == nil {
+                            done[k] = plan.slots[k].make(); doneDPI[k] = plan.slots[k].dpi
+                        }
                     }
                 }
                 images += done.compactMap { $0 }
-                dpis += plan.slots.map { $0.dpi }
+                dpis += doneDPI
             }
 
             // 2. OCR the batch in parallel. nil = the reader failed on the whole page;

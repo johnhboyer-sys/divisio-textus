@@ -411,9 +411,10 @@ enum LayeredScan {
     /// (the color layer carries a blurred copy of the text). A picture is a group of
     /// touching marks at least 0.4 inch each way, mostly inside the crop. Groups that
     /// run to within 0.06 inch of the page half's edge (or of 0.3 inch past the crop) are the
-    /// fold's shadow, the page's edge or the scanner bed, and don't count; nor do
-    /// thin ones: pen, a stamp, a printed rule. Over `pictureLimit` square inches of
-    /// picture and the crop keeps its color.
+    /// fold's shadow, the page's edge or the scanner bed, and don't count, but for a
+    /// picture in them, one at the edge or joining the shadow (see
+    /// `BlackAndWhite.picturesInShading`); nor do thin ones: pen, a stamp, a printed
+    /// rule. Over `pictureLimit` square inches of picture and the crop keeps its color.
     static func holdsPicture(_ page: BookPage, _ pdfPage: PDFPage, layers: Layers, crops: [CropRect]) -> [Bool] {
         pictureArea(of: page, pdfPage, layers: layers, crops: crops).map { $0 > pictureLimit }
     }
@@ -456,19 +457,23 @@ enum LayeredScan {
             }
             // Each group of touching marks, by flood fill.
             var counted = 0
-            var stack: [Int] = []
+            var stack: [Int] = [], group: [Int] = []
+            func isInside(_ k: Int) -> Bool {
+                let px = x0 + k % ww, py = y0 + k / ww
+                return px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h
+            }
             for start in mark.indices where mark[start] {
                 mark[start] = false
                 stack.append(start)
-                var size = 0, inside = 0, atEdge = false
+                group.removeAll(keepingCapacity: true)
+                var size = 0, inside = 0
                 var minX = ww, maxX = 0, minY = wh, maxY = 0
                 while let k = stack.popLast() {
                     size += 1
+                    group.append(k)
                     let x = k % ww, y = k / ww
                     minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
-                    if x <= 2 || y <= 2 || x >= ww - 3 || y >= wh - 3 { atEdge = true }
-                    let px = x0 + x, py = y0 + y
-                    if px >= c.x, px < c.x + c.w, py >= c.y, py < c.y + c.h { inside += 1 }
+                    if isInside(k) { inside += 1 }
                     for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                         let nx = x + dx, ny = y + dy
                         guard nx >= 0, ny >= 0, nx < ww, ny < wh, mark[ny * ww + nx] else { continue }
@@ -476,7 +481,18 @@ enum LayeredScan {
                         stack.append(ny * ww + nx)
                     }
                 }
-                if !atEdge, maxX - minX >= 19, maxY - minY >= 19, inside * 2 >= size { counted += size }
+                let sides = (left: minX <= 2, right: maxX >= ww - 3, top: minY <= 2, foot: maxY >= wh - 3)
+                if !(sides.left || sides.right || sides.top || sides.foot) {
+                    if maxX - minX >= 19, maxY - minY >= 19, inside * 2 >= size { counted += size }
+                    continue
+                }
+                // A picture at the crop's edge, or joining the fold's shadow, touches the
+                // window too: what of the group isn't shading along those sides, three
+                // quarters of it inside the crop (shading beyond the crop runs into it).
+                let parts = BlackAndWhite.picturesInShading(group, ww, wh, value: { k in
+                    Int(color.pixels[(y0 + k / ww) * w + x0 + k % ww]) }, sides: sides, edge: 3, span: 19,
+                    darker: { $1 - $0 >= 51 })
+                for part in parts where part.filter(isInside).count * 4 >= part.count * 3 { counted += part.count }
             }
             return Double(counted) / (dpi * dpi)
         }
