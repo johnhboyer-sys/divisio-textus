@@ -630,9 +630,8 @@ enum BlackAndWhite {
         // two cells of it, or in a strip at most a cell and a pixel thick but 0.4
         // inch long; and specks within 0.05 inch of it no more than 0.02 inch
         // across. Print touching the band reaches further, and is bigger than a speck.
-        let clearMap = cleared.map { $0 ? UInt8(0) : 255 }
-        let zone = boxBlur(clearMap, w, h, radius: Int((0.05 * dpi).rounded()))
-        let hugging = boxBlur(clearMap, w, h, radius: 2 * c)
+        let zone = blurOfMarks(cleared, w, h, radius: Int((0.05 * dpi).rounded()))
+        let hugging = blurOfMarks(cleared, w, h, radius: 2 * c)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
         var pixels: [Int] = []
@@ -671,6 +670,54 @@ enum BlackAndWhite {
             guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
             for k in pixels { out[k] = 255 }
         }
+    }
+
+    /// `boxBlur` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
+    /// only about the marks: a window holding no mark has mean 255 exactly, so the
+    /// blur is 255 wherever the marks' box grown by `radius` doesn't reach. Within it
+    /// the blur is made on the box grown by twice the radius (cut short at the page's
+    /// edges), where every window reaching that far is cut short just as on the page.
+    static func blurOfMarks(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
+        var x0 = w, x1 = -1, y0 = h, y1 = -1
+        marks.withUnsafeBufferPointer { m in
+            for y in 0..<h {
+                let row = y * w
+                var first = -1, last = -1
+                for x in 0..<w where m[row + x] { if first < 0 { first = x }; last = x }
+                if first >= 0 { x0 = min(x0, first); x1 = max(x1, last); y0 = min(y0, y); y1 = max(y1, y) }
+            }
+        }
+        var out = [UInt8](repeating: 255, count: w * h)
+        guard x1 >= 0 else { return out }
+        guard r > 0 else {
+            for i in 0..<(w * h) where marks[i] { out[i] = 0 }
+            return out
+        }
+        // The box grown by twice the radius, and the part of it the blur can reach.
+        let bx0 = max(0, x0 - 2 * r), bx1 = min(w - 1, x1 + 2 * r)
+        let by0 = max(0, y0 - 2 * r), by1 = min(h - 1, y1 + 2 * r)
+        let bw = bx1 - bx0 + 1, bh = by1 - by0 + 1
+        var sub = [UInt8](repeating: 255, count: bw * bh)
+        marks.withUnsafeBufferPointer { m in
+            sub.withUnsafeMutableBufferPointer { sub in
+                for y in 0..<bh {
+                    let row = (by0 + y) * w + bx0
+                    for x in 0..<bw where m[row + x] { sub[y * bw + x] = 0 }
+                }
+            }
+        }
+        let blurred = boxBlur(sub, bw, bh, radius: r)
+        let rx0 = max(0, x0 - r), rx1 = min(w - 1, x1 + r)
+        let ry0 = max(0, y0 - r), ry1 = min(h - 1, y1 + r)
+        blurred.withUnsafeBufferPointer { b in
+            out.withUnsafeMutableBufferPointer { o in
+                for y in ry0...ry1 {
+                    let from = (y - by0) * bw - bx0, to = y * w
+                    for x in rx0...rx1 { o[to + x] = b[from + x] }
+                }
+            }
+        }
+        return out
     }
 
     /// An output page in black and white, from its gray or color image at `dpi`,
