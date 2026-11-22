@@ -1,6 +1,7 @@
 import Foundation
 import PDFKit
 import CoreGraphics
+import Accelerate
 
 /// Scans stored in layers ("mixed raster content"): a sharp 1-bit text layer, an
 /// image mask painted in black, over small low-resolution color patches (paper
@@ -104,10 +105,17 @@ enum LayeredScan {
     /// `over` keeps what is beneath where the layer has no ink (as the page draws it,
     /// a mask) instead of painting its paper white.
     static func drawText(_ layers: Layers, of page: PDFPage, in ctx: CGContext, scale: Double, over: Bool = false) {
+        drawText(layers, at: page.transform(for: .cropBox), in: ctx, scale: scale, over: over)
+    }
+
+    /// `drawText` with the page's crop box transform worked out already, so it needs
+    /// no PDFKit (and may run on any thread).
+    static func drawText(_ layers: Layers, at pageTransform: CGAffineTransform, in ctx: CGContext, scale: Double,
+                         over: Bool = false) {
         ctx.saveGState()
         if over { ctx.setBlendMode(.multiply) }
         ctx.scaleBy(x: scale, y: scale)
-        ctx.concatenate(page.transform(for: .cropBox))
+        ctx.concatenate(pageTransform)
         ctx.concatenate(layers.placement)
         ctx.draw(layers.text, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         ctx.restoreGState()
@@ -116,9 +124,15 @@ enum LayeredScan {
     /// Draw the color patches (decoded) likewise.
     static func drawPatches(_ patches: [(PDFRenderer.DrawnImage, CGImage)], of page: PDFPage,
                             in ctx: CGContext, scale: Double) {
+        drawPatches(patches, at: page.transform(for: .cropBox), in: ctx, scale: scale)
+    }
+
+    /// `drawPatches` with the crop box transform worked out already (see `drawText`).
+    static func drawPatches(_ patches: [(PDFRenderer.DrawnImage, CGImage)], at pageTransform: CGAffineTransform,
+                            in ctx: CGContext, scale: Double) {
         ctx.saveGState()
         ctx.scaleBy(x: scale, y: scale)
-        ctx.concatenate(page.transform(for: .cropBox))
+        ctx.concatenate(pageTransform)
         for (patch, image) in patches {
             ctx.saveGState()
             ctx.concatenate(patch.placement)
@@ -161,11 +175,22 @@ enum LayeredScan {
     /// done straightened as the page's export is. Top-left origin rows.
     static func straightened(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double,
                              _ draw: (CGContext, Double) -> Void) -> (pixels: [UInt8], width: Int, height: Int)? {
-        let size = PDFRenderer.displaySize(of: pdfPage)
+        straightened(page, size: PDFRenderer.displaySize(of: pdfPage), dpi: dpi, draw)
+    }
+
+    /// The size in pixels of a page `size` points large drawn at `dpi`, nil if absurd.
+    static func canvasSize(_ size: CGSize, dpi: Double) -> (width: Int, height: Int)? {
         let scale = dpi / 72
         let w = (size.width * scale).rounded(), h = (size.height * scale).rounded()
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w * h <= 2_000_000_000 else { return nil }
-        let pw = Int(w), ph = Int(h)
+        return (Int(w), Int(h))
+    }
+
+    /// `straightened` for a page whose display size is `size` (so it needs no PDFKit).
+    static func straightened(_ page: BookPage, size: CGSize, dpi: Double,
+                             _ draw: (CGContext, Double) -> Void) -> (pixels: [UInt8], width: Int, height: Int)? {
+        let scale = dpi / 72
+        guard let (pw, ph) = canvasSize(size, dpi: dpi) else { return nil }
         var pixels = [UInt8](repeating: 255, count: pw * ph)
         let ok = pixels.withUnsafeMutableBytes { buf -> Bool in
             guard let ctx = CGContext(data: buf.baseAddress, width: pw, height: ph, bitsPerComponent: 8,
@@ -245,37 +270,110 @@ enum LayeredScan {
     static func inkPages(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
                          direction: ReadingDirection, previewDPI: Double? = nil,
                          removeShadows: Bool = false) -> [CGImage?]? {
+        guard let work = inkWork(of: page, pdfPage, layers: layers, direction: direction, previewDPI: previewDPI,
+                                 removeShadows: removeShadows) else { return nil }
+        var out: [CGImage?] = []
+        for make in work {
+            guard let make else { out.append(nil); continue }
+            guard let image = make() else { return nil }
+            out.append(image)
+        }
+        return out
+    }
+
+    /// `inkPages` in two steps: the drawing, done here, and for each crop not holding
+    /// a picture (nil entries) the work that turns it black and white, which needs
+    /// nothing but that drawing and may run on any thread. A page whose work gives
+    /// nil fails as `inkPages` does. nil if the drawing or a crop fails.
+    static func inkWork(of page: BookPage, _ pdfPage: PDFPage, layers: Layers,
+                        direction: ReadingDirection, previewDPI: Double? = nil,
+                        removeShadows: Bool = false) -> [(() -> CGImage?)?]? {
         let crops = page.outputCrops(direction: direction)
+        let layers = widened(layers)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
         let dpi = previewDPI ?? textDPI(layers)
         // Patches that can't be decoded were found to be pictures above; any left
         // out here would only be paper.
         let decoded = layers.patches.compactMap { p in patchImage(p).map { (p, $0) } }
-        guard let text = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
-                  drawText(layers, of: pdfPage, in: ctx, scale: scale) }),
-              let both = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
-                  drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
-                  drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) }) else { return nil }
-        var out: [CGImage?] = []
+        // The two drawings are made by the first of the page's crops to need them, on
+        // whatever thread that runs: they need no PDFKit, given the page's size and
+        // crop box transform.
+        let size = PDFRenderer.displaySize(of: pdfPage), transform = pdfPage.transform(for: .cropBox)
+        guard let canvas = canvasSize(size, dpi: dpi) else { return nil }
+        let drawing = Once { () -> (text: (pixels: [UInt8], width: Int, height: Int),
+                                    both: (pixels: [UInt8], width: Int, height: Int))? in
+            guard let text = straightened(page, size: size, dpi: dpi, { ctx, scale in
+                      drawText(layers, at: transform, in: ctx, scale: scale) }),
+                  let both = straightened(page, size: size, dpi: dpi, { ctx, scale in
+                      drawPatches(decoded, at: transform, in: ctx, scale: scale)
+                      drawText(layers, at: transform, in: ctx, scale: scale, over: true) }) else { return nil }
+            return (text, both)
+        }
+        var out: [(() -> CGImage?)?] = []
         for (k, crop) in crops.enumerated() {
-            guard let r = pixelRect(crop, width: text.width, height: text.height) else { return nil }
+            guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
             if marked[k] { out.append(nil); continue }
-            var gray = [UInt8](repeating: 255, count: r.w * r.h)
-            var sharp = [Bool](repeating: false, count: r.w * r.h)
-            for y in 0..<r.h {
-                let row = (r.y + y) * text.width + r.x
-                for x in 0..<r.w {
-                    gray[y * r.w + x] = both.pixels[row + x]
-                    sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
-                }
-            }
-            let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
-                                        dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
-            guard let image = BlackAndWhite.image(ink, width: r.w, height: r.h) else { return nil }
-            out.append(image)
+            out.append({
+                guard let (text, both) = drawing.value else { return nil }
+                var gray = [UInt8](repeating: 255, count: r.w * r.h)
+                var sharp = [Bool](repeating: false, count: r.w * r.h)
+                let cut: UInt8 = previewDPI != nil ? 192 : 128
+                both.pixels.withUnsafeBufferPointer { b in text.pixels.withUnsafeBufferPointer { t in
+                gray.withUnsafeMutableBufferPointer { gray in sharp.withUnsafeMutableBufferPointer { sharp in
+                    for y in 0..<r.h {
+                        let row = (r.y + y) * text.width + r.x
+                        for x in 0..<r.w {
+                            gray[y * r.w + x] = b[row + x]
+                            sharp[y * r.w + x] = t[row + x] < cut
+                        }
+                    }
+                }}}}
+                let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
+                                            dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
+                return BlackAndWhite.image(ink, width: r.w, height: r.h)
+            })
         }
         return out
+    }
+
+    /// A value worked out once, by the first caller to ask, whatever its thread.
+    final class Once<T> {
+        private let lock = NSLock()
+        private var made: T?
+        private var make: (() -> T)?
+        init(_ make: @escaping () -> T) { self.make = make }
+        var value: T {
+            lock.lock(); defer { lock.unlock() }
+            if let make { made = make(); self.make = nil }
+            return made!
+        }
+    }
+
+    /// The layers with the text layer as 8-bit gray, 0 or 255 as its bits draw:
+    /// Core Graphics otherwise widens the 1-bit layer to 8 bits on every draw, the
+    /// whole of it, however little of it the draw shows.
+    static func widened(_ layers: Layers) -> Layers {
+        let t = layers.text
+        guard t.bitsPerComponent == 1, t.bitsPerPixel == 1, let data = t.dataProvider?.data,
+              let base = CFDataGetBytePtr(data) else { return layers }
+        let w = t.width, h = t.height, rowBytes = t.bytesPerRow
+        guard w > 0, h > 0, CFDataGetLength(data) >= rowBytes * h else { return layers }
+        let flipped = (t.decode?[0] ?? 0) >= 0.5
+        let set: UInt8 = flipped ? 0 : 255, clear: UInt8 = flipped ? 255 : 0
+        var px = [UInt8](repeating: clear, count: w * h)
+        px.withUnsafeMutableBufferPointer { p in
+            for y in 0..<h {
+                let row = base + y * rowBytes, out = y * w
+                for x in 0..<w where row[x >> 3] & (0x80 >> UInt8(x & 7)) != 0 { p[out + x] = set }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                  provider: provider, decode: nil, shouldInterpolate: t.shouldInterpolate,
+                                  intent: t.renderingIntent) else { return layers }
+        return Layers(text: image, placement: layers.placement, dpi: layers.dpi, patches: layers.patches)
     }
 
     /// The resolution text pages are made at: the text layer's own, within the
@@ -361,97 +459,38 @@ enum LayeredScan {
     }
 
     /// Each pixel's largest value within `radius` (a square, cut short at the image's
-    /// edges): the smallest of the image turned over (255 - v), turned back.
+    /// edges): vImage's maximum filter, which leaves out what lies past the edges.
     static func maxFilter(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
-        return minFilter(p.map { 255 - $0 }, w, h, radius: r).map { 255 - $0 }
+        return filter(p, w, h, radius: r, fill: 0, vImageMax_Planar8)
     }
 
     /// Each pixel's smallest value within `radius` (a square, cut short at the image's
-    /// edges), by rows then columns, each with van Herk and Gil-Werman's running
-    /// minimums: the line padded with paper (255) by `radius` either side and cut into
-    /// blocks 2 × radius + 1 long; a window that long spans at most two blocks, so its
-    /// minimum is the smaller of one block's minimum from the window's start onward and
-    /// the next block's minimum up to the window's end. A few steps a pixel whatever
-    /// the radius. The columns are done a row at a time, so memory is read in order.
+    /// edges): vImage's minimum filter, which leaves out what lies past the edges (as
+    /// paper, 255, would be: it never lowers a minimum). Exact, as a minimum is.
     static func minFilter(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
-        let span = 2 * r + 1
-        var rows = [UInt8](repeating: 255, count: w * h)
-        // Along each row.
-        let len = w + 2 * r
-        var fore = [UInt8](repeating: 255, count: len), back = fore
-        p.withUnsafeBufferPointer { src in
-            rows.withUnsafeMutableBufferPointer { dst in
-                fore.withUnsafeMutableBufferPointer { g in
-                    back.withUnsafeMutableBufferPointer { b in
-                        for y in 0..<h {
-                            let base = y * w - r       // padded index i is source base + i
-                            var start = 0
-                            while start < len {
-                                let end = min(start + span, len)
-                                var m: UInt8 = 255
-                                for i in start..<end {
-                                    let v = i >= r && i < r + w ? src[base + i] : 255
-                                    if v < m { m = v }
-                                    g[i] = m
-                                }
-                                m = 255
-                                var i = end - 1
-                                while i >= start {
-                                    let v = i >= r && i < r + w ? src[base + i] : 255
-                                    if v < m { m = v }
-                                    b[i] = m
-                                    i -= 1
-                                }
-                                start = end
-                            }
-                            let row = y * w
-                            for x in 0..<w { dst[row + x] = min(b[x], g[x + 2 * r]) }
-                        }
-                    }
-                }
+        return filter(p, w, h, radius: r, fill: 255, vImageMin_Planar8)
+    }
+
+    private typealias Morphology = (UnsafePointer<vImage_Buffer>, UnsafePointer<vImage_Buffer>, UnsafeMutableRawPointer?,
+                                    vImagePixelCount, vImagePixelCount, vImagePixelCount, vImagePixelCount,
+                                    vImage_Flags) -> vImage_Error
+
+    private static func filter(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int, fill: UInt8,
+                               _ op: Morphology) -> [UInt8] {
+        var out = [UInt8](repeating: fill, count: w * h)
+        let side = vImagePixelCount(2 * r + 1)
+        let error = p.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst -> vImage_Error in
+                var from = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: src.baseAddress!),
+                                         height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w)
+                var to = vImage_Buffer(data: dst.baseAddress!, height: vImagePixelCount(h),
+                                       width: vImagePixelCount(w), rowBytes: w)
+                return op(&from, &to, nil, 0, 0, side, side, vImage_Flags(kvImageNoFlags))
             }
         }
-        // Down the columns, whole rows at a time.
-        let tall = h + 2 * r
-        var gRows = [UInt8](repeating: 255, count: tall * w), bRows = gRows
-        var out = [UInt8](repeating: 255, count: w * h)
-        rows.withUnsafeBufferPointer { src in
-            gRows.withUnsafeMutableBufferPointer { g in
-                bRows.withUnsafeMutableBufferPointer { b in
-                    var start = 0
-                    while start < tall {
-                        let end = min(start + span, tall)
-                        for j in start..<end {
-                            let inside = j >= r && j < r + h
-                            let from = (j - r) * w, to = j * w, prev = (j - 1) * w
-                            for x in 0..<w {
-                                let v = inside ? src[from + x] : 255
-                                g[to + x] = j == start ? v : min(g[prev + x], v)
-                            }
-                        }
-                        var j = end - 1
-                        while j >= start {
-                            let inside = j >= r && j < r + h
-                            let from = (j - r) * w, to = j * w, next = (j + 1) * w
-                            for x in 0..<w {
-                                let v = inside ? src[from + x] : 255
-                                b[to + x] = j == end - 1 ? v : min(b[next + x], v)
-                            }
-                            j -= 1
-                        }
-                        start = end
-                    }
-                    out.withUnsafeMutableBufferPointer { dst in
-                        for y in 0..<h {
-                            let top = y * w, bottom = (y + 2 * r) * w
-                            for x in 0..<w { dst[top + x] = min(b[top + x], g[bottom + x]) }
-                        }
-                    }
-                }
-            }
-        }
+        precondition(error == kvImageNoError, "vImage filter failed: \(error)")
         return out
     }
 }

@@ -34,31 +34,58 @@ enum BlackAndWhite {
         guard w > 0, h > 0, gray.count == w * h else { return gray }
         let paper = given ?? background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
-        let blur = boxBlur(gray, w, h, radius: Int((0.008 * dpi).rounded()))
-        let around = boxBlur(gray, w, h, radius: Int((0.05 * dpi).rounded()))
         let sharpCut = preview ? 192 : 128
-        func isSharp(_ i: Int) -> Bool { sharp?[i] ?? (Int(gray[i]) < sharpCut) }
         var out = [UInt8](repeating: 255, count: w * h)
         // Sharp ink on clean paper stays as it is; tones darker than the paper by the
         // margin are ink wherever they are.
         var pending = [Bool](repeating: false, count: w * h)
         var toneInk = [Bool](repeating: false, count: w * h)
-        for i in 0..<(w * h) {
-            let b = Int(paper[i])
-            let sharpInk = isSharp(i)
-            if sharpInk, b >= clean {
-                out[i] = 0
-            } else if tone, sharp.map({ !$0[i] }) ?? true, Int(gray[i]) < b - max(20, b * 12 / 100) {
-                out[i] = 0
-                toneInk[i] = sharp != nil
-            } else if sharpInk {
-                pending[i] = true
+        out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
+        toneInk.withUnsafeMutableBufferPointer { toneInk in
+        paper.withUnsafeBufferPointer { paper in gray.withUnsafeBufferPointer { gray in
+            if let sharp {
+                sharp.withUnsafeBufferPointer { sharp in
+                    for i in 0..<(w * h) {
+                        let b = Int(paper[i])
+                        let sharpInk = sharp[i]
+                        if sharpInk, b >= clean {
+                            out[i] = 0
+                        } else if tone, !sharpInk, Int(gray[i]) < b - max(20, b * 12 / 100) {
+                            out[i] = 0
+                            toneInk[i] = true
+                        } else if sharpInk {
+                            pending[i] = true
+                        }
+                    }
+                }
+            } else {
+                for i in 0..<(w * h) {
+                    let b = Int(paper[i])
+                    let sharpInk = Int(gray[i]) < sharpCut
+                    if sharpInk, b >= clean {
+                        out[i] = 0
+                    } else if tone, Int(gray[i]) < b - max(20, b * 12 / 100) {
+                        out[i] = 0
+                    } else if sharpInk {
+                        pending[i] = true
+                    }
+                }
             }
-        }
+        }}}}}
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
-        let cleared = bands(out.indices.map { out[$0] == 0 || pending[$0] }, w, h, dpi: dpi)
-        for i in 0..<(w * h) where cleared[i] { out[i] = 255; pending[i] = false; toneInk[i] = false }
+        var candidates = [Bool](repeating: false, count: w * h)
+        out.withUnsafeBufferPointer { out in pending.withUnsafeBufferPointer { pending in
+            candidates.withUnsafeMutableBufferPointer { c in for i in 0..<(w * h) { c[i] = out[i] == 0 || pending[i] } }
+        }}
+        let cleared = bands(candidates, w, h, dpi: dpi)
+        cleared.withUnsafeBufferPointer { cleared in
+            out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
+                toneInk.withUnsafeMutableBufferPointer { toneInk in
+                    for i in 0..<(w * h) where cleared[i] { out[i] = 255; pending[i] = false; toneInk[i] = false }
+                }
+            }}
+        }
         // Sharp ink on shadow, a touching group of the sharp layer at a time (a
         // letter half on clean paper is judged whole): kept when the group is at
         // least the size of a full stop and on the whole darker, on the small blur,
@@ -66,31 +93,53 @@ enum BlackAndWhite {
         // speckle a scanner makes of a shadow, which is the shadow's own gray on
         // average, is not.
         let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))   // a full stop
-        let sharpPx = (0..<(w * h)).map { isSharp($0) && !cleared[$0] }
+        var sharpPx = [Bool](repeating: false, count: w * h)
+        cleared.withUnsafeBufferPointer { cleared in gray.withUnsafeBufferPointer { gray in
+            sharpPx.withUnsafeMutableBufferPointer { px in
+                if let sharp {
+                    sharp.withUnsafeBufferPointer { sharp in for i in 0..<(w * h) { px[i] = sharp[i] && !cleared[i] } }
+                } else {
+                    for i in 0..<(w * h) { px[i] = Int(gray[i]) < sharpCut && !cleared[i] }
+                }
+            }
+        }}
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
         var failed: [[Int]] = []
-        for start in 0..<(w * h) where pending[start] && !seen[start] {
-            seen[start] = true
-            stack = [start]; group = []
-            var sumBlur = 0, sumAround = 0
-            while let k = stack.popLast() {
-                group.append(k)
-                sumBlur += Int(blur[k]); sumAround += Int(around[k])
-                let x = k % w, y = k / w
-                for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) where sharpPx[ny * w + nx] && !seen[ny * w + nx] {
-                        seen[ny * w + nx] = true
-                        stack.append(ny * w + nx)
+        // The blurs serve this test alone: none are made for a page without such ink.
+        var pendingCount = 0
+        pending.withUnsafeBufferPointer { p in for v in p { pendingCount += v ? 1 : 0 } }
+        if pendingCount > 0 {
+            // Where such ink is sparse (under a twentieth of the page), the blurs are
+            // worked out at the pixels the test reads alone (`BoxMeans`); else whole.
+            let blur = BoxMeans(gray, w, h, radius: Int((0.008 * dpi).rounded()), sparse: pendingCount * 20 < w * h)
+            let around = BoxMeans(gray, w, h, radius: Int((0.05 * dpi).rounded()), sparse: pendingCount * 20 < w * h)
+            sharpPx.withUnsafeBufferPointer { sharpPx in seen.withUnsafeMutableBufferPointer { seen in
+            pending.withUnsafeBufferPointer { pending in out.withUnsafeMutableBufferPointer { out in
+                for start in 0..<(w * h) where pending[start] && !seen[start] {
+                    seen[start] = true
+                    stack.removeAll(keepingCapacity: true); stack.append(start)
+                    group.removeAll(keepingCapacity: true)
+                    var sumBlur = 0, sumAround = 0
+                    while let k = stack.popLast() {
+                        group.append(k)
+                        sumBlur += blur.at(k); sumAround += around.at(k)
+                        let x = k % w, y = k / w
+                        for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                            for nx in max(0, x - 1)...min(w - 1, x + 1) where sharpPx[ny * w + nx] && !seen[ny * w + nx] {
+                                seen[ny * w + nx] = true
+                                stack.append(ny * w + nx)
+                            }
+                        }
+                    }
+                    let mb = sumBlur / group.count, ma = sumAround / group.count
+                    if group.count >= minGlyph, mb < ma - max(20, ma / 6) {
+                        for k in group where pending[k] { out[k] = 0 }
+                    } else if sharp != nil {
+                        failed.append(group)
                     }
                 }
-            }
-            let mb = sumBlur / group.count, ma = sumAround / group.count
-            if group.count >= minGlyph, mb < ma - max(20, ma / 6) {
-                for k in group where pending[k] { out[k] = 0 }
-            } else if sharp != nil {
-                failed.append(group)
-            }
+            }}}}
         }
         // A layered scan's text layer is the publisher's own ink: a piece of it too
         // small or faint for the test above (a letter's hairline broken off) stays when
@@ -167,32 +216,39 @@ enum BlackAndWhite {
                           _ w: Int, _ h: Int, dpi: Double, minGlyph: Int) {
         let r = max(1, Int((0.01 * dpi).rounded()))
         let sharpMap = sharp.map { $0 ? UInt8(0) : 255 }
-        let near = boxBlur(sharpMap, w, h, radius: r)    // under 255: sharp ink within r
-        let beside = boxBlur(sharpMap, w, h, radius: 2 * r)
+        let near = belowWhite(sharpMap, w, h, radius: r)    // under 255: sharp ink within r
+        let beside = belowWhite(sharpMap, w, h, radius: 2 * r)
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
-        for start in 0..<(w * h) where toneInk[start] && !seen[start] {
-            seen[start] = true
-            stack = [start]; group = []
-            var reaches = false, bordersPaper = false
-            var besides = 0, sum = 0
-            while let k = stack.popLast() {
-                group.append(k)
-                if near[k] == 255 { reaches = true }
-                if beside[k] < 255 { besides += 1 }
-                sum += Int(gray[k])
-                let x = k % w, y = k / w
-                for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) {
-                        let n = ny * w + nx
-                        if toneInk[n] { if !seen[n] { seen[n] = true; stack.append(n) } }
-                        else if !sharp[n] { bordersPaper = true }
+        toneInk.withUnsafeBufferPointer { toneInk in sharp.withUnsafeBufferPointer { sharp in
+        gray.withUnsafeBufferPointer { gray in near.withUnsafeBufferPointer { near in
+        beside.withUnsafeBufferPointer { beside in seen.withUnsafeMutableBufferPointer { seen in
+        out.withUnsafeMutableBufferPointer { out in
+            for start in 0..<(w * h) where toneInk[start] && !seen[start] {
+                seen[start] = true
+                stack.removeAll(keepingCapacity: true); stack.append(start)
+                group.removeAll(keepingCapacity: true)
+                var reaches = false, bordersPaper = false
+                var besides = 0, sum = 0
+                while let k = stack.popLast() {
+                    group.append(k)
+                    if near[k] == 255 { reaches = true }
+                    if beside[k] < 255 { besides += 1 }
+                    sum += Int(gray[k])
+                    let x = k % w, y = k / w
+                    for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                        for nx in max(0, x - 1)...min(w - 1, x + 1) {
+                            let n = ny * w + nx
+                            if toneInk[n] { if !seen[n] { seen[n] = true; stack.append(n) } }
+                            else if !sharp[n] { bordersPaper = true }
+                        }
                     }
                 }
+                let smudge = besides * 4 >= group.count * 3 && sum > 160 * group.count
+                if (!reaches && bordersPaper) || smudge || group.count < minGlyph { for k in group { out[k] = 255 } }
             }
-            let smudge = besides * 4 >= group.count * 3 && sum > 160 * group.count
-            if (!reaches && bordersPaper) || smudge || group.count < minGlyph { for k in group { out[k] = 255 } }
         }
+        }}}}}}
     }
 
     /// Lines and smudges along the page's sides that are not print: the edges of
@@ -292,8 +348,23 @@ enum BlackAndWhite {
     /// against the page's own paper, its lightest twentieth (a shadow or a dark
     /// board can cover most of a page), so tinted paper counts as clean.
     static func cleanLevel(_ paper: [UInt8]) -> Int {
+        // Counted in four tallies, a pixel to each in turn, then added: paper is mostly
+        // one gray, and four tallies don't each wait on the last pixel's count.
         var counts = [Int](repeating: 0, count: 256)
-        for v in paper { counts[Int(v)] += 1 }
+        var tallies = [Int](repeating: 0, count: 4 * 256)
+        tallies.withUnsafeMutableBufferPointer { c in
+            paper.withUnsafeBufferPointer { p in
+                let n = p.count, whole = n & ~3
+                var i = 0
+                while i < whole {
+                    c[Int(p[i])] += 1; c[256 + Int(p[i + 1])] += 1
+                    c[512 + Int(p[i + 2])] += 1; c[768 + Int(p[i + 3])] += 1
+                    i += 4
+                }
+                while i < n { c[Int(p[i])] += 1; i += 1 }
+            }
+        }
+        for v in 0..<256 { counts[v] = tallies[v] + tallies[256 + v] + tallies[512 + v] + tallies[768 + v] }
         var seen = 0, level = 255
         for v in 0..<256 {
             seen += counts[v]
@@ -307,13 +378,26 @@ enum BlackAndWhite {
         let f = max(1, Int((dpi / 50).rounded()))
         let lw = (w + f - 1) / f, lh = (h + f - 1) / f
         var small = [UInt8](repeating: 255, count: lw * lh)
-        for cy in 0..<lh {
-            for cx in 0..<lw {
-                var sum = 0, n = 0
-                for y in (cy * f)..<min(h, cy * f + f) {
-                    for x in (cx * f)..<min(w, cx * f + f) { sum += Int(gray[y * w + x]); n += 1 }
+        // Each cell's mean, its rows summed a row of cells at a time.
+        var sums = [Int](repeating: 0, count: lw)
+        gray.withUnsafeBufferPointer { g in
+            sums.withUnsafeMutableBufferPointer { sums in
+                for cy in 0..<lh {
+                    for cx in 0..<lw { sums[cx] = 0 }
+                    let ys = cy * f, ye = min(h, cy * f + f)
+                    for y in ys..<ye {
+                        let row = y * w
+                        for cx in 0..<lw {
+                            var sum = 0
+                            for x in (cx * f)..<min(w, cx * f + f) { sum += Int(g[row + x]) }
+                            sums[cx] += sum
+                        }
+                    }
+                    for cx in 0..<lw {
+                        let n = (ye - ys) * (min(w, cx * f + f) - cx * f)
+                        small[cy * lw + cx] = UInt8(sums[cx] / max(1, n))
+                    }
                 }
-                small[cy * lw + cx] = UInt8(sum / max(1, n))
             }
         }
         let cellDPI = dpi / Double(f)
@@ -348,26 +432,175 @@ enum BlackAndWhite {
         // the scanner bed) and the step's dark side mustn't count as ink.
         let smooth = LayeredScan.minFilter(closed, lw, lh, radius: 1)
         // Back to full size, bilinear, cell centers at (c + 0.5) * f.
+        // The column weights are the same on every row, and the blend across a row
+        // the same for every row between the same two rows of cells: worked out once.
+        var cx0 = [Int](repeating: 0, count: w), cx1 = cx0
+        var wx = [Double](repeating: 0, count: w), wx1 = wx
+        for x in 0..<w {
+            let fx = max(0, min(Double(lw - 1), (Double(x) + 0.5) / Double(f) - 0.5))
+            let x0 = Int(fx)
+            cx0[x] = x0; cx1[x] = min(lw - 1, x0 + 1); wx[x] = fx - Double(x0); wx1[x] = 1 - wx[x]
+        }
         var out = [UInt8](repeating: 255, count: w * h)
+        var rowA = [Double](repeating: 0, count: w), rowB = rowA
+        var lastY0 = -1, lastY1 = -1
         for y in 0..<h {
             let fy = max(0, min(Double(lh - 1), (Double(y) + 0.5) / Double(f) - 0.5))
             let y0 = Int(fy), y1 = min(lh - 1, y0 + 1), ty = fy - Double(y0)
-            for x in 0..<w {
-                let fx = max(0, min(Double(lw - 1), (Double(x) + 0.5) / Double(f) - 0.5))
-                let x0 = Int(fx), x1 = min(lw - 1, x0 + 1), tx = fx - Double(x0)
-                let a = Double(smooth[y0 * lw + x0]) * (1 - tx) + Double(smooth[y0 * lw + x1]) * tx
-                let b = Double(smooth[y1 * lw + x0]) * (1 - tx) + Double(smooth[y1 * lw + x1]) * tx
-                out[y * w + x] = UInt8((a * (1 - ty) + b * ty).rounded())
+            if y0 != lastY0 || y1 != lastY1 {
+                smooth.withUnsafeBufferPointer { s in cx0.withUnsafeBufferPointer { c0 in cx1.withUnsafeBufferPointer { c1 in
+                wx.withUnsafeBufferPointer { wx in wx1.withUnsafeBufferPointer { wx1 in
+                rowA.withUnsafeMutableBufferPointer { a in rowB.withUnsafeMutableBufferPointer { b in
+                    for x in 0..<w {
+                        a[x] = Double(s[y0 * lw + c0[x]]) * wx1[x] + Double(s[y0 * lw + c1[x]]) * wx[x]
+                        b[x] = Double(s[y1 * lw + c0[x]]) * wx1[x] + Double(s[y1 * lw + c1[x]]) * wx[x]
+                    }
+                }}}}}}}
+                lastY0 = y0; lastY1 = y1
             }
+            let ty1 = 1 - ty
+            out.withUnsafeMutableBufferPointer { o in rowA.withUnsafeBufferPointer { a in rowB.withUnsafeBufferPointer { b in
+                let row = y * w
+                for x in 0..<w { o[row + x] = UInt8((a[x] * ty1 + b[x] * ty).rounded()) }
+            }}}
         }
         return out
     }
 
     /// Each pixel's mean over a square of `radius` (cut short at the page's
     /// edges), by running sums: along each row, then down the columns a row at a
-    /// time, so memory is read in order.
+    /// time, so memory is read in order. Each mean is a whole-number quotient,
+    /// worked out by `Divider` where its sizes allow.
     static func boxBlur(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
+        // Sums of up to 2r + 1 means, each at most 255 × 16: `Divider` holds for them
+        // up to a radius of 512.
+        guard r <= 512 else { return boxBlurDividing(p, w, h, radius: r) }
+        var rows = [UInt32](repeating: 0, count: w * h)     // row means, 4 bits of fraction
+        let span = Divider(2 * r + 1)
+        p.withUnsafeBufferPointer { src in
+            rows.withUnsafeMutableBufferPointer { dst in
+                for y in 0..<h {
+                    var sum = 0
+                    let base = y * w
+                    for x in 0..<min(w, r + 1) { sum += Int(src[base + x]) }
+                    // The left edge, the middle (whole windows), the right edge.
+                    let lo = min(r, w), hi = max(lo, w - r)
+                    for x in 0..<lo {
+                        dst[base + x] = UInt32(truncatingIfNeeded: sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        if x - r >= 0 { sum -= Int(src[base + x - r]) }
+                    }
+                    for x in lo..<hi {
+                        dst[base + x] = span.divide(UInt32(truncatingIfNeeded: sum * 16))
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        sum -= Int(src[base + x - r])
+                    }
+                    for x in hi..<w {
+                        dst[base + x] = UInt32(truncatingIfNeeded: sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        if x - r >= 0 { sum -= Int(src[base + x - r]) }
+                    }
+                }
+            }
+        }
+        var out = [UInt8](repeating: 0, count: w * h)
+        var column = [UInt32](repeating: 0, count: w)
+        rows.withUnsafeBufferPointer { rows in
+            out.withUnsafeMutableBufferPointer { out in
+                column.withUnsafeMutableBufferPointer { col in
+                    let c = col.baseAddress!, all = rows.baseAddress!
+                    for y in 0..<min(h, r + 1) { for x in 0..<w { c[x] &+= all[y * w + x] } }
+                    for y in 0..<h {
+                        let n = min(h - 1, y + r) - max(0, y - r) + 1
+                        let o = out.baseAddress! + y * w
+                        if n == 1 {
+                            for x in 0..<w { o[x] = UInt8(truncatingIfNeeded: min(255, (c[x] + 8) / 16)) }
+                        } else {
+                            let d = Divider(n)
+                            for x in 0..<w { o[x] = UInt8(truncatingIfNeeded: min(255, (d.divide(c[x]) + 8) / 16)) }
+                        }
+                        // The window moves down a row: the row entering it in, the one leaving it out.
+                        let entering = y + r + 1 < h, leaving = y - r >= 0
+                        if entering && leaving {
+                            let add = all + (y + r + 1) * w, sub = all + (y - r) * w
+                            for x in 0..<w { c[x] = c[x] &+ add[x] &- sub[x] }
+                        } else if entering {
+                            let add = all + (y + r + 1) * w
+                            for x in 0..<w { c[x] &+= add[x] }
+                        } else if leaving {
+                            let sub = all + (y - r) * w
+                            for x in 0..<w { c[x] &-= sub[x] }
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// `boxBlur` of a page, read a pixel at a time: made whole, or, `sparse`, worked out
+    /// at each pixel asked for from running sums along the rows, with the same whole-number
+    /// quotients as `boxBlur` (each row's sum times 16 over the row's window, those added
+    /// down the window's rows over their number, rounded to a whole gray), so the same
+    /// value.
+    struct BoxMeans {
+        private let w: Int, h: Int, r: Int
+        private let sparse: Bool
+        private let whole: [UInt8]          // the blur, when made whole
+        private let rowSums: [UInt32]       // each row's running sum, w + 1 a row
+
+        init(_ gray: [UInt8], _ w: Int, _ h: Int, radius r: Int, sparse: Bool) {
+            self.w = w; self.h = h; self.r = r
+            self.sparse = sparse && r > 0
+            if !self.sparse {
+                whole = boxBlur(gray, w, h, radius: r)
+                rowSums = []
+                return
+            }
+            whole = []
+            var sums = [UInt32](repeating: 0, count: (w + 1) * h)
+            gray.withUnsafeBufferPointer { g in
+                sums.withUnsafeMutableBufferPointer { s in
+                    for y in 0..<h {
+                        let from = y * w, to = y * (w + 1)
+                        var run: UInt32 = 0
+                        s[to] = 0
+                        for x in 0..<w { run &+= UInt32(g[from + x]); s[to + x + 1] = run }
+                    }
+                }
+            }
+            rowSums = sums
+        }
+
+        @inline(__always) func at(_ k: Int) -> Int {
+            if !sparse { return Int(whole[k]) }
+            let x = k % w, y = k / w
+            let x0 = max(0, x - r), x1 = min(w - 1, x + r), c = x1 - x0 + 1
+            let y0 = max(0, y - r), y1 = min(h - 1, y + r), n = y1 - y0 + 1
+            var column = 0
+            rowSums.withUnsafeBufferPointer { s in
+                for row in y0...y1 {
+                    let base = row * (w + 1)
+                    column += Int(s[base + x1 + 1] &- s[base + x0]) * 16 / c
+                }
+            }
+            return min(255, (column / n + 8) / 16)
+        }
+    }
+
+    /// Whole-number division by a fixed `n` of 2 or more, by a multiply and a shift:
+    /// with m = 2^32 / n rounded up, m × n = 2^32 + e (e < n), so a × m / 2^32 is
+    /// a / n plus under a / 2^32, which is under 1/n while a × n < 2^32: never enough
+    /// to reach the next whole number, so dropping the fraction gives a / n exactly.
+    struct Divider {
+        let m: UInt64
+        init(_ n: Int) { m = ((1 << 32) + UInt64(n) - 1) / UInt64(n) }
+        @inline(__always) func divide(_ a: UInt32) -> UInt32 { UInt32(truncatingIfNeeded: (UInt64(a) &* m) >> 32) }
+    }
+
+    /// `boxBlur` by plain division, for radii too big for `Divider`.
+    static func boxBlurDividing(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         var rows = [Int](repeating: 0, count: w * h)     // row means, 4 bits of fraction
         p.withUnsafeBufferPointer { src in
             rows.withUnsafeMutableBufferPointer { dst in
@@ -415,13 +648,17 @@ enum BlackAndWhite {
         let cw = (w + c - 1) / c, ch = (h + c - 1) / c
         let cellDPI = dpi / Double(c)
         var dark = [Bool](repeating: false, count: cw * ch)
-        for cy in 0..<ch {
-            for cx in 0..<cw {
-                var inked = 0, n = 0
-                for y in (cy * c)..<min(h, cy * c + c) {
-                    for x in (cx * c)..<min(w, cx * c + c) { inked += ink[y * w + x] ? 1 : 0; n += 1 }
+        ink.withUnsafeBufferPointer { ink in
+            dark.withUnsafeMutableBufferPointer { dark in
+                for cy in 0..<ch {
+                    for cx in 0..<cw {
+                        var inked = 0, n = 0
+                        for y in (cy * c)..<min(h, cy * c + c) {
+                            for x in (cx * c)..<min(w, cx * c + c) { inked += ink[y * w + x] ? 1 : 0; n += 1 }
+                        }
+                        dark[cy * cw + cx] = inked * 10 >= n * 3
+                    }
                 }
-                dark[cy * cw + cx] = inked * 10 >= n * 3
             }
         }
         let near = max(1, Int((0.1 * cellDPI).rounded()))
@@ -488,10 +725,12 @@ enum BlackAndWhite {
             }
         }
         var cleared = [Bool](repeating: false, count: w * h)
-        for cy in 0..<ch {
-            for cx in 0..<cw where clear[cy * cw + cx] {
-                for y in (cy * c)..<min(h, cy * c + c) {
-                    for x in (cx * c)..<min(w, cx * c + c) { cleared[y * w + x] = true }
+        cleared.withUnsafeMutableBufferPointer { cleared in
+            for cy in 0..<ch {
+                for cx in 0..<cw where clear[cy * cw + cx] {
+                    for y in (cy * c)..<min(h, cy * c + c) {
+                        for x in (cx * c)..<min(w, cx * c + c) { cleared[y * w + x] = true }
+                    }
                 }
             }
         }
@@ -500,43 +739,133 @@ enum BlackAndWhite {
 
     /// What a band leaves about it (see `bands`).
     static func clearRims(_ out: inout [UInt8], _ cleared: [Bool], _ w: Int, _ h: Int, dpi: Double) {
-        guard cleared.contains(true) else { return }
+        guard let box = markBox(cleared, w, h) else { return }
         let c = max(1, Int((dpi / 100).rounded()))
         var stack: [Int] = []
         // The band's ragged rim: ink left touching it that lies mostly (60%) within
         // two cells of it, or in a strip at most a cell and a pixel thick but 0.4
         // inch long; and specks within 0.05 inch of it no more than 0.02 inch
         // across. Print touching the band reaches further, and is bigger than a speck.
-        let clearMap = cleared.map { $0 ? UInt8(0) : 255 }
-        let zone = boxBlur(clearMap, w, h, radius: Int((0.05 * dpi).rounded()))
-        let hugging = boxBlur(clearMap, w, h, radius: 2 * c)
+        let reach = Int((0.05 * dpi).rounded())
+        let zone = MarkReach(cleared, w, h, radius: reach, box: box)
+        let hugging = MarkReach(cleared, w, h, radius: 2 * c, box: box)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
         var pixels: [Int] = []
-        for start in 0..<(w * h) where out[start] == 0 && !visited[start] {
-            visited[start] = true
-            stack = [start]; pixels = []
-            var touches = false, inZone = false, hugs = 0
-            var minX = w, maxX = 0, minY = h, maxY = 0
-            while let k = stack.popLast() {
-                pixels.append(k)
-                if zone[k] < 255 { inZone = true }
-                if hugging[k] < 255 { hugs += 1 }
-                let x = k % w, y = k / w
-                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+        // Pixels touching what went: all within the box grown by a pixel.
+        let tx0 = max(0, box.x0 - 1), tx1 = min(w - 1, box.x1 + 1)
+        let ty0 = max(0, box.y0 - 1), ty1 = min(h - 1, box.y1 + 1), tw = tx1 - tx0 + 1
+        var touching = [Bool](repeating: false, count: tw * (ty1 - ty0 + 1))
+        for y in box.y0...box.y1 {
+            for x in box.x0...box.x1 where cleared[y * w + x] {
                 for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) {
-                        let n = ny * w + nx
-                        if cleared[n] { touches = true }
-                        if out[n] == 0, !visited[n] { visited[n] = true; stack.append(n) }
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) { touching[(ny - ty0) * tw + nx - tx0] = true }
+                }
+            }
+        }
+        // Only a group with a pixel in the zone or touching what went can go, so the
+        // search starts from those pixels alone (it still takes in each such group
+        // whole); they all lie within the box of what went grown by the zone's reach.
+        let g = max(1, reach)
+        cleared.withUnsafeBufferPointer { cleared in touching.withUnsafeBufferPointer { touching in
+        visited.withUnsafeMutableBufferPointer { visited in out.withUnsafeMutableBufferPointer { out in
+            for sy in max(0, box.y0 - g)...min(h - 1, box.y1 + g) {
+                for sx in max(0, box.x0 - g)...min(w - 1, box.x1 + g) {
+                    let start = sy * w + sx
+                    guard out[start] == 0, !visited[start] else { continue }
+                    let touchesHere = sx >= tx0 && sx <= tx1 && sy >= ty0 && sy <= ty1 && touching[(sy - ty0) * tw + sx - tx0]
+                    guard touchesHere || zone.under(sx, sy) else { continue }
+                    visited[start] = true
+                    stack.removeAll(keepingCapacity: true); stack.append(start)
+                    pixels.removeAll(keepingCapacity: true)
+                    var touches = false, inZone = false, hugs = 0
+                    var minX = w, maxX = 0, minY = h, maxY = 0
+                    while let k = stack.popLast() {
+                        pixels.append(k)
+                        let x = k % w, y = k / w
+                        if zone.under(x, y) { inZone = true }
+                        if hugging.under(x, y) { hugs += 1 }
+                        minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                        for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                            for nx in max(0, x - 1)...min(w - 1, x + 1) {
+                                let n = ny * w + nx
+                                if cleared[n] { touches = true }
+                                if out[n] == 0, !visited[n] { visited[n] = true; stack.append(n) }
+                            }
+                        }
+                    }
+                    let bw = maxX - minX + 1, bh = maxY - minY + 1
+                    let rim = touches && ((bw <= thin && bh >= long) || (bh <= thin && bw >= long)
+                                          || hugs * 5 >= pixels.count * 3)
+                    guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
+                    for k in pixels { out[k] = 255 }
+                }
+            }
+        }}}}
+    }
+
+    /// The box holding every mark, nil if there is none.
+    static func markBox(_ marks: [Bool], _ w: Int, _ h: Int) -> (x0: Int, x1: Int, y0: Int, y1: Int)? {
+        var x0 = w, x1 = -1, y0 = h, y1 = -1
+        // A Bool is a byte, 1 for true: memchr finds a row's first mark.
+        marks.withUnsafeBytes { m in
+            guard let base = m.baseAddress else { return }
+            for y in 0..<h {
+                let row = base + y * w
+                guard let hit = memchr(row, 1, w) else { continue }
+                let first = UnsafeRawPointer(hit) - row
+                var last = w - 1
+                while row.load(fromByteOffset: last, as: UInt8.self) == 0 { last -= 1 }
+                x0 = min(x0, first); x1 = max(x1, last); y0 = min(y0, y); y1 = max(y1, y)
+            }
+        }
+        return x1 >= 0 ? (x0, x1, y0, y1) : nil
+    }
+
+    /// `boxBlur` of a map of 0 and 255, as far as telling 255 from less (all its callers
+    /// ask). A window's mean is 255 exactly when it holds no 0. For a radius up to 10 it
+    /// is under 255 whenever it holds one: a 0 takes at least 4080/21 sixteenths from its
+    /// row's mean, more than the 8 a row the rounding can give back (the mean is 255 while
+    /// the rows' means fall short by 8 a row or less). So there the window's smallest
+    /// value tells the same, by vImage's minimum filter; larger radii blur.
+    static func belowWhite(_ map: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
+        r <= 10 ? LayeredScan.minFilter(map, w, h, radius: r) : boxBlur(map, w, h, radius: r)
+    }
+
+    /// Where `belowWhite` of a map that is 0 where `marks` holds and 255 elsewhere is
+    /// under 255, worked out only about the marks: a window holding no mark has mean
+    /// 255 exactly, so it is 255 wherever the marks' box grown by `radius` doesn't
+    /// reach. Within it the map is made on the box grown by twice the radius (cut short
+    /// at the page's edges), where every window reaching that far is cut short just as
+    /// on the page.
+    struct MarkReach {
+        private let rx0: Int, rx1: Int, ry0: Int, ry1: Int   // where it may be under 255
+        private let bx0: Int, by0: Int, bw: Int
+        private let values: [UInt8]                           // over the grown box
+
+        init(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int, box: (x0: Int, x1: Int, y0: Int, y1: Int)) {
+            let (x0, x1, y0, y1) = box
+            bx0 = max(0, x0 - 2 * r); by0 = max(0, y0 - 2 * r)
+            let bx1 = min(w - 1, x1 + 2 * r), by1 = min(h - 1, y1 + 2 * r)
+            bw = bx1 - bx0 + 1
+            let bh = by1 - by0 + 1
+            var sub = [UInt8](repeating: 255, count: bw * bh)
+            let (fx, fy, fw) = (bx0, by0, bw)
+            marks.withUnsafeBufferPointer { m in
+                sub.withUnsafeMutableBufferPointer { sub in
+                    for y in 0..<bh {
+                        let row = (fy + y) * w + fx
+                        for x in 0..<fw where m[row + x] { sub[y * fw + x] = 0 }
                     }
                 }
             }
-            let bw = maxX - minX + 1, bh = maxY - minY + 1
-            let rim = touches && ((bw <= thin && bh >= long) || (bh <= thin && bw >= long)
-                                  || hugs * 5 >= pixels.count * 3)
-            guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
-            for k in pixels { out[k] = 255 }
+            values = belowWhite(sub, bw, bh, radius: r)
+            rx0 = max(0, x0 - r); rx1 = min(w - 1, x1 + r)
+            ry0 = max(0, y0 - r); ry1 = min(h - 1, y1 + r)
+        }
+
+        @inline(__always) func under(_ x: Int, _ y: Int) -> Bool {
+            x >= rx0 && x <= rx1 && y >= ry0 && y <= ry1 && values[(y - by0) * bw + x - bx0] < 255
         }
     }
 
@@ -679,13 +1008,16 @@ enum BlackAndWhite {
     /// the gray edges of black strokes, always beside their near-black cores, are not.
     static func holdsTones(_ gray: [UInt8], width w: Int, height h: Int) -> Bool {
         guard w > 0, h > 0, gray.count == w * h else { return false }
+        // Mid gray is 41 to 214: v - 41, wrapping, under 174.
         var mid = 0
-        for v in gray where v > 40 && v < 215 { mid += 1 }
+        gray.withUnsafeBufferPointer { g in for v in g { mid += v &- 41 < 174 ? 1 : 0 } }
         if mid * 20 > gray.count { return true }
         guard mid * 1000 > gray.count else { return false }
         let nearDark = LayeredScan.minFilter(gray.map { $0 <= 40 ? 0 : 255 }, w, h, radius: 2)
         var alone = 0
-        for i in 0..<(w * h) where gray[i] > 40 && gray[i] < 215 && nearDark[i] != 0 { alone += 1 }
+        gray.withUnsafeBufferPointer { g in nearDark.withUnsafeBufferPointer { d in
+            for i in 0..<(w * h) { alone += g[i] &- 41 < 174 && d[i] != 0 ? 1 : 0 }
+        }}
         return alone * 1000 > gray.count
     }
 }

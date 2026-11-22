@@ -62,6 +62,24 @@ enum PDFExporter {
     /// the slow step — runs on the batch's pages in parallel.
     private static let batchSize = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
 
+    /// A batch also stops growing once its pages' renders pass this many bytes, so a few
+    /// huge scans can't fill memory. At least one page always goes in.
+    static let batchByteBudget = 1 << 30
+
+    /// Splits pages, given each one's estimated render size in bytes, into runs of at
+    /// most `maxPages` pages that stop once their sizes add up to `budget` or more.
+    static func planBatches(sizes: [Int], maxPages: Int = batchSize, budget: Int = batchByteBudget) -> [Range<Int>] {
+        var batches: [Range<Int>] = []
+        var start = 0
+        while start < sizes.count {
+            var end = start, bytes = 0
+            repeat { bytes += sizes[end]; end += 1 } while end < sizes.count && end - start < maxPages && bytes < budget
+            batches.append(start..<end)
+            start = end
+        }
+        return batches
+    }
+
     /// Progress callback receives (completedCrops, totalCrops), possibly from several
     /// threads, one at a time. With OCR a crop counts once it's read, the slow step, so
     /// the count moves within a batch; it reaches the total only once all are written.
@@ -128,84 +146,174 @@ enum PDFExporter {
             throw ExportError.writeFailed
         }
 
+        /// One source page's output pages: each made already or left as work (see step 1).
+        enum Kind { case ready, layered, fine }
+        struct Slot { var make: () -> CGImage?; var dpi: Double }
+        struct PagePlan {
+            var slots: [Slot]
+            var kind: Kind
+            var page: BookPage
+            var pdfPage: PDFPage
+            var dpi: Double
+            /// A layered page's color render for its picture crops failed: an error,
+            /// once its black and white is known to have worked.
+            var colorFailed = false
+            var pictures: [Bool] = []
+            /// Whether black and white failed on a crop not holding a picture.
+            func inkFailed(_ done: [CGImage?]) -> Bool {
+                done.indices.contains { done[$0] == nil && !(pictures.indices.contains($0) && pictures[$0]) }
+            }
+        }
+        /// A page not stored in layers, or one whose layers failed: made from its render.
+        func plainPlan(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double, fine: Bool) throws -> PagePlan {
+            // Black and white of a straightened page at a low scan resolution
+            // would turn the straightening's half pixels into steps that lean
+            // upright strokes; it is made from a render twice as fine (a page
+            // holding a picture is made as below).
+            // Only the render needs PDFKit: straightening and cutting it (once, by the
+            // first of the page's crops to need it) is part of each crop's work, and a
+            // crop failing there fails the work (see step 1).
+            let crops = page.outputCrops(direction: settings.direction).count
+            let fineDPI = min(600, 2 * dpi)
+            if fine, settings.enhanceMode == .blackAndWhite, dpi < 250,
+               abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
+               let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI) {
+                let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
+                // nil when it holds a picture: then none is made at this size.
+                let slots = (0..<crops).map { k in
+                    Slot(make: {
+                        guard let image = out.value?[k] else { return nil }
+                        let prepared = BlackAndWhite.prepare(image, dpi: fineDPI)
+                        return prepared.picture ? nil
+                            : BlackAndWhite.page(prepared, dpi: fineDPI, removeShadows: settings.removeShadows)
+                    }, dpi: fineDPI)
+                }
+                return PagePlan(slots: slots, kind: .fine, page: page, pdfPage: pdfPage, dpi: dpi)
+            }
+            // A crop that fails would silently drop an output page: fail the export.
+            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
+                throw ExportError.renderFailed(page.sourceIndex)
+            }
+            let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
+            let slots = (0..<crops).map { k in
+                Slot(make: { out.value.map { finished($0[k], dpi: dpi, settings: settings) } }, dpi: dpi)
+            }
+            return PagePlan(slots: slots, kind: .ready, page: page, pdfPage: pdfPage, dpi: dpi)
+        }
+        func plan(_ page: BookPage) throws -> PagePlan {
+            guard let pdfPage = document.page(at: page.sourceIndex) else {
+                throw ExportError.renderFailed(page.sourceIndex)
+            }
+            // Render at the scan's own resolution when there is one: higher
+            // would invent pixels, lower would throw detail away. Kept within
+            // 150–600 DPI so OCR has enough to read and memory stays sane.
+            let dpi = settings.matchScanResolution
+                ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
+                : settings.dpi
+            // A scan stored in layers gives its text layer alone, in black and
+            // white at its own resolution, but for pages whose color layer
+            // holds a picture: those keep the color export.
+            if let layers = LayeredScan.layers(of: pdfPage) {
+                let textDPI = LayeredScan.textDPI(layers)
+                if settings.bothLayers {
+                    if let work = LayeredScan.inkWork(of: page, pdfPage, layers: layers, direction: settings.direction,
+                                                      removeShadows: settings.removeShadows) {
+                        var color: [CGImage]?
+                        if work.contains(where: { $0 == nil }) {
+                            color = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi)
+                                .flatMap { outputImages(of: page, rendered: $0, settings: settings) }
+                        }
+                        let slots = work.enumerated().map { k, make -> Slot in
+                            if let make { return Slot(make: make, dpi: textDPI) }
+                            // A picture page: never black and white.
+                            return Slot(make: { color.map { pictureFinished($0[k], dpi: dpi, settings: settings) } }, dpi: dpi)
+                        }
+                        var plan = PagePlan(slots: slots, kind: .layered, page: page, pdfPage: pdfPage, dpi: dpi)
+                        plan.colorFailed = work.contains(where: { $0 == nil }) && color == nil
+                        plan.pictures = work.map { $0 == nil }
+                        return plan
+                    }
+                } else if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
+                                                           direction: settings.direction,
+                                                           bothLayers: false, removeShadows: settings.removeShadows) {
+                    var color: [CGImage] = []
+                    if text.contains(where: { $0 == nil }) {
+                        guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
+                              let out = outputImages(of: page, rendered: rendered, settings: settings) else {
+                            throw ExportError.renderFailed(page.sourceIndex)
+                        }
+                        color = out
+                    }
+                    let slots = text.enumerated().map { k, image -> Slot in
+                        if let image { return Slot(make: { image }, dpi: textDPI) }
+                        // A picture page: never black and white.
+                        return Slot(make: { pictureFinished(color[k], dpi: dpi, settings: settings) }, dpi: dpi)
+                    }
+                    return PagePlan(slots: slots, kind: .ready, page: page, pdfPage: pdfPage, dpi: dpi)
+                }
+            }
+            return try plainPlan(page, pdfPage, dpi: dpi, fine: true)
+        }
+
         var report = Report()
         let textFont = makeTextLayerFont()
-        var batchStart = 0
+        // Each page's render at export DPI, 4 bytes a pixel, sizes the batches.
+        let renderBytes = todo.map { page -> Int in
+            guard let pdfPage = document.page(at: page.sourceIndex) else { return 0 }
+            let dpi = settings.matchScanResolution
+                ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
+                : settings.dpi
+            let box = pdfPage.bounds(for: .mediaBox)
+            return Int(box.width * dpi / 72) * Int(box.height * dpi / 72) * 4
+        }
         var pagesRead = 0
         let readLock = NSLock()
-        while batchStart < todo.count {
+        for range in planBatches(sizes: renderBytes) {
             if isCancelled?() == true { throw ExportError.cancelled }
-            let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
-            batchStart += batch.count
+            let batch = todo[range]
 
             // 1. Render, straighten and crop serially: PDFKit can't draw one document
-            //    from several threads at once.
+            //    from several threads at once. What needs no PDFKit (straightening,
+            //    black and white, removing shadows) is left as work, done for the whole
+            //    batch at once in parallel; the result is the same, made in any order.
             //    The autorelease pool matters: PDFKit autoreleases while drawing, and a
             //    background thread doesn't drain until the whole export ends, which
             //    kept every rendered page alive.
+            var plans: [PagePlan] = []
+            for page in batch {
+                try autoreleasepool { plans.append(try plan(page)) }
+            }
+            let work = plans.indices.flatMap { p in plans[p].slots.indices.map { (p, $0) } }
+            var made = [CGImage?](repeating: nil, count: work.count)
+            made.withUnsafeMutableBufferPointer { made in
+                DispatchQueue.concurrentPerform(iterations: work.count) { i in
+                    autoreleasepool {
+                        let (p, k) = work[i]
+                        made[i] = plans[p].slots[k].make()
+                    }
+                }
+            }
             var images: [CGImage] = []
             var dpis: [Double] = []
-            for page in batch {
+            var next = 0
+            for var plan in plans {
+                var done = Array(made[next..<(next + plan.slots.count)])
+                next += plan.slots.count
                 try autoreleasepool {
-                    guard let pdfPage = document.page(at: page.sourceIndex) else {
-                        throw ExportError.renderFailed(page.sourceIndex)
-                    }
-                    // Render at the scan's own resolution when there is one: higher
-                    // would invent pixels, lower would throw detail away. Kept within
-                    // 150–600 DPI so OCR has enough to read and memory stays sane.
-                    let dpi = settings.matchScanResolution
-                        ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-                        : settings.dpi
-                    // A scan stored in layers gives its text layer alone, in black and
-                    // white at its own resolution, but for pages whose color layer
-                    // holds a picture: those keep the color export.
-                    if let layers = LayeredScan.layers(of: pdfPage),
-                       let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
-                                                        direction: settings.direction,
-                                                        bothLayers: settings.bothLayers, removeShadows: settings.removeShadows) {
-                        var color: [CGImage] = []
-                        if text.contains(where: { $0 == nil }) {
-                            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
-                                  let out = outputImages(of: page, rendered: rendered, settings: settings) else {
-                                throw ExportError.renderFailed(page.sourceIndex)
-                            }
-                            // A picture page: never black and white.
-                            color = out.map { pictureFinished($0, dpi: dpi, settings: settings) }
+                    // A layered page whose black and white failed, or a fine black and
+                    // white holding a picture, is made again as the page would have been
+                    // without that path, its work done here.
+                    while done.contains(where: { $0 == nil }) {
+                        if plan.kind == .layered, plan.colorFailed, !plan.inkFailed(done) {
+                            throw ExportError.renderFailed(plan.page.sourceIndex)
                         }
-                        for (k, image) in text.enumerated() {
-                            images.append(image ?? color[k])
-                            dpis.append(image == nil ? dpi : LayeredScan.textDPI(layers))
-                        }
-                        return
+                        guard plan.kind != .ready else { throw ExportError.renderFailed(plan.page.sourceIndex) }
+                        plan = try plainPlan(plan.page, plan.pdfPage, dpi: plan.dpi, fine: plan.kind == .layered)
+                        done = plan.slots.map { $0.make() }
                     }
-                    // Black and white of a straightened page at a low scan resolution
-                    // would turn the straightening's half pixels into steps that lean
-                    // upright strokes; it is made from a render twice as fine (a page
-                    // holding a picture is made as below).
-                    let fineDPI = min(600, 2 * dpi)
-                    if settings.enhanceMode == .blackAndWhite, dpi < 250,
-                       abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
-                       let fine = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
-                       let out = outputImages(of: page, rendered: fine, settings: settings) {
-                        // Whether any holds a picture first: then none is made at this size.
-                        let prepared = out.map { BlackAndWhite.prepare($0, dpi: fineDPI) }
-                        if !prepared.contains(where: { $0.picture }) {
-                            let bw = prepared.map { BlackAndWhite.page($0, dpi: fineDPI, removeShadows: settings.removeShadows) }
-                            if bw.allSatisfy({ $0 != nil }) {
-                                images += bw.compactMap { $0 }
-                                dpis += Array(repeating: fineDPI, count: bw.count)
-                                return
-                            }
-                        }
-                    }
-                    // A crop that fails would silently drop an output page: fail the export.
-                    guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
-                          let out = outputImages(of: page, rendered: rendered, settings: settings) else {
-                        throw ExportError.renderFailed(page.sourceIndex)
-                    }
-                    images += out.map { finished($0, dpi: dpi, settings: settings) }
-                    dpis += Array(repeating: dpi, count: out.count)
                 }
+                images += done.compactMap { $0 }
+                dpis += plan.slots.map { $0.dpi }
             }
 
             // 2. OCR the batch in parallel. nil = the reader failed on the whole page;
@@ -235,14 +343,21 @@ enum PDFExporter {
             if isCancelled?() == true { throw ExportError.cancelled }
 
             // 3. Write the batch in reading order. OCR above read the full-quality
-            //    image; what goes into the file is the compact encoding of it.
+            //    image; what goes into the file is the compact encoding of it, made
+            //    for the batch's pages in parallel first.
+            var encoded = [CGImage?](repeating: nil, count: images.count)
+            encoded.withUnsafeMutableBufferPointer { encoded in
+                DispatchQueue.concurrentPerform(iterations: images.count) { i in
+                    autoreleasepool { encoded[i] = encodeForPDF(images[i], quality: settings.jpegQuality) }
+                }
+            }
             for (i, image) in images.enumerated() {
                 let pointsPerPixel = 72.0 / dpis[i]
                 var box = CGRect(x: 0, y: 0,
                                  width: Double(image.width) * pointsPerPixel,
                                  height: Double(image.height) * pointsPerPixel)
                 ctx.beginPage(mediaBox: &box)
-                ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
+                ctx.draw(encoded[i] ?? image, in: box)
                 report.pageCount += 1
                 if let recognition = text[i] {
                     drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
@@ -349,14 +464,26 @@ enum PDFExporter {
         guard CFDataGetLength(data) >= stride * h else { return nil }
         let rowBytes = (w + 7) / 8
         var packed = [UInt8](repeating: 0, count: rowBytes * h)
-        for y in 0..<h {
-            let row = base + y * stride
-            for x in 0..<w {
-                let v = row[x]
-                if v == 255 { packed[y * rowBytes + (x >> 3)] |= UInt8(0x80 >> (x & 7)) }
-                else if v != 0 { return nil }
+        // Eight pixels to a byte; a pixel neither 0 nor 255 (v + 1 over 1, wrapping) ends it.
+        let pure = packed.withUnsafeMutableBufferPointer { out -> Bool in
+            for y in 0..<h {
+                let row = base + y * stride
+                var other: UInt8 = 0
+                for b in 0..<rowBytes {
+                    var byte: UInt8 = 0
+                    let x0 = b * 8, n = min(8, w - x0)
+                    for k in 0..<n {
+                        let v = row[x0 + k]
+                        other |= (v &+ 1) > 1 ? 1 : 0
+                        byte |= (v & 0x80) >> UInt8(k)
+                    }
+                    out[y * rowBytes + b] = byte
+                }
+                if other != 0 { return false }
             }
+            return true
         }
+        guard pure else { return nil }
         guard let provider = CGDataProvider(data: Data(packed) as CFData) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
