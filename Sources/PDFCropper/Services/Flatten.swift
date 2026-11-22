@@ -53,7 +53,7 @@ enum Flatten {
     static let maxMisfit = 0.10          // model misfit over this: unsure
     static let maxMisfitShare = 0.25     // ... or over this share of the droop
     static let maxSlopeY = 0.08          // vertical stretch or squash of letters
-    static let minSquash = 0.93          // letters this much narrower or more get widened
+    static let minSquash = 0.96          // letters this much narrower or more get widened
 
     /// `image` with the print in each region (pixels, top-left origin) flattened, and which
     /// regions changed; nil when none did. `gutterOnRight` is nil when not known. The image
