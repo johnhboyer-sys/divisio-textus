@@ -12,11 +12,13 @@ import CoreGraphics
 ///    outer end of the text, fitted column by column as a quadratic down the page.
 /// 4. Measure how letters narrow toward the gutter and widen them back, taking the room
 ///    from the blank margin by the gutter.
-/// 5. Remap. The shift fades to nothing at the crop's top and bottom edges and the
-///    stretch ends at its gutter edge, so no print leaves the crop.
+/// 5. Remap. Where the shift would push print out at the crop's top or bottom edge it
+///    fades to nothing at that edge, and the widening ends at the gutter edge, so no
+///    print leaves the crop.
 ///
 /// A page is left as it is (nil) when its text is too small to trace, it has few long
-/// lines, it holds a figure, its lines are already straight, or the model is unsure.
+/// lines, it holds a figure, its lines are already straight, the model is unsure, or
+/// keeping print in the crop would stretch letters.
 enum Flatten {
 
     enum Outcome: String {
@@ -328,7 +330,7 @@ enum Flatten {
         }
 
         // Horizontal: letters narrowed toward the gutter are widened back.
-        let ux = widening(long, ink: ink, comps: comps, xh: xh, lo: lo, hi: hi, width: w, height: h,
+        let ux = widening(long, comps: comps, xh: xh, lo: lo, hi: hi, width: w,
                           gutterOnRight: onRight, report: &rep)
         rep.outcome = .flattened
         let model = Model(gx: gx, gy: gy, v: v, ux: ux)
@@ -338,8 +340,8 @@ enum Flatten {
 
     /// Per output column, the input column: identity, or a widening of the band by the
     /// gutter where letters are narrower than in the middle of the lines.
-    static func widening(_ lines: [Line], ink: [Bool], comps: [Comp], xh: Double, lo: Double, hi: Double,
-                         width w: Int, height h: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
+    static func widening(_ lines: [Line], comps: [Comp], xh: Double, lo: Double, hi: Double,
+                         width w: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
         let identity = (0..<w).map(Double.init)
         let span = hi - lo
         let bins = 10

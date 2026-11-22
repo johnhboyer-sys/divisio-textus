@@ -161,7 +161,7 @@ struct HillClimbFlattenTests {
             let hw = Double(g.x1 - g.x0) / 2, hh = Double(g.y1 - g.y0) / 2
             let n1 = count(ia, Int((cx - hw).rounded()) - 2, Int((cy - hh).rounded()) - 2,
                            Int((cx + hw).rounded()) + 2, Int((cy + hh).rounded()) + 2)
-            if 2 * n1 < n0 { lost.append(g); if HillClimb.env["HILLCLIMB_FLATTEN_LOSTDEBUG"] != nil { print("lostdbg \(g.x0),\(g.y0)-\(g.x1),\(g.y1) n0 \(n0) n1 \(n1) to \(cx),\(cy) shift \(model.map { $0.shift(Double(g.x0), Double(g.y0)) } ?? -999)") } }
+            if 2 * n1 < n0 { lost.append(g) }
         }
         // Merges: neighbours in a row, apart before, in one glyph after.
         let sorted = gb.sorted { $0.x0 < $1.x0 }
