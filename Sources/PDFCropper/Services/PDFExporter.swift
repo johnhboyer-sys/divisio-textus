@@ -28,6 +28,9 @@ enum PDFExporter {
         /// shadows (`LayeredScan.inkPages`): in Black and white, or with Remove shadows.
         /// Otherwise its text layer alone, as before those options.
         var bothLayers: Bool { enhanceMode == .blackAndWhite || removeShadows }
+        /// Straighten lines of print that curve into the binding (see Flatten). A scan
+        /// stored in layers is measured on its text layer, and both layers take the warp.
+        var flattenPages = false
     }
 
     /// Lets tests read installed packs without changing the user's pack folder.
@@ -217,7 +220,8 @@ enum PDFExporter {
                 let textDPI = LayeredScan.textDPI(layers)
                 if settings.bothLayers {
                     if let work = LayeredScan.inkWork(of: page, pdfPage, layers: layers, direction: settings.direction,
-                                                      removeShadows: settings.removeShadows) {
+                                                      removeShadows: settings.removeShadows,
+                                                      flatten: settings.flattenPages) {
                         var color: [CGImage]?
                         if work.contains(where: { $0 == nil }) {
                             color = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi)
@@ -235,7 +239,8 @@ enum PDFExporter {
                     }
                 } else if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
                                                            direction: settings.direction,
-                                                           bothLayers: false, removeShadows: settings.removeShadows) {
+                                                           bothLayers: false, removeShadows: settings.removeShadows,
+                                                           flatten: settings.flattenPages) {
                     var color: [CGImage] = []
                     if text.contains(where: { $0 == nil }) {
                         guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
@@ -388,20 +393,34 @@ enum PDFExporter {
 
     /// One source page's output pages, in reading order, from its render: each half
     /// straightened (as the preview composite, so the crop boxes line up), in color
-    /// or gray, cut to its crop. The Export view draws these too, from a small render.
-    /// Nil when a crop fails.
+    /// or gray, flattened if the settings ask, cut to its crop. The Export view draws
+    /// these too, from a small render. Nil when a crop fails.
     static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings) -> [CGImage]? {
         let composite = ImageTransform.deskewedComposite(
             rendered, splitX: page.splitX,
             leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
             isSpread: page.isSpread)
         let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+        let flat = settings.flattenPages ? flattened(enhanced, page: page, direction: settings.direction) : nil
         var images: [CGImage] = []
-        for crop in page.outputCrops(direction: settings.direction) {
-            guard let sub = PDFRenderer.crop(enhanced, to: crop) else { return nil }
+        for (k, crop) in page.outputCrops(direction: settings.direction).enumerated() {
+            // A crop that flattening left as it is comes from the page as it was.
+            let source = flat.map { $0.changed[k] ? $0.image : enhanced } ?? enhanced
+            guard let sub = PDFRenderer.crop(source, to: crop) else { return nil }
             images.append(sub)
         }
         return images
+    }
+
+    /// The straightened page with the print in each of its crops flattened (see Flatten),
+    /// and which crops changed; nil when every crop is left as it is.
+    static func flattened(_ image: CGImage, page: BookPage, direction: ReadingDirection) -> (image: CGImage, changed: [Bool])? {
+        let size = CGSize(width: image.width, height: image.height)
+        let regions = page.outputCrops(direction: direction).map { c -> (rect: CGRect, gutterOnRight: Bool?) in
+            let c = c.normalized()
+            return (c.pixelRect(in: size).integral, page.isSpread ? c.x + c.width / 2 < page.splitX : nil)
+        }
+        return Flatten.pages(image, regions: regions)
     }
 
     /// An output page of a scan not stored in layers, made black and white and its
