@@ -1244,12 +1244,29 @@ enum PageAnalyzer {
                 || boxW <= 2 || boxH <= 2)
         // So is a wedge of scanner bed in a corner, left by a sheet laid a little
         // turned: a box in the corner, under 3% of the page tall, a third of it
-        // as dark as bed (a line of print, so thin, is paler over its box).
+        // as dark as bed (a line of print, so thin, is paler over its box). Only
+        // the ink joined to the wedge, from the page's edge, is judged: any mark
+        // of its own in the box (a folio beside the wedge) is print.
         func cornerWedge() -> Bool {
             guard right >= left, bottom >= top, Double(boxH) < 0.03 * Double(by1 - by0),
                   top <= by0 || bottom >= by1 - 1, left <= bx0 || right >= bx1 - 1 else { return false }
+            func inked(_ x: Int, _ y: Int) -> Bool { Double(g.value(x, y)) < threshold }
+            var joined = Set<Int>(), queue: [(Int, Int)] = []
+            let edge = top <= by0 ? top : bottom
+            for x in left...right where inked(x, edge) { joined.insert(edge * g.width + x); queue.append((x, edge)) }
+            while let (x, y) = queue.popLast() {
+                for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                where nx >= left && nx <= right && ny >= top && ny <= bottom && inked(nx, ny) && !joined.contains(ny * g.width + nx) {
+                    joined.insert(ny * g.width + nx); queue.append((nx, ny))
+                }
+            }
             var dark = 0
-            for y in top...bottom { for x in left...right where Double(g.value(x, y)) < bandThreshold { dark += 1 } }
+            for y in top...bottom {
+                for x in left...right where inked(x, y) {
+                    guard joined.contains(y * g.width + x) else { return false }
+                    if Double(g.value(x, y)) < bandThreshold { dark += 1 }
+                }
+            }
             return 3 * dark >= boxW * boxH
         }
         if bottom < top || right < left || speck || cornerWedge() {

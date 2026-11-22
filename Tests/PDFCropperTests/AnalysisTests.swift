@@ -702,6 +702,27 @@ struct AnalysisTests {
         #expect(r.leftBlank && !r.rightBlank, "left \(r.leftCrop)")
     }
 
+    /// A page whose only print is its folio, at the outer bottom corner, beside
+    /// a shallow wedge of bed: one box takes in both, under 3% of the page tall
+    /// and a third dark, but the folio is a mark of its own (Codex review of hc2).
+    @Test("A folio beside a wedge of bed keeps its page from being blank (hill climb 2, review)")
+    func folioBesideCornerWedge() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(450, 40 + r * 32, 310, 6) }                         // the right page
+            box(120, 546, 5, 9); box(128, 546, 5, 9)                                  // the folio, "12"
+            c.setFillColor(CGColor(gray: 0.03, alpha: 1))
+            for x in 0..<160 {                                                       // the wedge, 10 px deep at the edge
+                let h = Int((10 * Double(160 - x) / 160).rounded())
+                if h > 0 { box(x, 560 - h, 1, h) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(!r.leftBlank, "left \(r.leftCrop)")
+        #expect(r.leftCrop.minX * 800 <= 120 && r.leftCrop.maxY * 560 >= 555, "left \(r.leftCrop)")
+    }
+
     @Test("A blank page keeps the book's split, and its crop stays on its own side",
           arguments: [false, true])
     @MainActor
