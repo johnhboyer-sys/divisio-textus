@@ -311,14 +311,21 @@ enum PDFExporter {
             if isCancelled?() == true { throw ExportError.cancelled }
 
             // 3. Write the batch in reading order. OCR above read the full-quality
-            //    image; what goes into the file is the compact encoding of it.
+            //    image; what goes into the file is the compact encoding of it, made
+            //    for the batch's pages in parallel first.
+            var encoded = [CGImage?](repeating: nil, count: images.count)
+            encoded.withUnsafeMutableBufferPointer { encoded in
+                DispatchQueue.concurrentPerform(iterations: images.count) { i in
+                    autoreleasepool { encoded[i] = encodeForPDF(images[i], quality: settings.jpegQuality) }
+                }
+            }
             for (i, image) in images.enumerated() {
                 let pointsPerPixel = 72.0 / dpis[i]
                 var box = CGRect(x: 0, y: 0,
                                  width: Double(image.width) * pointsPerPixel,
                                  height: Double(image.height) * pointsPerPixel)
                 ctx.beginPage(mediaBox: &box)
-                ctx.draw(encodeForPDF(image, quality: settings.jpegQuality), in: box)
+                ctx.draw(encoded[i] ?? image, in: box)
                 report.pageCount += 1
                 if let recognition = text[i] {
                     drawTextLayer(recognition.lines, in: ctx, pageSize: box.size, font: textFont)
