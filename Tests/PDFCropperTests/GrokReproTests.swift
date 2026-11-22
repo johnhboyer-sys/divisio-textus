@@ -471,7 +471,7 @@ struct GrokReproTests {
     static func preview(bitonal: Bool) throws {
         let p = Self.gutterPage(bitonal: bitonal)
         let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
-        let doc = Self.pdf("grok7.pdf", image, dpi: Self.dpi)
+        let doc = Self.pdf("grok7-\(bitonal).pdf", image, dpi: Self.dpi)
         let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
         var settings = PDFExporter.Settings(); settings.enhanceMode = .blackAndWhite
         func made(_ dpi: Double, preview: Bool) throws -> [UInt8] {
@@ -697,6 +697,21 @@ struct GrokReproTests {
               + "dots bw \(Self.r2(Self.share(r.bw, dots))) color \(Self.r2(Self.share(r.color, dots)))")
         #expect(Self.share(r.bw, word) > 0.9 && Self.share(r.color, word) > 0.9)
         #expect(Self.share(r.bw, dots) > 0.9 && Self.share(r.color, dots) > 0.9)
+    }
+
+    @Test("Gate: a word in big capitals beside the block stays (Cherniss p3's COPYRIGHT, ROGER)")
+    func bigCapitalsBesideBlock() throws {
+        var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.body(into: &ink, x0: 430, x1: 860, top: 100, lead: 50, lines: 20)
+        var one = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.draw("ROGER", points: 22, x: 20, baseline: 500, into: &one)
+        let word = Self.dark(one)
+        for i in word { ink[i] = min(ink[i], one[i]) }
+        let g = Self.printed(ink, on: [UInt8](repeating: 235, count: Self.w * Self.h))
+        let bw = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
+                                   width: Self.w, height: Self.h, dpi: Self.dpi, removeShadows: true)
+        print("GROK gate capitals: word bw \(Self.r2(Self.share(bw, word)))")
+        #expect(Self.share(bw, word) > 0.9)
     }
 
     @Test("Gate: a dark cover with light lettering is left as it is (Freudenthal p1, p2)")

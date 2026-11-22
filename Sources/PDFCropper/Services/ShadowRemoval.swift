@@ -234,8 +234,8 @@ enum ShadowRemoval {
             keep[n] = (!bySide && specks < 8) || crowd * 10 <= m.count
         }
         // And a row of print too small or short for a text line (a word in small capitals,
-        // a dedication, dot leaders): three or more solid marks, none thin, not touching the
-        // side, alike in height (the tallest at most twice the shortest), chained along a row
+        // a dedication, dot leaders): three or more solid marks up to 0.3 inch tall (a title
+        // in capitals) or 2.2 `t`, none thin, not touching the side, alike in height (the tallest at most twice the shortest), chained along a row
         // (each overlapping the next by half the shorter's height, no further off than the
         // taller is tall or a text height), two thirds of them standing on one line (their
         // feet within a quarter of the middle height). A fold's speckle lies about at random,
@@ -244,7 +244,7 @@ enum ShadowRemoval {
         do {
             let rowMarks = list.indices.filter { n in
                 let m = list[n], mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
-                return !keep[n] && m.count >= minGlyph && Double(mh) <= 2.2 * t && mw * 5 >= mh && mh * 5 >= mw
+                return !keep[n] && m.count >= minGlyph && Double(mh) <= max(2.2 * t, 0.3 * dpi) && mw * 5 >= mh && mh * 5 >= mw
                     && Double(m.count) >= 0.12 * Double(mw * mh) && !touchesSide(m)
             }.sorted { list[$0].minX < list[$1].minX }
             var rowParent = [Int: Int]()
