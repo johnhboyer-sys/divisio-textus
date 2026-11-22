@@ -766,9 +766,10 @@ struct HillClimbShadowTests {
     /// contents page (Wallace p3), alone on its rows, was never looked at.
     ///
     /// Each output page is made as the export makes it, without and with the option, in Black
-    /// and white (`bw`) and in Color (`color`, the page with the option still darker than its
-    /// paper by 25; a page kept as a picture in Black and white is this too). Every mark of
-    /// the page in Black and white without the
+    /// and white (`bw`) and in Color (`color`: a pixel of the page with the option is kept
+    /// when still darker than its paper by 25, or no more than 20 lighter than the scan, as
+    /// faint print left alone is; a page kept as a picture in Black and white is this too).
+    /// Every mark of the page in Black and white without the
     /// option (8-connected ink at least a full stop in size, at most 0.5 inch each way) that
     /// keeps under 30% of its pixels with it is lost. The text height `t` is the page's own
     /// (`ShadowRemoval.textLines`, else 0.06 inch). Lost marks are sorted by shape and place
@@ -860,7 +861,7 @@ struct HillClimbShadowTests {
 
     /// One output page without and with Remove shadows in one mode: `off` is its Black and white
     /// without the option (0 ink, 255 paper), `on` the same page with it, as ink (`bw`) or, for
-    /// the Color export, its pixels still darker than its paper by 25 or more (`color`).
+    /// the Color export, its pixels still darker than its paper by 25 or no more than 20 lighter than the scan (`color`).
     struct BWPair { var mode: String, k: Int, off: [UInt8], on: [UInt8], paper: [UInt8], w: Int, h: Int, dpi: Double }
 
     /// The page's output pages made as `PDFExporter.export` makes them, in Black and white and in
@@ -886,7 +887,7 @@ struct HillClimbShadowTests {
         for i in stride(from: 0, to: g.count, by: 5) where off[i] != 0 { counts[Int(g[i])] += 1; n += 1 }
         var seen = 0, paperOut = 255
         for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { paperOut = v; break } }
-        return BWPair(mode: "color", k: k, off: off, on: g.map { Int($0) <= paperOut - 25 ? 0 : 255 }, paper: p.paper,
+        return BWPair(mode: "color", k: k, off: off, on: g.indices.map { i in Int(g[i]) <= paperOut - 25 || Int(g[i]) <= Int(p.gray[i]) + 20 ? 0 : 255 }, paper: p.paper,
                       w: p.width, h: p.height, dpi: d)
     }
 
