@@ -293,7 +293,7 @@ enum BlackAndWhite {
     /// board can cover most of a page), so tinted paper counts as clean.
     static func cleanLevel(_ paper: [UInt8]) -> Int {
         var counts = [Int](repeating: 0, count: 256)
-        for v in paper { counts[Int(v)] += 1 }
+        counts.withUnsafeMutableBufferPointer { c in paper.withUnsafeBufferPointer { p in for v in p { c[Int(v)] += 1 } } }
         var seen = 0, level = 255
         for v in 0..<256 {
             seen += counts[v]
@@ -307,13 +307,26 @@ enum BlackAndWhite {
         let f = max(1, Int((dpi / 50).rounded()))
         let lw = (w + f - 1) / f, lh = (h + f - 1) / f
         var small = [UInt8](repeating: 255, count: lw * lh)
-        for cy in 0..<lh {
-            for cx in 0..<lw {
-                var sum = 0, n = 0
-                for y in (cy * f)..<min(h, cy * f + f) {
-                    for x in (cx * f)..<min(w, cx * f + f) { sum += Int(gray[y * w + x]); n += 1 }
+        // Each cell's mean, its rows summed a row of cells at a time.
+        var sums = [Int](repeating: 0, count: lw)
+        gray.withUnsafeBufferPointer { g in
+            sums.withUnsafeMutableBufferPointer { sums in
+                for cy in 0..<lh {
+                    for cx in 0..<lw { sums[cx] = 0 }
+                    let ys = cy * f, ye = min(h, cy * f + f)
+                    for y in ys..<ye {
+                        let row = y * w
+                        for cx in 0..<lw {
+                            var sum = 0
+                            for x in (cx * f)..<min(w, cx * f + f) { sum += Int(g[row + x]) }
+                            sums[cx] += sum
+                        }
+                    }
+                    for cx in 0..<lw {
+                        let n = (ye - ys) * (min(w, cx * f + f) - cx * f)
+                        small[cy * lw + cx] = UInt8(sums[cx] / max(1, n))
+                    }
                 }
-                small[cy * lw + cx] = UInt8(sum / max(1, n))
             }
         }
         let cellDPI = dpi / Double(f)
@@ -348,16 +361,32 @@ enum BlackAndWhite {
         // the scanner bed) and the step's dark side mustn't count as ink.
         let smooth = LayeredScan.minFilter(closed, lw, lh, radius: 1)
         // Back to full size, bilinear, cell centers at (c + 0.5) * f.
+        // The column weights are the same on every row, and the blend across a row
+        // the same for every row between the same two rows of cells: worked out once.
+        var cx0 = [Int](repeating: 0, count: w), cx1 = cx0
+        var wx = [Double](repeating: 0, count: w), wx1 = wx
+        for x in 0..<w {
+            let fx = max(0, min(Double(lw - 1), (Double(x) + 0.5) / Double(f) - 0.5))
+            let x0 = Int(fx)
+            cx0[x] = x0; cx1[x] = min(lw - 1, x0 + 1); wx[x] = fx - Double(x0); wx1[x] = 1 - wx[x]
+        }
         var out = [UInt8](repeating: 255, count: w * h)
+        var rowA = [Double](repeating: 0, count: w), rowB = rowA
+        var lastY0 = -1, lastY1 = -1
         for y in 0..<h {
             let fy = max(0, min(Double(lh - 1), (Double(y) + 0.5) / Double(f) - 0.5))
             let y0 = Int(fy), y1 = min(lh - 1, y0 + 1), ty = fy - Double(y0)
-            for x in 0..<w {
-                let fx = max(0, min(Double(lw - 1), (Double(x) + 0.5) / Double(f) - 0.5))
-                let x0 = Int(fx), x1 = min(lw - 1, x0 + 1), tx = fx - Double(x0)
-                let a = Double(smooth[y0 * lw + x0]) * (1 - tx) + Double(smooth[y0 * lw + x1]) * tx
-                let b = Double(smooth[y1 * lw + x0]) * (1 - tx) + Double(smooth[y1 * lw + x1]) * tx
-                out[y * w + x] = UInt8((a * (1 - ty) + b * ty).rounded())
+            if y0 != lastY0 || y1 != lastY1 {
+                for x in 0..<w {
+                    rowA[x] = Double(smooth[y0 * lw + cx0[x]]) * wx1[x] + Double(smooth[y0 * lw + cx1[x]]) * wx[x]
+                    rowB[x] = Double(smooth[y1 * lw + cx0[x]]) * wx1[x] + Double(smooth[y1 * lw + cx1[x]]) * wx[x]
+                }
+                lastY0 = y0; lastY1 = y1
+            }
+            let ty1 = 1 - ty
+            out.withUnsafeMutableBufferPointer { o in
+                let row = y * w
+                for x in 0..<w { o[row + x] = UInt8((rowA[x] * ty1 + rowB[x] * ty).rounded()) }
             }
         }
         return out
