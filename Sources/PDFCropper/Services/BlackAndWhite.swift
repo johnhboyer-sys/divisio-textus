@@ -513,9 +513,19 @@ enum BlackAndWhite {
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
         var pixels: [Int] = []
-        for start in 0..<(w * h) where out[start] == 0 && !visited[start] {
+        // Only a group with a pixel in the zone or touching what went can go, so the
+        // search starts from those pixels alone (it still takes in each such group whole).
+        func touching(_ k: Int) -> Bool {
+            let x = k % w, y = k / w
+            for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                for nx in max(0, x - 1)...min(w - 1, x + 1) where cleared[ny * w + nx] { return true }
+            }
+            return false
+        }
+        for start in 0..<(w * h) where out[start] == 0 && !visited[start] && (zone[start] < 255 || touching(start)) {
             visited[start] = true
-            stack = [start]; pixels = []
+            stack.removeAll(keepingCapacity: true); stack.append(start)
+            pixels.removeAll(keepingCapacity: true)
             var touches = false, inZone = false, hugs = 0
             var minX = w, maxX = 0, minY = h, maxY = 0
             while let k = stack.popLast() {
