@@ -181,3 +181,10 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   marks in a fixed order (2988 pages identical over two runs). Codex's limits, left as rare:
   a page claiming 20+ inches with two type sizes 4× apart can lose a margin column of thin
   small type; a true 20-inch foldout in large type can lose a margin rule.
+- Flatten pages round 2 (claude/hc2-flatten2 d492e2e): layered scans flatten too (one warp on
+  both layers, in register). Smith, all curled sides: gutter droop 1.97 → 0.46 pt (B&W 0.50),
+  letter width 0.952 → 0.972; 392 of 488 sides flattened (B&W 384); bytes +0.2% (worst +1.8%);
+  export about 1.3–1.7× slower with it on. Codex's round-1 and round-2 findings fixed with tests
+  (edge folios and capitals, offset columns, colour-only print, preview at export resolution).
+  Off is byte-identical. Limits: a capital wider than tall on the scan's own edge counts as cut;
+  some sides with dark strips at the scan edge stay curved.
