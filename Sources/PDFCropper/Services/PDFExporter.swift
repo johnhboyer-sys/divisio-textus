@@ -62,6 +62,24 @@ enum PDFExporter {
     /// the slow step — runs on the batch's pages in parallel.
     private static let batchSize = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount / 2))
 
+    /// A batch also stops growing once its pages' renders pass this many bytes, so a few
+    /// huge scans can't fill memory. At least one page always goes in.
+    static let batchByteBudget = 1 << 30
+
+    /// Splits pages, given each one's estimated render size in bytes, into runs of at
+    /// most `maxPages` pages that stop once their sizes add up to `budget` or more.
+    static func planBatches(sizes: [Int], maxPages: Int = batchSize, budget: Int = batchByteBudget) -> [Range<Int>] {
+        var batches: [Range<Int>] = []
+        var start = 0
+        while start < sizes.count {
+            var end = start, bytes = 0
+            repeat { bytes += sizes[end]; end += 1 } while end < sizes.count && end - start < maxPages && bytes < budget
+            batches.append(start..<end)
+            start = end
+        }
+        return batches
+    }
+
     /// Progress callback receives (completedCrops, totalCrops), possibly from several
     /// threads, one at a time. With OCR a crop counts once it's read, the slow step, so
     /// the count moves within a batch; it reaches the total only once all are written.
@@ -239,13 +257,20 @@ enum PDFExporter {
 
         var report = Report()
         let textFont = makeTextLayerFont()
-        var batchStart = 0
+        // Each page's render at export DPI, 4 bytes a pixel, sizes the batches.
+        let renderBytes = todo.map { page -> Int in
+            guard let pdfPage = document.page(at: page.sourceIndex) else { return 0 }
+            let dpi = settings.matchScanResolution
+                ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
+                : settings.dpi
+            let box = pdfPage.bounds(for: .mediaBox)
+            return Int(box.width * dpi / 72) * Int(box.height * dpi / 72) * 4
+        }
         var pagesRead = 0
         let readLock = NSLock()
-        while batchStart < todo.count {
+        for range in planBatches(sizes: renderBytes) {
             if isCancelled?() == true { throw ExportError.cancelled }
-            let batch = todo[batchStart..<min(batchStart + batchSize, todo.count)]
-            batchStart += batch.count
+            let batch = todo[range]
 
             // 1. Render, straighten and crop serially: PDFKit can't draw one document
             //    from several threads at once. What needs no PDFKit (straightening,
