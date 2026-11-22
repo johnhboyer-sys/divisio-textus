@@ -86,4 +86,91 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
 - Trim, Stack, Export: all good as changed.
 - Welcome: notes cut is fine, but the screen is too blank (before and after). No explanatory
   notes; fill it with something useful instead. John chose: app icon above the name, and a
-  recent-books list (first-page thumbnail, date; click reopens with saved edits). Not done yet.
+  recent-books list (first-page thumbnail, date; click reopens with saved edits). The name set
+  as on the site hero (divisio-site style.css .hero h1): "Divisio" and "Textus" in heavy type
+  either side of a dashed split line, icon above. Not done yet.
+- Held-back design ideas (proposals on branch claude/hc-design-proposals), John's calls:
+  a. Yes, as two full-width buttons "Make Right Match Left" / "Make Left Match Right", with the
+     words Left and Right coloured as the boxes (left blue, right green).
+  b. Yes to the two buttons, but keep the label "Apply crop" (not "Copy crop").
+  c. "Other languages:" followed by the ticked languages (Choose… when none). Apple Vision only.
+  d. Yes (fainter Stack outlines).
+  e. Yes (no angles under Grid pages).
+  f. Yes (note when Stack pages are left out); the page list is much narrower than the
+     window — to settle.
+- Welcome layout (John): logo centred left-right, its centre on the upper third line of the window
+  (rule of thirds), not the window's middle; recent files as a
+  horizontal grid of cards (first-page thumbnail, name, date) below it.
+- Stack page list (John): thumbnails layout (branch claude/hc-stack-list-variants, DEBUG
+  variant "thumbs"). To do: show the stack's own page (the left or right page cropped), not the
+  whole scan, so each is narrow and sharp; box height fits short stacks.
+- Built on branch claude/ui-approved, John approved from screenshots (2026-11-20): Match buttons
+  (Left blue, Right green), "Apply crop" with two buttons, "Other languages:", resolution slider
+  hidden while Keep page resolution is on, thin straighten sliders with drawn ticks, darker
+  green/orange crop tags with white text (now the default), Welcome (logo on the upper third,
+  dashed line only as tall as the name, recent-book cards).
+- B/W export (John): clean b/w of layered scans approved; it must not lose ink (Smith title
+  letters, PART TWO rules, stamps). Remove shadows in b/w while keeping the full page size.
+  In progress on branch claude/bw-ink (ink judged against local paper; also a trial b/w for
+  plain scans to judge as a future option).
+- Page to the fold (branch claude/page-to-fold), Codex review 2026-11-20: John keeps it as is.
+  A white corner triangle on straightened pages stays (the page must be straight; users can
+  undo the turn). A wrong split pulling in a strip of the other page stays (the user drags
+  the split; that is what manual editing is for).
+- Feature idea (John): an erase tool — draw a box on a page to blank that area in the export
+  (library stamps, call numbers, marks the b/w step keeps). Not started.
+- B/w review (John, 2026-11-20): needs work — complete shadow removal: no shadow, streak or
+  black by the fold; pages as pristine as possible. Black outside the page (scanner bed) is
+  the user's to trim; don't focus on it. Yes to a "Black and white" export option for plain
+  scans.
+- Shadow removal (John): an OPTION ("Remove shadows", export setting) that removes shadows
+  completely, in colour, grey and b/w; trimming to the page is the user's job. Run it as a
+  hill climb with a score (fold residue down, print loss ~0).
+- Remove shadows (branch claude/bw-pristine), John's review 2026-11-21: good, but clean the comb
+  teeth too. Speed work kept output identical (Riezler Color+Remove shadows 140 → 102 s; Wallace
+  B&W 36 → 23 s); Smith's slow modes stay about 4× plain Color. Comb teeth: in progress.
+- Next climbs (John, 2026-11-21): split and crop, speed, page flattening; not Czech/Polish OCR
+  for now. Split/crop (claude/hc2-split) and flattening (claude/hc2-flatten, an export option
+  "Flatten pages", off by default; round 1 plain scans only) started from 3660816. Speed waits
+  for the comb-teeth fixes, which touch the same files.
+- Rebuilding pages as typeset text (matched font, OCR text drawn visibly): dropped 2026-11-21.
+  A different app, and OCR errors would show on the page. "A better version" comes from
+  Remove shadows, Black and white and Flatten pages instead.
+- Grok review of claude/ui-approved (2026-11-21): nothing serious. Four low items for the
+  finishing pass: "Apply crop" row clips at the 260pt inspector minimum (InspectorView:149);
+  a recent card whose file was deleted after Welcome appeared stays after a failed open
+  (WelcomeView:114, refresh on failure); fileExists on main thread can wait on a stalled network
+  share (RecentFiles:35); Welcome logo has no accessibility label (WelcomeView:24, hide it).
+- Comb teeth done (claude/bw-pristine 5f3bec5): Oesterle comb residue 636 B&W / 757 Color /
+  685 Gray px, no print lost, hanging list "1." full stops kept. Known limits (rare, left by
+  John's call): thin "1." with a stop 13 px off; faded serif "1" reaching above a tooth;
+  hanging bullets before 1–2 character answers; a gray rule just short of a tooth; a column of
+  thin "1"s or a thin table rule read as a page-stack stripe; a sliver at one Oesterle tooth tip.
+- Split/crop climb 2 (claude/hc2-split, 3 commits on 3660816): mean split error 0.432 → 0.251%,
+  p95 1.98 → 0.92%, synthetic pages with print cut 6 → 5, splits through print 2 → 2. 15 real
+  pages moved (Freudenthal fold onto the crease, Oesterle onto the spiral's middle, Smith blank
+  pages crop out scanner bed), no print cut by eye. Rejected: skipping frame sides in broad
+  fold shadow (moved 13–153 real pages, new splits through print).
+- Speed climb (claude/hc2-speed, 17 commits on 88680ec): output byte- and pixel-identical on
+  822 pages. Under heavy load, B&W and Remove shadows now take 0.12–0.6× the time; Smith
+  B&W 58.6 → 7.3 s; Riezler Color+Remove shadows 188 → 51 s. Left: ShadowRemoval.page loops,
+  CG drawing of straightened layers, ImageTransform.rotateInPlace.
+- Flatten pages (claude/hc2-flatten, 4 rounds on 3660816): export option off by default; off
+  is byte-identical. Smith curled sides: gutter droop 2.00 → 0.61 pt, letter width at gutter
+  0.955 → 0.983, no print lost by eye. But Smith is a layered scan, which round 1 leaves
+  unflattened, and the plain scans in the corpus barely curl (Freudenthal 67L 1.12 → 0.28 pt).
+  Useful in export only once layered scans are flattened (next round).
+  Codex review of claude/hc2-flatten, to fix next round: a tall drop capital (or a folio on the
+  crop's edge row) is left out of the edge guard and can be pushed out of the crop
+  (Flatten.swift:304); two close columns with offset baselines join into "long lines" and a
+  straight page gets bent (Flatten.swift:505); the 120 DPI preview skips small type that the
+  300 DPI export flattens (AppModel.swift:577).
+  Codex's three split findings fixed (8f15a5b, b6082d4, a1831ce); 0 real pages moved, scores
+  unchanged. Limits: a frame corner within 4 px of the scan edge isn't checked; spiral holes
+  under 1.5× x-height don't join gaps.
+- Grok shadow fixes (claude/grok-fix 14e06d6): Wallace contents pages keep page numbers, section
+  numbers and the dot of "vi"; margin rules kept (S2). New print-loss gate over every page of all
+  8 books. Still losing print with Remove shadows: Cherniss index p215R–217R and p191R (file
+  claims 72 ppi, so the shadow step's inch sizes are 4× off); fix in progress on
+  claude/grok-fix-scale. Small leftovers: 13 marks of Freudenthal's cover emblem in B&W; a ";"
+  and "i" at Wallace p2L's fold in Color; pencil notes and stamps are removed as marks.
