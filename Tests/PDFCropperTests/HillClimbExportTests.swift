@@ -44,9 +44,7 @@ struct HillClimbExportTests {
 
     /// The DPI the exporter renders a page at.
     private func exportDPI(_ page: PDFPage, _ settings: PDFExporter.Settings) -> Double {
-        settings.matchScanResolution
-            ? PDFRenderer.scanDPI(of: page).map { min(600, max(150, $0)) } ?? settings.dpi
-            : settings.dpi
+        PDFExporter.renderDPI(scanDPI: PDFRenderer.scanDPI(of: page), settings: settings)
     }
 
     /// PSNR in dB over all color channels between two images, compared over their common

@@ -89,6 +89,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var cropTarget: CropTarget = .page
     /// The page size typed in for Whole page crops (see setPageSize); nil: measured.
     @Published private(set) var pageSizeOverride: PageSize?
+    /// The PDFs opened lately, for the Welcome screen.
+    @Published private(set) var recents: [RecentPDF] = []
+    /// Replaces the app's icon on the Welcome screen (the DEBUG shots build has no bundle icon).
+    @Published var appIcon: NSImage?
+    func refreshRecents() { recents = RecentFiles.list() }
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
@@ -390,6 +395,7 @@ final class AppModel: ObservableObject {
         spreadLayout = nil
         document = doc
         sourceURL = url
+        RecentFiles.note(url)
         sourceHasText = false   // until checkForText finds some
         documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
@@ -723,9 +729,7 @@ final class AppModel: ObservableObject {
             }
         }
         guard !rendered.isEmpty else { return models }
-        var dpi = settings.matchScanResolution
-            ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-            : settings.dpi
+        var dpi = PDFExporter.renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
         // Black and white of a skewed page at a low resolution is made from a render twice as fine.
         if settings.enhanceMode == .blackAndWhite, dpi < 250,
            abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01) {

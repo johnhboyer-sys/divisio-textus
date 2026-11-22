@@ -12,6 +12,15 @@ import Compression
 /// PDF is searchable.
 enum PDFExporter {
 
+    /// The DPI a page renders at. With "Keep page resolution" on, the scan's own
+    /// (kept within 150–600), or 300 for a page with no scanned image; `settings.dpi`
+    /// only applies with it off.
+    static let unknownScanDPI = 300.0
+    static func renderDPI(scanDPI: Double?, settings: Settings) -> Double {
+        guard settings.matchScanResolution else { return settings.dpi }
+        return scanDPI.map { min(600, max(150, $0)) } ?? unknownScanDPI
+    }
+
     struct Settings {
         var dpi: Double = 300            // export resolution when not matching the scan
         var matchScanResolution = true   // use each page's own scan resolution instead
@@ -210,9 +219,7 @@ enum PDFExporter {
             // Render at the scan's own resolution when there is one: higher
             // would invent pixels, lower would throw detail away. Kept within
             // 150–600 DPI so OCR has enough to read and memory stays sane.
-            let dpi = settings.matchScanResolution
-                ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-                : settings.dpi
+            let dpi = renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
             // A scan stored in layers gives its text layer alone, in black and
             // white at its own resolution, but for pages whose color layer
             // holds a picture: those keep the color export.
@@ -265,9 +272,7 @@ enum PDFExporter {
         // Each page's render at export DPI, 4 bytes a pixel, sizes the batches.
         let renderBytes = todo.map { page -> Int in
             guard let pdfPage = document.page(at: page.sourceIndex) else { return 0 }
-            let dpi = settings.matchScanResolution
-                ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
-                : settings.dpi
+            let dpi = renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
             let box = pdfPage.bounds(for: .mediaBox)
             return Int(box.width * dpi / 72) * Int(box.height * dpi / 72) * 4
         }

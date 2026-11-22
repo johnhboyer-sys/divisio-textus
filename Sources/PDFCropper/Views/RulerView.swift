@@ -116,15 +116,22 @@ struct MatchMenu: View {
     let match: (Bool) -> Void
 
     var body: some View {
-        Menu {
-            Button("Make Right Match Left") { match(true) }
-            Button("Make Left Match Right") { match(false) }
-        } label: {
-            Text("Match").frame(maxWidth: .infinity)
+        VStack(spacing: 6) {
+            Button { match(true) } label: {
+                label("Right", .green, "Left", .blue)
+            }
+            Button { match(false) } label: {
+                label("Left", .blue, "Right", .green)
+            }
         }
-        .menuStyle(.button)
         .disabled(!differs)
         .help("Give one box the other's size: the edge at the fold stays, the outer edge moves, and the top and bottom line up. If the box would pass the image's edge, the split moves to make room.")
+    }
+
+    /// "Make Right Match Left" with each side's name in its crop box's colour.
+    private func label(_ a: String, _ ac: Color, _ b: String, _ bc: Color) -> some View {
+        (Text("Make ") + Text(a).foregroundColor(ac) + Text(" Match ") + Text(b).foregroundColor(bc))
+            .frame(maxWidth: .infinity)
     }
 }
 
