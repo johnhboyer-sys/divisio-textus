@@ -174,3 +174,10 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   claims 72 ppi, so the shadow step's inch sizes are 4× off); fix in progress on
   claude/grok-fix-scale. Small leftovers: 13 marks of Freudenthal's cover emblem in B&W; a ";"
   and "i" at Wallace p2L's fold in Color; pencil notes and stamps are removed as marks.
+- Cherniss fixed (claude/shadow-determinism, from claude/grok-fix-scale 0a729bd): its PDF claims
+  72 ppi on a 36-inch spread, so Remove shadows now measures the scale from the letters on any
+  crop 20 inches or longer. Index columns, line ends and the p4R notice kept; other books'
+  pages unchanged. Remove shadows also gave a few different specks run to run; now it judges
+  marks in a fixed order (2988 pages identical over two runs). Codex's limits, left as rare:
+  a page claiming 20+ inches with two type sizes 4× apart can lose a margin column of thin
+  small type; a true 20-inch foldout in large type can lose a margin rule.
