@@ -35,7 +35,6 @@ enum BlackAndWhite {
         let paper = given ?? background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
         let sharpCut = preview ? 192 : 128
-        func isSharp(_ i: Int) -> Bool { sharp?[i] ?? (Int(gray[i]) < sharpCut) }
         var out = [UInt8](repeating: 255, count: w * h)
         // Sharp ink on clean paper stays as it is; tones darker than the paper by the
         // margin are ink wherever they are.
@@ -75,7 +74,11 @@ enum BlackAndWhite {
         }}}}}
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
-        let cleared = bands(out.indices.map { out[$0] == 0 || pending[$0] }, w, h, dpi: dpi)
+        var candidates = [Bool](repeating: false, count: w * h)
+        out.withUnsafeBufferPointer { out in pending.withUnsafeBufferPointer { pending in
+            candidates.withUnsafeMutableBufferPointer { c in for i in 0..<(w * h) { c[i] = out[i] == 0 || pending[i] } }
+        }}
+        let cleared = bands(candidates, w, h, dpi: dpi)
         cleared.withUnsafeBufferPointer { cleared in
             out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
                 toneInk.withUnsafeMutableBufferPointer { toneInk in
@@ -90,7 +93,16 @@ enum BlackAndWhite {
         // speckle a scanner makes of a shadow, which is the shadow's own gray on
         // average, is not.
         let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))   // a full stop
-        let sharpPx = (0..<(w * h)).map { isSharp($0) && !cleared[$0] }
+        var sharpPx = [Bool](repeating: false, count: w * h)
+        cleared.withUnsafeBufferPointer { cleared in gray.withUnsafeBufferPointer { gray in
+            sharpPx.withUnsafeMutableBufferPointer { px in
+                if let sharp {
+                    sharp.withUnsafeBufferPointer { sharp in for i in 0..<(w * h) { px[i] = sharp[i] && !cleared[i] } }
+                } else {
+                    for i in 0..<(w * h) { px[i] = Int(gray[i]) < sharpCut && !cleared[i] }
+                }
+            }
+        }}
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
         var failed: [[Int]] = []
@@ -433,17 +445,21 @@ enum BlackAndWhite {
             let fy = max(0, min(Double(lh - 1), (Double(y) + 0.5) / Double(f) - 0.5))
             let y0 = Int(fy), y1 = min(lh - 1, y0 + 1), ty = fy - Double(y0)
             if y0 != lastY0 || y1 != lastY1 {
-                for x in 0..<w {
-                    rowA[x] = Double(smooth[y0 * lw + cx0[x]]) * wx1[x] + Double(smooth[y0 * lw + cx1[x]]) * wx[x]
-                    rowB[x] = Double(smooth[y1 * lw + cx0[x]]) * wx1[x] + Double(smooth[y1 * lw + cx1[x]]) * wx[x]
-                }
+                smooth.withUnsafeBufferPointer { s in cx0.withUnsafeBufferPointer { c0 in cx1.withUnsafeBufferPointer { c1 in
+                wx.withUnsafeBufferPointer { wx in wx1.withUnsafeBufferPointer { wx1 in
+                rowA.withUnsafeMutableBufferPointer { a in rowB.withUnsafeMutableBufferPointer { b in
+                    for x in 0..<w {
+                        a[x] = Double(s[y0 * lw + c0[x]]) * wx1[x] + Double(s[y0 * lw + c1[x]]) * wx[x]
+                        b[x] = Double(s[y1 * lw + c0[x]]) * wx1[x] + Double(s[y1 * lw + c1[x]]) * wx[x]
+                    }
+                }}}}}}}
                 lastY0 = y0; lastY1 = y1
             }
             let ty1 = 1 - ty
-            out.withUnsafeMutableBufferPointer { o in
+            out.withUnsafeMutableBufferPointer { o in rowA.withUnsafeBufferPointer { a in rowB.withUnsafeBufferPointer { b in
                 let row = y * w
-                for x in 0..<w { o[row + x] = UInt8((rowA[x] * ty1 + rowB[x] * ty).rounded()) }
-            }
+                for x in 0..<w { o[row + x] = UInt8((a[x] * ty1 + b[x] * ty).rounded()) }
+            }}}
         }
         return out
     }
@@ -678,17 +694,19 @@ enum BlackAndWhite {
         // inch long; and specks within 0.05 inch of it no more than 0.02 inch
         // across. Print touching the band reaches further, and is bigger than a speck.
         let reach = Int((0.05 * dpi).rounded())
-        let zone = blurOfMarks(cleared, w, h, radius: reach, box: box)
-        let hugging = blurOfMarks(cleared, w, h, radius: 2 * c, box: box)
+        let zone = MarkReach(cleared, w, h, radius: reach, box: box)
+        let hugging = MarkReach(cleared, w, h, radius: 2 * c, box: box)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
         var pixels: [Int] = []
-        // Pixels touching what went.
-        var touching = [Bool](repeating: false, count: w * h)
+        // Pixels touching what went: all within the box grown by a pixel.
+        let tx0 = max(0, box.x0 - 1), tx1 = min(w - 1, box.x1 + 1)
+        let ty0 = max(0, box.y0 - 1), ty1 = min(h - 1, box.y1 + 1), tw = tx1 - tx0 + 1
+        var touching = [Bool](repeating: false, count: tw * (ty1 - ty0 + 1))
         for y in box.y0...box.y1 {
             for x in box.x0...box.x1 where cleared[y * w + x] {
                 for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) { touching[ny * w + nx] = true }
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) { touching[(ny - ty0) * tw + nx - tx0] = true }
                 }
             }
         }
@@ -696,13 +714,14 @@ enum BlackAndWhite {
         // search starts from those pixels alone (it still takes in each such group
         // whole); they all lie within the box of what went grown by the zone's reach.
         let g = max(1, reach)
-        cleared.withUnsafeBufferPointer { cleared in zone.withUnsafeBufferPointer { zone in
-        hugging.withUnsafeBufferPointer { hugging in touching.withUnsafeBufferPointer { touching in
+        cleared.withUnsafeBufferPointer { cleared in touching.withUnsafeBufferPointer { touching in
         visited.withUnsafeMutableBufferPointer { visited in out.withUnsafeMutableBufferPointer { out in
             for sy in max(0, box.y0 - g)...min(h - 1, box.y1 + g) {
                 for sx in max(0, box.x0 - g)...min(w - 1, box.x1 + g) {
                     let start = sy * w + sx
-                    guard out[start] == 0, !visited[start], zone[start] < 255 || touching[start] else { continue }
+                    guard out[start] == 0, !visited[start] else { continue }
+                    let touchesHere = sx >= tx0 && sx <= tx1 && sy >= ty0 && sy <= ty1 && touching[(sy - ty0) * tw + sx - tx0]
+                    guard touchesHere || zone.under(sx, sy) else { continue }
                     visited[start] = true
                     stack.removeAll(keepingCapacity: true); stack.append(start)
                     pixels.removeAll(keepingCapacity: true)
@@ -710,9 +729,9 @@ enum BlackAndWhite {
                     var minX = w, maxX = 0, minY = h, maxY = 0
                     while let k = stack.popLast() {
                         pixels.append(k)
-                        if zone[k] < 255 { inZone = true }
-                        if hugging[k] < 255 { hugs += 1 }
                         let x = k % w, y = k / w
+                        if zone.under(x, y) { inZone = true }
+                        if hugging.under(x, y) { hugs += 1 }
                         minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
                         for ny in max(0, y - 1)...min(h - 1, y + 1) {
                             for nx in max(0, x - 1)...min(w - 1, x + 1) {
@@ -729,7 +748,7 @@ enum BlackAndWhite {
                     for k in pixels { out[k] = 255 }
                 }
             }
-        }}}}}}
+        }}}}
     }
 
     /// The box holding every mark, nil if there is none.
@@ -760,44 +779,41 @@ enum BlackAndWhite {
         r <= 10 ? LayeredScan.minFilter(map, w, h, radius: r) : boxBlur(map, w, h, radius: r)
     }
 
-    /// `belowWhite` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
-    /// only about the marks: a window holding no mark has mean 255 exactly, so the
-    /// blur is 255 wherever the marks' box grown by `radius` doesn't reach. Within it
-    /// the blur is made on the box grown by twice the radius (cut short at the page's
-    /// edges), where every window reaching that far is cut short just as on the page.
-    static func blurOfMarks(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int,
-                            box: (x0: Int, x1: Int, y0: Int, y1: Int)) -> [UInt8] {
-        let (x0, x1, y0, y1) = box
-        var out = [UInt8](repeating: 255, count: w * h)
-        guard r > 0 else {
-            for i in 0..<(w * h) where marks[i] { out[i] = 0 }
-            return out
-        }
-        // The box grown by twice the radius, and the part of it the blur can reach.
-        let bx0 = max(0, x0 - 2 * r), bx1 = min(w - 1, x1 + 2 * r)
-        let by0 = max(0, y0 - 2 * r), by1 = min(h - 1, y1 + 2 * r)
-        let bw = bx1 - bx0 + 1, bh = by1 - by0 + 1
-        var sub = [UInt8](repeating: 255, count: bw * bh)
-        marks.withUnsafeBufferPointer { m in
-            sub.withUnsafeMutableBufferPointer { sub in
-                for y in 0..<bh {
-                    let row = (by0 + y) * w + bx0
-                    for x in 0..<bw where m[row + x] { sub[y * bw + x] = 0 }
+    /// Where `belowWhite` of a map that is 0 where `marks` holds and 255 elsewhere is
+    /// under 255, worked out only about the marks: a window holding no mark has mean
+    /// 255 exactly, so it is 255 wherever the marks' box grown by `radius` doesn't
+    /// reach. Within it the map is made on the box grown by twice the radius (cut short
+    /// at the page's edges), where every window reaching that far is cut short just as
+    /// on the page.
+    struct MarkReach {
+        private let rx0: Int, rx1: Int, ry0: Int, ry1: Int   // where it may be under 255
+        private let bx0: Int, by0: Int, bw: Int
+        private let values: [UInt8]                           // over the grown box
+
+        init(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int, box: (x0: Int, x1: Int, y0: Int, y1: Int)) {
+            let (x0, x1, y0, y1) = box
+            bx0 = max(0, x0 - 2 * r); by0 = max(0, y0 - 2 * r)
+            let bx1 = min(w - 1, x1 + 2 * r), by1 = min(h - 1, y1 + 2 * r)
+            bw = bx1 - bx0 + 1
+            let bh = by1 - by0 + 1
+            var sub = [UInt8](repeating: 255, count: bw * bh)
+            let (fx, fy, fw) = (bx0, by0, bw)
+            marks.withUnsafeBufferPointer { m in
+                sub.withUnsafeMutableBufferPointer { sub in
+                    for y in 0..<bh {
+                        let row = (fy + y) * w + fx
+                        for x in 0..<fw where m[row + x] { sub[y * fw + x] = 0 }
+                    }
                 }
             }
+            values = belowWhite(sub, bw, bh, radius: r)
+            rx0 = max(0, x0 - r); rx1 = min(w - 1, x1 + r)
+            ry0 = max(0, y0 - r); ry1 = min(h - 1, y1 + r)
         }
-        let blurred = belowWhite(sub, bw, bh, radius: r)
-        let rx0 = max(0, x0 - r), rx1 = min(w - 1, x1 + r)
-        let ry0 = max(0, y0 - r), ry1 = min(h - 1, y1 + r)
-        blurred.withUnsafeBufferPointer { b in
-            out.withUnsafeMutableBufferPointer { o in
-                for y in ry0...ry1 {
-                    let from = (y - by0) * bw - bx0, to = y * w
-                    for x in rx0...rx1 { o[to + x] = b[from + x] }
-                }
-            }
+
+        @inline(__always) func under(_ x: Int, _ y: Int) -> Bool {
+            x >= rx0 && x <= rx1 && y >= ry0 && y <= ry1 && values[(y - by0) * bw + x - bx0] < 255
         }
-        return out
     }
 
     /// An output page in black and white, from its gray or color image at `dpi`,
@@ -939,13 +955,16 @@ enum BlackAndWhite {
     /// the gray edges of black strokes, always beside their near-black cores, are not.
     static func holdsTones(_ gray: [UInt8], width w: Int, height h: Int) -> Bool {
         guard w > 0, h > 0, gray.count == w * h else { return false }
+        // Mid gray is 41 to 214: v - 41, wrapping, under 174.
         var mid = 0
-        for v in gray where v > 40 && v < 215 { mid += 1 }
+        gray.withUnsafeBufferPointer { g in for v in g { mid += v &- 41 < 174 ? 1 : 0 } }
         if mid * 20 > gray.count { return true }
         guard mid * 1000 > gray.count else { return false }
         let nearDark = LayeredScan.minFilter(gray.map { $0 <= 40 ? 0 : 255 }, w, h, radius: 2)
         var alone = 0
-        for i in 0..<(w * h) where gray[i] > 40 && gray[i] < 215 && nearDark[i] != 0 { alone += 1 }
+        gray.withUnsafeBufferPointer { g in nearDark.withUnsafeBufferPointer { d in
+            for i in 0..<(w * h) { alone += g[i] &- 41 < 174 && d[i] != 0 ? 1 : 0 }
+        }}
         return alone * 1000 > gray.count
     }
 }
