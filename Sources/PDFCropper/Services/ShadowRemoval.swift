@@ -27,7 +27,8 @@ enum ShadowRemoval {
     /// stays when it is print:
     /// - a mark of a text line, or a small one (punctuation, a footnote marker, an
     ///   accent) beside one;
-    /// - a rule: flat, 1.5 `t` long or more, not touching the page's side;
+    /// - a rule: flat, 1.5 `t` long or more, not touching the page's side; or upright,
+    ///   unbroken, even, straight and alone, away from the sides (see `uprightRule`);
     /// - a glyph or word on its own (a folio, a marginal number or note): 0.5 to 2.2
     ///   `t` tall, not thin, solid enough, not touching the side, with no other
     ///   marks about it but those of its own row or column (a column of page or line
@@ -136,6 +137,44 @@ enum ShadowRemoval {
             let mw = Double(m.maxX - m.minX + 1), mh = Double(m.maxY - m.minY + 1)
             return mh <= 0.35 * t && mw >= 1.5 * t && mw >= 5 * mh && !touchesSide(m)
         }
+        // A printed upright rule (a margin rule, a table's rule that doesn't meet its
+        // horizontals): one mark, thin, 0.3 inch and 1.6 `t` tall or more, 0.25 inch or more
+        // from the sides, unbroken (one run of ink on every row), even (each row's run
+        // within a pixel or a quarter of the middle width), straight (its middles within
+        // 1.5 px or 0.004 inch of a line), and alone: no other thin upright mark beside it
+        // within 0.1 inch (the page stack's edge is a stack of stripes) nor in line with it
+        // within 0.3 inch above or below (a fold line broken into pieces).
+        let away = Int((0.1 * dpi).rounded()), fromSide = Int((0.25 * dpi).rounded()), tall = 0.3 * dpi
+        func thinUpright(_ m: Mark) -> Bool {
+            let mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
+            return mh >= 3 * mw && Double(mh) >= 0.3 * t
+        }
+        func uprightRule(_ m: Mark, among all: () -> [Mark]) -> Bool {
+            let mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
+            guard m.blobs.count == 1, mw * 5 < mh, Double(mh) >= max(tall, 1.6 * t),
+                  m.minX >= fromSide, m.maxX < w - fromSide else { return false }
+            let rows = cc.rows(m.blobs[0])
+            guard rows.count == mh, rows.allSatisfy({ $0.count == 1 }) else { return false }
+            let widths = rows.map { $0[0].1 - $0[0].0 + 1 }.sorted()
+            let mid = widths[widths.count / 2], slack = max(1, mid / 4)
+            guard widths.first! >= mid - slack, widths.last! <= mid + slack else { return false }
+            // Straight: the run middles against their least-squares line.
+            let ys = (0..<mh).map(Double.init), xs = rows.map { Double($0[0].0 + $0[0].1) / 2 }
+            let my = ys.reduce(0, +) / Double(mh), mx = xs.reduce(0, +) / Double(mh)
+            var sxy = 0.0, syy = 0.0
+            for i in 0..<mh { sxy += (ys[i] - my) * (xs[i] - mx); syy += (ys[i] - my) * (ys[i] - my) }
+            let slope = syy > 0 ? sxy / syy : 0
+            let worst = (0..<mh).map { abs(xs[$0] - (mx + slope * (ys[$0] - my))) }.max() ?? 0
+            guard worst <= max(1.5, 0.004 * dpi) else { return false }
+            return !all().contains { q in
+                guard q.minY != m.minY || q.minX != m.minX, thinUpright(q) else { return false }
+                let overlapY = min(q.maxY, m.maxY) - max(q.minY, m.minY) + 1
+                let gapX = max(0, q.minX - m.maxX - 1, m.minX - q.maxX - 1)
+                let overlapX = min(q.maxX, m.maxX) - max(q.minX, m.minX) + 1
+                let gapY = max(0, q.minY - m.maxY - 1, m.minY - q.maxY - 1)
+                return (overlapY > 0 && gapX <= away) || (overlapX > 0 && Double(gapY) <= tall)
+            }
+        }
         // Print a binding's teeth were judged by (see `clearTeeth`).
         func kept(_ m: Mark) -> Bool {
             guard let keep else { return false }
@@ -180,7 +219,7 @@ enum ShadowRemoval {
         let around = Int(t.rounded()), flank = Int((0.25 * dpi).rounded())
         var keep = [Bool](repeating: false, count: list.count)
         for (n, m) in list.enumerated() {
-            if flatRule(m) || kept(m) { keep[n] = true; continue }
+            if flatRule(m) || kept(m) || uprightRule(m, among: { near(m, Int(tall)).map { list[$0] } }) { keep[n] = true; continue }
             guard shaped[n] else { continue }
             var crowd = 0, specks = 0
             for o in near(m, around) where o != n {
@@ -762,6 +801,13 @@ enum ShadowRemoval {
                 }
             }
             return false
+        }
+
+        /// Blob `k`'s runs of ink row by row, top first: each row's (first, last) columns.
+        func rows(_ k: Int) -> [[(Int, Int)]] {
+            var byRow = [Int: [(Int, Int)]]()
+            for i in runsOf[k] { byRow[Int(runRow[i]), default: []].append((Int(runStart[i]), Int(runEnd[i]))) }
+            return byRow.keys.sorted().map { byRow[$0]! }
         }
 
         /// How many of blob `k`'s pixels `inside` holds.

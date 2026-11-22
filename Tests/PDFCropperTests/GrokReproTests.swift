@@ -601,8 +601,7 @@ struct GrokReproTests {
         return (ink, bw, color)
     }
 
-    @Test("Grok S2: a figure's axis, a marginal rule and a table's loose upright rules beside the block stay",
-          .disabled("Grok S2, confirmed; fix pending"))
+    @Test("Grok S2: a figure's axis, a marginal rule and a table's loose upright rules beside the block stay")
     func rulesBesideBlock() throws {
         let axis = Self.box(730, 300, 2, 220) + Self.box(730, 518, 130, 2)        // an L, past the right edge
         let marginal = Self.box(745, 700, 2, 160)                                   // a rule in the margin
