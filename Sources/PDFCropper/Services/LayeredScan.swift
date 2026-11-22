@@ -246,6 +246,7 @@ enum LayeredScan {
                          direction: ReadingDirection, previewDPI: Double? = nil,
                          removeShadows: Bool = false) -> [CGImage?]? {
         let crops = page.outputCrops(direction: direction)
+        let layers = widened(layers)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
         let dpi = previewDPI ?? textDPI(layers)
@@ -276,6 +277,32 @@ enum LayeredScan {
             out.append(image)
         }
         return out
+    }
+
+    /// The layers with the text layer as 8-bit gray, 0 or 255 as its bits draw:
+    /// Core Graphics otherwise widens the 1-bit layer to 8 bits on every draw, the
+    /// whole of it, however little of it the draw shows.
+    static func widened(_ layers: Layers) -> Layers {
+        let t = layers.text
+        guard t.bitsPerComponent == 1, t.bitsPerPixel == 1, let data = t.dataProvider?.data,
+              let base = CFDataGetBytePtr(data) else { return layers }
+        let w = t.width, h = t.height, rowBytes = t.bytesPerRow
+        guard w > 0, h > 0, CFDataGetLength(data) >= rowBytes * h else { return layers }
+        let flipped = (t.decode?[0] ?? 0) >= 0.5
+        let set: UInt8 = flipped ? 0 : 255, clear: UInt8 = flipped ? 255 : 0
+        var px = [UInt8](repeating: clear, count: w * h)
+        px.withUnsafeMutableBufferPointer { p in
+            for y in 0..<h {
+                let row = base + y * rowBytes, out = y * w
+                for x in 0..<w where row[x >> 3] & (0x80 >> UInt8(x & 7)) != 0 { p[out + x] = set }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                  provider: provider, decode: nil, shouldInterpolate: t.shouldInterpolate,
+                                  intent: t.renderingIntent) else { return layers }
+        return Layers(text: image, placement: layers.placement, dpi: layers.dpi, patches: layers.patches)
     }
 
     /// The resolution text pages are made at: the text layer's own, within the
