@@ -379,6 +379,39 @@ struct AnalysisTests {
         #expect(abs(r.splitX * 800 - 401) <= 2, "split \(r.splitX * 800) px")
     }
 
+    /// A comb or spiral down the gutter, the fold itself hidden: the holes are
+    /// no print, and the facing pages' inner margins match, so the fold lies
+    /// midway between the two pages' text, wherever the holes sit.
+    @Test("A comb's teeth down a white gutter: the split is midway between the texts (hill climb 2)",
+          arguments: [384, 394, 410])
+    func combInWhiteGutter(teeth: Int) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(teeth, y, 8, 12) }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 400) <= 4, "split \(r.splitX * 800) px")
+    }
+
+    /// A contents page's column of page numbers, one under the next, evenly
+    /// spaced (Wallace 1992 p4): print, thin strokes, not a binding's holes.
+    @Test("A column of page numbers by the gutter is no binding: the split stays beside it (hill climb 2)")
+    func pageNumbersAreNoBinding() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 200, 6); box(450, 40 + r * 32, 310, 6) }
+            for y in stride(from: 30, to: 530, by: 18) {                                   // "162", "163", ...
+                for d in 0..<3 { box(330 + d * 8, y, 1, 9); box(334 + d * 8, y, 1, 9); box(330 + d * 8, y, 5, 1) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 356 && r.splitX * 800 < 446, "split \(r.splitX * 800) px")
+    }
+
     /// A running head's underline touching the fold in a break of its line is
     /// its own short stroke: only the ends of long strokes down the column are corners.
     @Test("A head's underline in a break of the fold does not make the fold a frame's side (review r1b)")

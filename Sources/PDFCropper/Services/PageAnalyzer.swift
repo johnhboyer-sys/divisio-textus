@@ -364,12 +364,54 @@ enum PageAnalyzer {
         // the two pages' inner margins either side of it are much alike (one
         // page's frame has its narrow inside margin on one side).
         let links = runs.indices.dropLast().map { line((runs[$0].start + runs[$0].length)..<runs[$0 + 1].start) }
+        // The holes of a comb or spiral binding down the gap: a narrow band of
+        // like marks one under the next, evenly spaced, down nearly all the
+        // page (print is not set so: folios and line numbers are few, and
+        // uneven). The fold hides among them, and facing pages' inner margins
+        // match, so it lies midway between the two pages' text: the gaps on
+        // either side of the band are one, its middle the fold, if that middle
+        // is clear of print and there is text beyond both.
+        func binding(_ xs: Range<Int>) -> Bool {
+            guard !xs.isEmpty, xs.count <= max(2, rw / 25) else { return false }
+            var marks: [(top: Int, length: Int)] = [], run = 0
+            for y in y0...y1 {
+                if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
+                else if run > 0 { marks.append((y - run, run)); run = 0 }
+            }
+            guard marks.count >= 10 else { return false }
+            // Each mark solid (a tooth, a hole; digits fill far less of their
+            // box), and none wider than the rest (a folio against a hole).
+            var widths: [Int] = [], solid = 0
+            for m in marks {
+                var x0 = Int.max, x1 = Int.min, ink = 0
+                for y in m.top..<(m.top + m.length) {
+                    for x in xs where Double(g.value(x, y)) < inkLevel { x0 = min(x0, x); x1 = max(x1, x); ink += 1 }
+                }
+                widths.append(x1 - x0 + 1)
+                if 2 * ink >= (x1 - x0 + 1) * m.length { solid += 1 }
+            }
+            let lengths = marks.map(\.length).sorted(), sortedWidths = widths.sorted()
+            let pitches = zip(marks, marks.dropFirst()).map { $1.top - $0.top }.sorted()
+            let length = lengths[lengths.count / 2], pitch = pitches[pitches.count / 2]
+            let width = sortedWidths[sortedWidths.count / 2]
+            let alike = marks.filter { 2 * $0.length >= length && $0.length <= 2 * length }.count
+            let even = pitches.filter { 4 * abs($0 - pitch) <= pitch }.count
+            let reach = marks[marks.count - 1].top + marks[marks.count - 1].length - marks[0].top
+            return 10 * alike >= 9 * marks.count && 10 * even >= 8 * pitches.count && 10 * reach >= 8 * (y1 - y0)
+                && 10 * solid >= 9 * marks.count && widths.allSatisfy { 2 * $0 <= 3 * width }
+        }
         var gaps: [(start: Int, length: Int, fold: Int?)] = []
         var k = 0
         while k < runs.count {
+            let band = k + 1 < runs.count ? (runs[k].start + runs[k].length)..<runs[k + 1].start : 0..<0
+            let span = k + 1 < runs.count ? runs[k + 1].start + runs[k + 1].length - runs[k].start : 0
             if k < links.count, let x = links[k], k == 0 || links[k - 1] == nil, k + 1 >= links.count || links[k + 1] == nil,
                3 * min(runs[k].length, runs[k + 1].length) >= max(runs[k].length, runs[k + 1].length), !cornered(x, y0..<y1) {
                 gaps.append((runs[k].start, runs[k + 1].start + runs[k + 1].length - runs[k].start, x))
+                k += 2
+            } else if links.indices.contains(k), links[k] == nil, runs[k].start > lo, runs[k].start + span < hi,
+                      binding(band), band.contains(runs[k].start + span / 2) || isEmpty(runs[k].start + span / 2) {
+                gaps.append((runs[k].start, span, runs[k].start + span / 2))
                 k += 2
             } else {
                 gaps.append((runs[k].start, runs[k].length, nil))
