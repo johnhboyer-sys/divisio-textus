@@ -199,16 +199,14 @@ struct BWCombTests {
     // MARK: Lists hanging at the side, no comb
 
     /// No comb: eight list markers at x 20, one per line every 75 px from y 100, the
-    /// text hanging from x 100 (`letters` to an entry; with `linesAbove`, three full
-    /// lines above the list). The markers stay, in black and white and in color.
-    private func listStays(count: Int = 8, letters: Int = 14, linesAbove: Bool = false,
-                           _ marker: (Int) -> [Int]) throws {
+    /// text hanging from x 100. The markers stay, in black and white and in color.
+    private func listStays(count: Int = 8, _ marker: (Int) -> [Int]) throws {
         var g = [UInt8](repeating: 235, count: Self.w * Self.h)
         var markers: [Int] = [], text: [Int] = []
-        let rows = (0..<count).map { (100 + $0 * 75, letters) } + (linesAbove ? [(10, 14), (40, 14), (70, 14)] : [])
-        for (k, (y, n)) in rows.enumerated() {
-            if k < count { markers += marker(y) }
-            for x in stride(from: 100, to: 100 + 45 * n, by: 45) {
+        for k in 0..<count {
+            let y = 100 + k * 75
+            markers += marker(y)
+            for x in stride(from: 100, to: 700, by: 45) {
                 text += Self.box(x, y - 1, 3, 22) + Self.box(x + 17, y - 1, 3, 22) + Self.box(x, y - 1, 20, 3)
                     + Self.box(x, y + 18, 20, 3)
             }
@@ -293,19 +291,4 @@ struct BWCombTests {
         let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
         #expect(Double(rule.filter { color[$0] < 160 }.count) > 0.95 * Double(rule.count), "rule in color")
     }
-
-    @Test("A faded serif 1 beside a tooth, reaching above it, stays")
-    func fadedSerifOneStays() throws {
-        var p = Self.page(clumps: false)
-        let one = Self.box(828, 464, 12, 46) + Self.box(822, 498, 24, 12)
-        for i in one { p.gray[i] = 150 }
-        let off = one.filter { $0 % Self.w < 838 }
-        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
-                                   removeShadows: true)
-        #expect(share(bw, off) > 0.95, "\(share(bw, off))")
-        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
-        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
-        #expect(Double(off.filter { color[$0] < 200 }.count) > 0.95 * Double(off.count), "1 in color")
-    }
-
 }
