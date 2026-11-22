@@ -113,6 +113,10 @@ final class AppModel: ObservableObject {
     @Published var removeShadows = false {
         didSet { if removeShadows != oldValue { outputCache = [:]; outputOrder = [] } }
     }
+    /// Export: straighten lines of print that curve into the binding (see Flatten).
+    @Published var flattenPages = false {
+        didSet { if flattenPages != oldValue { outputCache = [:]; outputOrder = [] } }
+    }
 
     @Published var isAnalyzing = false
     @Published var isExporting = false
@@ -182,13 +186,14 @@ final class AppModel: ObservableObject {
     // The Export view's pages, made as the export makes them from a small render,
     // remembering the page and settings each was made with.
     private struct CachedOutput {
-        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool
+        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool, flattenPages: Bool
         let images: [CGImage]
     }
     private var outputCache: [Int: CachedOutput] = [:]
     private var outputOrder: [Int] = []           // least recently used first
     private let outputCacheLimit = 400
     private let outputPreviewDPI: Double = 40
+    private let flattenPreviewDPI: Double = 120
 
     // Grid cells: each page straightened, from its thumbnail.
     private struct CachedCell {
@@ -559,18 +564,24 @@ final class AppModel: ObservableObject {
     /// steps (PDFExporter.outputImages) run on a low-resolution render.
     func outputPreview(for page: BookPage) -> [CGImage] {
         if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction,
-           c.removeShadows == removeShadows {
+           c.removeShadows == removeShadows, c.flattenPages == flattenPages {
             outputOrder.removeAll { $0 == page.sourceIndex }
             outputOrder.append(page.sourceIndex)
             return c.images
         }
-        guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
-              let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: outputPreviewDPI) else { return [] }
+        guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex) else { return [] }
+        let layers = LayeredScan.layers(of: pdfPage)
+        // Flattening traces letters, too small to see at the preview's usual resolution;
+        // layered scans are not flattened.
+        let flatten = flattenPages && layers == nil
+        let dpi = flatten ? flattenPreviewDPI : outputPreviewDPI
+        guard let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return [] }
         var settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
         settings.removeShadows = removeShadows
+        settings.flattenPages = flatten
         var images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
         // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
-        if let layers = LayeredScan.layers(of: pdfPage) {
+        if let layers {
             if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
                                                 previewDPI: outputPreviewDPI, bothLayers: settings.bothLayers,
                                                 removeShadows: removeShadows),
@@ -578,10 +589,10 @@ final class AppModel: ObservableObject {
                 images = zip(text, images).map { $0 ?? PDFExporter.pictureFinished($1, dpi: outputPreviewDPI, settings: settings) }
             }
         } else {
-            images = images.map { PDFExporter.finished($0, dpi: outputPreviewDPI, settings: settings, preview: true) }
+            images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
         }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
-                                                     removeShadows: removeShadows, images: images)
+                                                     removeShadows: removeShadows, flattenPages: flattenPages, images: images)
         outputOrder.removeAll { $0 == page.sourceIndex }
         outputOrder.append(page.sourceIndex)
         while outputOrder.count > outputCacheLimit { outputCache[outputOrder.removeFirst()] = nil }
@@ -2056,6 +2067,7 @@ final class AppModel: ObservableObject {
                                             reader: ocrReader, packs: ocrPacks, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
         settings.removeShadows = removeShadows
+        settings.flattenPages = flattenPages
         let cancel = CancelFlag()
         exportCancel = cancel
         let openedKey = projectKey

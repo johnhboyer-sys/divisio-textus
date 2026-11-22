@@ -235,6 +235,8 @@ private struct ExportOptions: View {
                 }
                 Toggle("Remove shadows", isOn: $model.removeShadows)
                     .help("Clean paper up to the fold: its shadow, dark band, crease and streaks go; print stays.")
+                Toggle("Flatten pages", isOn: $model.flattenPages)
+                    .help("Straighten lines of print that curve into the binding. A page it can't read surely is left as it is.")
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
                 if model.ocrEnabled { readerRows }
                 Picker("Reading order", selection: $model.direction) {
