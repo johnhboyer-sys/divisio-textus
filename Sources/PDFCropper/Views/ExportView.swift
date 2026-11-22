@@ -233,6 +233,8 @@ private struct ExportOptions: View {
                         Text(m.label).tag(m)
                     }
                 }
+                Toggle("Remove shadows", isOn: $model.removeShadows)
+                    .help("Clean paper up to the fold: its shadow, dark band, crease and streaks go; print stays.")
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
                 if model.ocrEnabled { readerRows }
                 Picker("Reading order", selection: $model.direction) {

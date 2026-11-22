@@ -139,6 +139,10 @@ enum PDFRenderer {
         let pixelHeight: Int
         let size: CGSize     // drawn size in points along the image's own axes
         let bounds: CGRect   // where it lands on the page (bounding box)
+        let placement: CGAffineTransform  // the unit square it fills → page space
+        let isMask: Bool     // a 1-bit stencil painted in the fill color
+        let inkIsBlack: Bool // the fill color is black or near it (for a stencil)
+        let stream: CGPDFStreamRef
     }
 
     /// Fraction of `area` covered by the union of `rects`, measured on a 100×100
@@ -163,14 +167,19 @@ enum PDFRenderer {
     /// objects) with its pixel width and the size it is drawn at in points, plus
     /// the names of the objects the page itself draws. An XObject fills the unit
     /// square of the current transform, so its x axis spans |(a, b)| and its y
-    /// axis |(c, d)|. nil if the content couldn't be read.
-    private static func drawnContent(_ page: CGPDFPage) -> (images: [DrawnImage], names: Set<String>)? {
+    /// axis |(c, d)|. `paintsOther` is true when the page also paints something
+    /// other than images: paths, shadings, inline images or visible text.
+    /// nil if the content couldn't be read.
+    static func drawnContent(_ page: CGPDFPage) -> (images: [DrawnImage], names: Set<String>, paintsOther: Bool)? {
+        struct Graphics { var ctm = CGAffineTransform.identity; var inkIsBlack = true; var textMode = 0 }
         final class State {
-            var ctm = CGAffineTransform.identity
-            var saved: [CGAffineTransform] = []
+            var g = Graphics()
+            var ctm: CGAffineTransform { get { g.ctm } set { g.ctm = newValue } }
+            var saved: [Graphics] = []
             var depth = 0
             var images: [DrawnImage] = []
             var names = Set<String>()
+            var paintsOther = false
             var table: CGPDFOperatorTableRef?
         }
         let state = State()
@@ -180,11 +189,46 @@ enum PDFRenderer {
 
         CGPDFOperatorTableSetCallback(table, "q") { _, info in
             guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
-            s.saved.append(s.ctm)
+            s.saved.append(s.g)
         }
         CGPDFOperatorTableSetCallback(table, "Q") { _, info in
             guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
-            if let t = s.saved.popLast() { s.ctm = t }
+            if let t = s.saved.popLast() { s.g = t }
+        }
+        // Painting other than images.
+        for op in ["S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "sh", "BI", "EI"] {
+            CGPDFOperatorTableSetCallback(table, op) { _, info in
+                guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
+                s.paintsOther = true
+            }
+        }
+        // Text counts unless drawn invisible (mode 3, as an OCR layer is).
+        CGPDFOperatorTableSetCallback(table, "Tr") { scanner, info in
+            guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
+            var mode: CGPDFInteger = 0
+            if CGPDFScannerPopInteger(scanner, &mode) { s.g.textMode = mode }
+        }
+        for op in ["Tj", "TJ", "'", "\""] {
+            CGPDFOperatorTableSetCallback(table, op) { _, info in
+                guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
+                if s.g.textMode != 3 { s.paintsOther = true }
+            }
+        }
+        // The fill color, as far as a stencil's ink goes: black or near it, or not.
+        // Operands are gray (1), RGB (3) or CMYK (4); a pattern name gives none.
+        for op in ["g", "rg", "k", "sc", "scn"] {
+            CGPDFOperatorTableSetCallback(table, op) { scanner, info in
+                guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
+                var v: [CGPDFReal] = []
+                var x: CGPDFReal = 0
+                while v.count < 4, CGPDFScannerPopNumber(scanner, &x) { v.insert(x, at: 0) }
+                switch v.count {
+                case 1: s.g.inkIsBlack = v[0] <= 0.25
+                case 3: s.g.inkIsBlack = v.max()! <= 0.3
+                case 4: s.g.inkIsBlack = v[3] >= 0.75 && v[0...2].max()! <= 0.2 || v[0...2].min()! >= 0.75
+                default: s.g.inkIsBlack = false
+                }
+            }
         }
         CGPDFOperatorTableSetCallback(table, "cm") { scanner, info in
             guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
@@ -210,10 +254,13 @@ enum PDFRenderer {
                 var w: CGPDFInteger = 0, h: CGPDFInteger = 0
                 CGPDFDictionaryGetInteger(dict, "Width", &w)
                 CGPDFDictionaryGetInteger(dict, "Height", &h)
+                var isMask: CGPDFBoolean = 0
+                CGPDFDictionaryGetBoolean(dict, "ImageMask", &isMask)
                 s.images.append(DrawnImage(
                     pixelWidth: w, pixelHeight: h,
                     size: CGSize(width: hypot(s.ctm.a, s.ctm.b), height: hypot(s.ctm.c, s.ctm.d)),
-                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1).applying(s.ctm)))
+                    bounds: CGRect(x: 0, y: 0, width: 1, height: 1).applying(s.ctm),
+                    placement: s.ctm, isMask: isMask != 0, inkIsBlack: s.g.inkIsBlack, stream: stream))
             case "Form":
                 guard s.depth < 4, let table = s.table else { return }
                 // Draw the form's own content under its /Matrix.
@@ -228,8 +275,8 @@ enum PDFRenderer {
                 CGPDFDictionaryGetDictionary(dict, "Resources", &formResources)
                 // A form runs in its own graphics state: its q/Q pairs (even
                 // unbalanced ones) must not touch the caller's stack.
-                let outer = s.ctm, outerSaved = s.saved
-                s.ctm = matrix.concatenating(outer)
+                let outer = s.g, outerSaved = s.saved
+                s.ctm = matrix.concatenating(outer.ctm)
                 s.saved = []
                 s.depth += 1
                 let formContent = CGPDFContentStreamCreateWithStream(stream, formResources ?? dict, content)
@@ -238,7 +285,7 @@ enum PDFRenderer {
                 CGPDFScannerRelease(formScanner)
                 CGPDFContentStreamRelease(formContent)
                 s.depth -= 1
-                s.ctm = outer
+                s.g = outer
                 s.saved = outerSaved
             default:
                 break
@@ -250,7 +297,7 @@ enum PDFRenderer {
         defer { CGPDFScannerRelease(scanner) }
         let completed = withExtendedLifetime(state) { CGPDFScannerScan(scanner) }
         guard completed else { return nil }
-        return (images: state.images, names: state.names)
+        return (images: state.images, names: state.names, paintsOther: state.paintsOther)
     }
 
     /// Crop a top-left-origin normalized rect out of a CGImage.

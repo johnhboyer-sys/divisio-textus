@@ -21,7 +21,13 @@ enum PDFExporter {
         var ocrLanguages: [String] = ["en-US"]
         var reader: OCRReader = .apple
         var packs: [String] = []
-        var enhanceMode: EnhanceMode = .color  // color or grayscale
+        var enhanceMode: EnhanceMode = .color  // color, grayscale or black and white
+        /// Remove the fold's shadow, band, line and streaks (see ShadowRemoval).
+        var removeShadows = false
+        /// A layered scan's black and white takes ink from both its layers and drops
+        /// shadows (`LayeredScan.inkPages`): in Black and white, or with Remove shadows.
+        /// Otherwise its text layer alone, as before those options.
+        var bothLayers: Bool { enhanceMode == .blackAndWhite || removeShadows }
     }
 
     /// Lets tests read installed packs without changing the user's pack folder.
@@ -150,12 +156,54 @@ enum PDFExporter {
                     let dpi = settings.matchScanResolution
                         ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi
                         : settings.dpi
+                    // A scan stored in layers gives its text layer alone, in black and
+                    // white at its own resolution, but for pages whose color layer
+                    // holds a picture: those keep the color export.
+                    if let layers = LayeredScan.layers(of: pdfPage),
+                       let text = LayeredScan.textPages(of: page, pdfPage, layers: layers,
+                                                        direction: settings.direction,
+                                                        bothLayers: settings.bothLayers, removeShadows: settings.removeShadows) {
+                        var color: [CGImage] = []
+                        if text.contains(where: { $0 == nil }) {
+                            guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
+                                  let out = outputImages(of: page, rendered: rendered, settings: settings) else {
+                                throw ExportError.renderFailed(page.sourceIndex)
+                            }
+                            // A picture page: never black and white.
+                            color = out.map { pictureFinished($0, dpi: dpi, settings: settings) }
+                        }
+                        for (k, image) in text.enumerated() {
+                            images.append(image ?? color[k])
+                            dpis.append(image == nil ? dpi : LayeredScan.textDPI(layers))
+                        }
+                        return
+                    }
+                    // Black and white of a straightened page at a low scan resolution
+                    // would turn the straightening's half pixels into steps that lean
+                    // upright strokes; it is made from a render twice as fine (a page
+                    // holding a picture is made as below).
+                    let fineDPI = min(600, 2 * dpi)
+                    if settings.enhanceMode == .blackAndWhite, dpi < 250,
+                       abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
+                       let fine = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI),
+                       let out = outputImages(of: page, rendered: fine, settings: settings) {
+                        // Whether any holds a picture first: then none is made at this size.
+                        let prepared = out.map { BlackAndWhite.prepare($0, dpi: fineDPI) }
+                        if !prepared.contains(where: { $0.picture }) {
+                            let bw = prepared.map { BlackAndWhite.page($0, dpi: fineDPI, removeShadows: settings.removeShadows) }
+                            if bw.allSatisfy({ $0 != nil }) {
+                                images += bw.compactMap { $0 }
+                                dpis += Array(repeating: fineDPI, count: bw.count)
+                                return
+                            }
+                        }
+                    }
                     // A crop that fails would silently drop an output page: fail the export.
                     guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                           let out = outputImages(of: page, rendered: rendered, settings: settings) else {
                         throw ExportError.renderFailed(page.sourceIndex)
                     }
-                    images += out
+                    images += out.map { finished($0, dpi: dpi, settings: settings) }
                     dpis += Array(repeating: dpi, count: out.count)
                 }
             }
@@ -239,6 +287,25 @@ enum PDFExporter {
             images.append(sub)
         }
         return images
+    }
+
+    /// An output page of a scan not stored in layers, made black and white and its
+    /// shadows removed as the settings ask. In black and white a page holding a
+    /// picture stays gray (see `BlackAndWhite.page`). With `preview`, a small page:
+    /// its ink is left gray.
+    static func finished(_ image: CGImage, dpi: Double, settings: Settings, preview: Bool = false) -> CGImage {
+        if settings.enhanceMode == .blackAndWhite,
+           let bw = BlackAndWhite.page(image, dpi: dpi, preview: preview, removeShadows: settings.removeShadows) {
+            return bw
+        }
+        return pictureFinished(image, dpi: dpi, settings: settings)
+    }
+
+    /// An output page that keeps its color or gray (a layered page whose color layer
+    /// holds a picture, or a picture page in black and white), its shadows removed
+    /// if the settings ask. The export and the Export view both make it here.
+    static func pictureFinished(_ image: CGImage, dpi: Double, settings: Settings) -> CGImage {
+        settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages

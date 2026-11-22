@@ -263,7 +263,14 @@ struct HillClimbSplitTests {
                 }
                 records.append(record)
             }
+            // The book's page size as the inspector shows it (Whole page), in inches.
+            let size = m.pageSize
             books.append([
+                "pageSize": size.map { s -> [String: Any] in
+                    ["width": s.width.map { HillClimb.r($0, 3) } ?? NSNull(), "height": s.height.map { HillClimb.r($0, 3) } ?? NSNull(),
+                     "measured": s.measured, "total": s.total, "details": s.details,
+                     "fitsAll": s.fitsAll.map { [$0.width, $0.height] } ?? NSNull()]
+                } ?? NSNull(),
                 "name": HillClimb.shortName(url), "file": url.lastPathComponent, "bytes": bytes,
                 "pagesInBook": step == 1 ? doc.pageCount : (PDFDocument(url: url)?.pageCount ?? 0),
                 "pagesScored": m.pages.count, "sampled": step > 1, "sampleEvery": step,
