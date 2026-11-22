@@ -104,10 +104,17 @@ enum LayeredScan {
     /// `over` keeps what is beneath where the layer has no ink (as the page draws it,
     /// a mask) instead of painting its paper white.
     static func drawText(_ layers: Layers, of page: PDFPage, in ctx: CGContext, scale: Double, over: Bool = false) {
+        drawText(layers, at: page.transform(for: .cropBox), in: ctx, scale: scale, over: over)
+    }
+
+    /// `drawText` with the page's crop box transform worked out already, so it needs
+    /// no PDFKit (and may run on any thread).
+    static func drawText(_ layers: Layers, at pageTransform: CGAffineTransform, in ctx: CGContext, scale: Double,
+                         over: Bool = false) {
         ctx.saveGState()
         if over { ctx.setBlendMode(.multiply) }
         ctx.scaleBy(x: scale, y: scale)
-        ctx.concatenate(page.transform(for: .cropBox))
+        ctx.concatenate(pageTransform)
         ctx.concatenate(layers.placement)
         ctx.draw(layers.text, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         ctx.restoreGState()
@@ -116,9 +123,15 @@ enum LayeredScan {
     /// Draw the color patches (decoded) likewise.
     static func drawPatches(_ patches: [(PDFRenderer.DrawnImage, CGImage)], of page: PDFPage,
                             in ctx: CGContext, scale: Double) {
+        drawPatches(patches, at: page.transform(for: .cropBox), in: ctx, scale: scale)
+    }
+
+    /// `drawPatches` with the crop box transform worked out already (see `drawText`).
+    static func drawPatches(_ patches: [(PDFRenderer.DrawnImage, CGImage)], at pageTransform: CGAffineTransform,
+                            in ctx: CGContext, scale: Double) {
         ctx.saveGState()
         ctx.scaleBy(x: scale, y: scale)
-        ctx.concatenate(page.transform(for: .cropBox))
+        ctx.concatenate(pageTransform)
         for (patch, image) in patches {
             ctx.saveGState()
             ctx.concatenate(patch.placement)
@@ -161,11 +174,22 @@ enum LayeredScan {
     /// done straightened as the page's export is. Top-left origin rows.
     static func straightened(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double,
                              _ draw: (CGContext, Double) -> Void) -> (pixels: [UInt8], width: Int, height: Int)? {
-        let size = PDFRenderer.displaySize(of: pdfPage)
+        straightened(page, size: PDFRenderer.displaySize(of: pdfPage), dpi: dpi, draw)
+    }
+
+    /// The size in pixels of a page `size` points large drawn at `dpi`, nil if absurd.
+    static func canvasSize(_ size: CGSize, dpi: Double) -> (width: Int, height: Int)? {
         let scale = dpi / 72
         let w = (size.width * scale).rounded(), h = (size.height * scale).rounded()
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w * h <= 2_000_000_000 else { return nil }
-        let pw = Int(w), ph = Int(h)
+        return (Int(w), Int(h))
+    }
+
+    /// `straightened` for a page whose display size is `size` (so it needs no PDFKit).
+    static func straightened(_ page: BookPage, size: CGSize, dpi: Double,
+                             _ draw: (CGContext, Double) -> Void) -> (pixels: [UInt8], width: Int, height: Int)? {
+        let scale = dpi / 72
+        guard let (pw, ph) = canvasSize(size, dpi: dpi) else { return nil }
         var pixels = [UInt8](repeating: 255, count: pw * ph)
         let ok = pixels.withUnsafeMutableBytes { buf -> Bool in
             guard let ctx = CGContext(data: buf.baseAddress, width: pw, height: ph, bitsPerComponent: 8,
@@ -271,16 +295,26 @@ enum LayeredScan {
         // Patches that can't be decoded were found to be pictures above; any left
         // out here would only be paper.
         let decoded = layers.patches.compactMap { p in patchImage(p).map { (p, $0) } }
-        guard let text = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
-                  drawText(layers, of: pdfPage, in: ctx, scale: scale) }),
-              let both = straightened(page, pdfPage, dpi: dpi, { ctx, scale in
-                  drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
-                  drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) }) else { return nil }
+        // The two drawings are made by the first of the page's crops to need them, on
+        // whatever thread that runs: they need no PDFKit, given the page's size and
+        // crop box transform.
+        let size = PDFRenderer.displaySize(of: pdfPage), transform = pdfPage.transform(for: .cropBox)
+        guard let canvas = canvasSize(size, dpi: dpi) else { return nil }
+        let drawing = Once { () -> (text: (pixels: [UInt8], width: Int, height: Int),
+                                    both: (pixels: [UInt8], width: Int, height: Int))? in
+            guard let text = straightened(page, size: size, dpi: dpi, { ctx, scale in
+                      drawText(layers, at: transform, in: ctx, scale: scale) }),
+                  let both = straightened(page, size: size, dpi: dpi, { ctx, scale in
+                      drawPatches(decoded, at: transform, in: ctx, scale: scale)
+                      drawText(layers, at: transform, in: ctx, scale: scale, over: true) }) else { return nil }
+            return (text, both)
+        }
         var out: [(() -> CGImage?)?] = []
         for (k, crop) in crops.enumerated() {
-            guard let r = pixelRect(crop, width: text.width, height: text.height) else { return nil }
+            guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
             if marked[k] { out.append(nil); continue }
             out.append({
+                guard let (text, both) = drawing.value else { return nil }
                 var gray = [UInt8](repeating: 255, count: r.w * r.h)
                 var sharp = [Bool](repeating: false, count: r.w * r.h)
                 for y in 0..<r.h {
@@ -296,6 +330,19 @@ enum LayeredScan {
             })
         }
         return out
+    }
+
+    /// A value worked out once, by the first caller to ask, whatever its thread.
+    final class Once<T> {
+        private let lock = NSLock()
+        private var made: T?
+        private var make: (() -> T)?
+        init(_ make: @escaping () -> T) { self.make = make }
+        var value: T {
+            lock.lock(); defer { lock.unlock() }
+            if let make { made = make(); self.make = nil }
+            return made!
+        }
     }
 
     /// The layers with the text layer as 8-bit gray, 0 or 255 as its bits draw:
