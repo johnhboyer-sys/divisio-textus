@@ -327,6 +327,128 @@ struct AnalysisTests {
         #expect(abs(r.splitX * 800 - 400) <= 3, "split \(r.splitX * 800) px")
     }
 
+    /// A scan laid a degree or so off square: the fold's thin line leans, so no
+    /// column holds it, and a spiral's holes beside it part the white gap.
+    @Test("A leaning fold line beside a spiral's holes is the split, where it crosses the middle row (hill climb 2)",
+          arguments: [-16, 16])
+    func leaningFoldLine(lean: Int) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for y in 0..<560 { box(400 + Int((Double(y - 280) * Double(lean) / 560).rounded()), y, 2, 1) }   // the fold
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(416, y, 8, 8) }                               // the holes
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 401) <= 3, "split \(r.splitX * 800) px")
+    }
+
+    @Test("A frame's side leaning with the page is no fold (hill climb 2)")
+    func leaningFrameSide() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 300, 6); box(470, 40 + r * 32, 290, 6) }
+            for y in 40..<520 {                                                                          // the frame:
+                let x = 450 + Int((Double(y - 280) * 12 / 560).rounded())
+                box(x, y, 2, 1)                                                                          // its side,
+                if y == 40 || y == 519 { box(x, y, 320, 2) }                                             // top and bottom
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 312 && r.splitX * 800 < 440, "split \(r.splitX * 800) px")
+    }
+
+    /// A tall chart, scanned tight and a little turned: its frame runs from 20 px
+    /// below the scan's top to 20 px above its bottom, its corners in the outer
+    /// rows where a fold's own end is not looked at (Codex review of hc2).
+    @Test("A tall frame's leaning side, its corners near the scan's edges, is no fold (hill climb 2, review)")
+    func tallLeaningFrameSide() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 300, 6); box(450, 40 + r * 32, 300, 6) }
+            for y in 20..<540 {                                                                          // the frame:
+                let x = 430 + Int((Double(y - 280) * 12 / 560).rounded())
+                box(x, y, 2, 1)                                                                          // its inner side,
+                if y == 20 || y == 539 { box(x, y, 340, 2) }                                             // top and bottom
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 342 && r.splitX * 800 < 422, "split \(r.splitX * 800) px")
+    }
+
+    /// A comb's teeth hug the leaning fold: a path along the teeth is darker,
+    /// but broken between them; the fold's own line runs unbroken.
+    @Test("A leaning fold line with a comb's teeth against it is the split (hill climb 2)")
+    func leaningFoldLineBesideComb() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            func at(_ y: Int) -> Int { 400 + Int((Double(y - 280) * 10 / 560).rounded()) }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for y in 0..<560 { box(at(y), y, 3, 1) }                                                   // the fold
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(at(y) - 8, y, 8, 12) }                     // the teeth
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 401) <= 2, "split \(r.splitX * 800) px")
+    }
+
+    /// A comb or spiral down the gutter, the fold itself hidden: the holes are
+    /// no print, and the facing pages' inner margins match, so the fold lies
+    /// midway between the two pages' text, wherever the holes sit.
+    @Test("A comb's teeth down a white gutter: the split is midway between the texts (hill climb 2)",
+          arguments: [384, 394, 410])
+    func combInWhiteGutter(teeth: Int) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(teeth, y, 8, 12) }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 400) <= 4, "split \(r.splitX * 800) px")
+    }
+
+    /// A book bound tight, its right page a list with a solid round bullet at
+    /// each line: the bullets are print, lined up with the text, no binding's
+    /// holes, and the split stays off them (Codex review of hc2).
+    @Test("A column of solid bullets beside a tight gutter is no binding: the split misses them (hill climb 2, review)")
+    func bulletsAreNoBinding() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for y in stride(from: 30, to: 530, by: 18) {
+                box(40, y, 350, 7)                                                                       // left text, to x389
+                box(408, y + 1, 4, 4)                                                                    // a bullet, x408-411
+                box(430, y, 330, 7)                                                                      // the list's text
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 < 407 || r.splitX * 800 > 413, "split \(r.splitX * 800) px")
+    }
+
+    /// A contents page's column of page numbers, one under the next, evenly
+    /// spaced (Wallace 1992 p4): print, thin strokes, not a binding's holes.
+    @Test("A column of page numbers by the gutter is no binding: the split stays beside it (hill climb 2)")
+    func pageNumbersAreNoBinding() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 200, 6); box(450, 40 + r * 32, 310, 6) }
+            for y in stride(from: 30, to: 530, by: 18) {                                   // "162", "163", ...
+                for d in 0..<3 { box(330 + d * 8, y, 1, 9); box(334 + d * 8, y, 1, 9); box(330 + d * 8, y, 5, 1) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 356 && r.splitX * 800 < 446, "split \(r.splitX * 800) px")
+    }
+
     /// A running head's underline touching the fold in a break of its line is
     /// its own short stroke: only the ends of long strokes down the column are corners.
     @Test("A head's underline in a break of the fold does not make the fold a frame's side (review r1b)")
@@ -560,6 +682,45 @@ struct AnalysisTests {
         }
         let r = PageAnalyzer.analyze(cgImage: image)
         #expect(abs(r.splitX - 0.51) < 0.015)
+    }
+
+    /// A sheet laid a little turned on the glass leaves a thin wedge of scanner
+    /// bed in a corner, along the scan's top or bottom edge: no print.
+    @Test("A blank page with a wedge of bed in its corner is still blank (hill climb 2)", arguments: [true, false])
+    func blankPageWithCornerWedge(top: Bool) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(450, 40 + r * 32, 310, 6) }                         // the right page
+            c.setFillColor(CGColor(gray: 0.03, alpha: 1))
+            for x in 0..<110 {                                                       // the wedge, 15 px deep at the edge
+                let h = Int((15 * Double(110 - x) / 110).rounded())
+                if h > 0 { box(x, top ? 0 : 560 - h, 1, h) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.leftBlank && !r.rightBlank, "left \(r.leftCrop)")
+    }
+
+    /// A page whose only print is its folio, at the outer bottom corner, beside
+    /// a shallow wedge of bed: one box takes in both, under 3% of the page tall
+    /// and a third dark, but the folio is a mark of its own (Codex review of hc2).
+    @Test("A folio beside a wedge of bed keeps its page from being blank (hill climb 2, review)")
+    func folioBesideCornerWedge() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(450, 40 + r * 32, 310, 6) }                         // the right page
+            box(120, 546, 5, 9); box(128, 546, 5, 9)                                  // the folio, "12"
+            c.setFillColor(CGColor(gray: 0.03, alpha: 1))
+            for x in 0..<160 {                                                       // the wedge, 10 px deep at the edge
+                let h = Int((10 * Double(160 - x) / 160).rounded())
+                if h > 0 { box(x, 560 - h, 1, h) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(!r.leftBlank, "left \(r.leftCrop)")
+        #expect(r.leftCrop.minX * 800 <= 120 && r.leftCrop.maxY * 560 >= 555, "left \(r.leftCrop)")
     }
 
     @Test("A blank page keeps the book's split, and its crop stays on its own side",

@@ -130,8 +130,14 @@ enum PageAnalyzer {
         // with the line going on just above and below it (a head's underline
         // touching the fold), is no side; nor is a rule running off both ways
         // where the line goes on just past it (one crossing a broken fold).
-        func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
-            let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
+        // `slope`: the line leans, by that many columns a row, through x at mid-height.
+        // `whole`: its ends in the outer 5% of rows count too, short of the
+        // scan's edge, where a thin rule turning off one way only is a frame's
+        // corner (an edge line runs off both ways; bed is no thin rule).
+        func cornered(_ x0: Int, _ rows: Range<Int>, slope: Double = 0, whole: Bool = false) -> Bool {
+            let midRow = (ry0 + ry1) / 2
+            func at(_ y: Int) -> Int { min(g.width - 1, max(0, x0 + Int((Double(y - midRow) * slope).rounded()))) }
+            let inked = rows.filter { y in (max(0, at(y) - 1)...min(g.width - 1, at(y) + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
             let long = max(3, (ry1 - ry0) / 25), near = max(4, (ry1 - ry0) / 50)
             var ends: [(row: Int, onward: Bool)] = []          // onward: the line goes on just past this end
             var start = 0
@@ -146,13 +152,26 @@ enum PageAnalyzer {
                 start = i + 1
             }
             let reach = max(3, rw * 3 / 100)
+            // A rule leaning with the line drifts across rows: a pixel above or below counts.
+            let drift = slope == 0 ? 0 : 1
             func rule(_ y: Int, _ step: Int) -> Bool {
-                var n = 0, cx = x + 2 * step
-                while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
+                var n = 0, cx = at(y) + 2 * step
+                func inked(_ x: Int) -> Bool {
+                    (max(0, y - drift)...min(g.height - 1, y + drift)).contains { Double(g.value(x, $0)) < paper * 0.75 }
+                }
+                while cx >= 0, cx < g.width, n < reach, inked(cx) { n += 1; cx += step }
                 return n >= reach
             }
-            return ends.filter { $0.row > rows0 && $0.row < rows1 }.contains { end in
+            return ends.contains { end in
                 let by = max(0, end.row - 2)...min(g.height - 1, end.row + 2)
+                guard end.row > rows0 && end.row < rows1 else {
+                    func thin(_ y: Int, _ step: Int) -> Bool {
+                        rule(y, step) && !(y - 4 >= 0 && rule(y - 4, step)) && !(y + 4 < g.height && rule(y + 4, step))
+                    }
+                    // Not where the line runs off the scan or trim: what lies beyond is unseen.
+                    return whole && end.row - ry0 > 4 && ry1 - 1 - end.row > 4
+                        && by.contains { thin($0, -1) != thin($0, 1) } && !by.contains { rule($0, -1) && rule($0, 1) }
+                }
                 return by.contains { rule($0, -1) || rule($0, 1) }
                     && !(end.onward && by.contains { rule($0, -1) && rule($0, 1) })
             }
@@ -250,6 +269,47 @@ enum PageAnalyzer {
             }
         }
 
+        // 1c. The fold's thin line on a scan laid a degree or two off square: no
+        //     one column holds it, but a straight line leaning that little does,
+        //     inked nearly top to bottom as step 1 asks (text never lines up so).
+        //     The fold runs on to the page's top and bottom; a frame's side,
+        //     leaning with the page, stops short of them, at its corners. The
+        //     fold is where the line crosses the page's middle row.
+        do {
+            let midRow = (ry0 + ry1) / 2, span = rows1 - rows0, end = max(1, span / 20)
+            let lean = max(2, Int(Double(ry1 - ry0) * tan(2.0 * .pi / 180)))     // columns over the trim's height
+            func at(_ x: Int, _ y: Int, _ slope: Double) -> Int { x + Int((Double(y - midRow) * slope).rounded()) }
+            // Rows inked within a pixel of the line (all, first 5%, last 5%), and how dark the line runs.
+            func along(_ x: Int, _ slope: Double) -> (inked: Int, top: Int, bottom: Int, dark: Int) {
+                var n = 0, top = 0, bottom = 0, dark = 0
+                for y in rows0..<rows1 {
+                    let cx = at(x, y, slope)
+                    guard cx >= 1, cx < g.width - 1 else { continue }
+                    if Double(min(g.value(cx - 1, y), g.value(cx, y), g.value(cx + 1, y))) < paper * 0.75 {
+                        n += 1
+                        if y < rows0 + end { top += 1 }
+                        if y >= rows1 - end { bottom += 1 }
+                    }
+                    dark += 255 - Int(g.value(cx, y))
+                }
+                return (n, top, bottom, dark)
+            }
+            // The line inked in the most rows, then the darkest: a fold's line
+            // runs unbroken, where a path along a comb's teeth has gaps.
+            var best: (x: Int, inked: Int, dark: Int)?
+            for d in -lean...lean where abs(d) >= 2 {
+                let slope = Double(d) / Double(ry1 - ry0)
+                for x in shadowLo..<shadowHi {
+                    let a = along(x, slope)
+                    guard Double(a.inked) >= 0.85 * Double(span), 2 * a.top >= end, 2 * a.bottom >= end else { continue }
+                    if let b = best, a.inked < b.inked || (a.inked == b.inked && a.dark <= b.dark) { continue }
+                    if cornered(x, ry0..<ry1, slope: slope, whole: true) { continue }
+                    best = (x, a.inked, a.dark)
+                }
+            }
+            if let best { return Double(best.x) / Double(g.width) }
+        }
+
         // 2. A white gap: columns with (almost) no ink, ignoring the top and
         //    bottom 5% where scan edges and running heads can stray across,
         //    and scanner bed showing above or below the book: rows dark across
@@ -315,12 +375,70 @@ enum PageAnalyzer {
         // the two pages' inner margins either side of it are much alike (one
         // page's frame has its narrow inside margin on one side).
         let links = runs.indices.dropLast().map { line((runs[$0].start + runs[$0].length)..<runs[$0 + 1].start) }
+        // The holes of a comb or spiral binding down the gap: a narrow band of
+        // like marks one under the next, evenly spaced, down nearly all the
+        // page (print is not set so: folios and line numbers are few, and
+        // uneven). The fold hides among them, and facing pages' inner margins
+        // match, so it lies midway between the two pages' text: the gaps on
+        // either side of the band are one, its middle the fold, if that middle
+        // is clear of print and there is text beyond both. The middle may fall
+        // among the marks only if they are clearly bigger than the text's
+        // x-height (taken as half its lines' height): a column of bullets is
+        // print-sized and, unlike holes, must not be split.
+        // Returns the marks' usual height, or nil for no binding.
+        func binding(_ xs: Range<Int>) -> Int? {
+            guard !xs.isEmpty, xs.count <= max(2, rw / 25) else { return nil }
+            var marks: [(top: Int, length: Int)] = [], run = 0
+            for y in y0...y1 {
+                if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
+                else if run > 0 { marks.append((y - run, run)); run = 0 }
+            }
+            guard marks.count >= 10 else { return nil }
+            // Each mark solid (a tooth, a hole; digits fill far less of their
+            // box), and none wider than the rest (a folio against a hole).
+            var widths: [Int] = [], solid = 0
+            for m in marks {
+                var x0 = Int.max, x1 = Int.min, ink = 0
+                for y in m.top..<(m.top + m.length) {
+                    for x in xs where Double(g.value(x, y)) < inkLevel { x0 = min(x0, x); x1 = max(x1, x); ink += 1 }
+                }
+                widths.append(x1 - x0 + 1)
+                if 2 * ink >= (x1 - x0 + 1) * m.length { solid += 1 }
+            }
+            let lengths = marks.map(\.length).sorted(), sortedWidths = widths.sorted()
+            let pitches = zip(marks, marks.dropFirst()).map { $1.top - $0.top }.sorted()
+            let length = lengths[lengths.count / 2], pitch = pitches[pitches.count / 2]
+            let width = sortedWidths[sortedWidths.count / 2]
+            let alike = marks.filter { 2 * $0.length >= length && $0.length <= 2 * length }.count
+            let even = pitches.filter { 4 * abs($0 - pitch) <= pitch }.count
+            let reach = marks[marks.count - 1].top + marks[marks.count - 1].length - marks[0].top
+            let found = 10 * alike >= 9 * marks.count && 10 * even >= 8 * pitches.count && 10 * reach >= 8 * (y1 - y0)
+                && 10 * solid >= 9 * marks.count && widths.allSatisfy { 2 * $0 <= 3 * width }
+            return found ? length : nil
+        }
+        // The usual height of the lines of print in columns xs.
+        func lineHeight(_ xs: Range<Int>) -> Int? {
+            guard !xs.isEmpty else { return nil }
+            var lines: [Int] = [], run = 0
+            for y in y0...y1 {
+                if y < y1 && xs.contains(where: { Double(g.value($0, y)) < inkLevel }) { run += 1 }
+                else if run > 0 { lines.append(run); run = 0 }
+            }
+            return lines.isEmpty ? nil : lines.sorted()[lines.count / 2]
+        }
         var gaps: [(start: Int, length: Int, fold: Int?)] = []
         var k = 0
         while k < runs.count {
+            let band = k + 1 < runs.count ? (runs[k].start + runs[k].length)..<runs[k + 1].start : 0..<0
+            let span = k + 1 < runs.count ? runs[k + 1].start + runs[k + 1].length - runs[k].start : 0
             if k < links.count, let x = links[k], k == 0 || links[k - 1] == nil, k + 1 >= links.count || links[k + 1] == nil,
                3 * min(runs[k].length, runs[k + 1].length) >= max(runs[k].length, runs[k + 1].length), !cornered(x, y0..<y1) {
                 gaps.append((runs[k].start, runs[k + 1].start + runs[k + 1].length - runs[k].start, x))
+                k += 2
+            } else if links.indices.contains(k), links[k] == nil, runs[k].start > lo, runs[k].start + span < hi,
+                      let holes = binding(band), isEmpty(runs[k].start + span / 2) || (band.contains(runs[k].start + span / 2)
+                        && lineHeight((runs[k].start + span)..<min(g.width, runs[k].start + span + rw / 20)).map { 4 * holes >= 3 * $0 } == true) {
+                gaps.append((runs[k].start, span, runs[k].start + span / 2))
                 k += 2
             } else {
                 gaps.append((runs[k].start, runs[k].length, nil))
@@ -1124,7 +1242,34 @@ enum PageAnalyzer {
         let speck = right >= left && bottom >= top
             && ((Double(boxW) < 0.03 * Double(bx1 - bx0) && Double(boxH) < 0.03 * Double(by1 - by0))
                 || boxW <= 2 || boxH <= 2)
-        if bottom < top || right < left || speck {
+        // So is a wedge of scanner bed in a corner, left by a sheet laid a little
+        // turned: a box in the corner, under 3% of the page tall, a third of it
+        // as dark as bed (a line of print, so thin, is paler over its box). Only
+        // the ink joined to the wedge, from the page's edge, is judged: any mark
+        // of its own in the box (a folio beside the wedge) is print.
+        func cornerWedge() -> Bool {
+            guard right >= left, bottom >= top, Double(boxH) < 0.03 * Double(by1 - by0),
+                  top <= by0 || bottom >= by1 - 1, left <= bx0 || right >= bx1 - 1 else { return false }
+            func inked(_ x: Int, _ y: Int) -> Bool { Double(g.value(x, y)) < threshold }
+            var joined = Set<Int>(), queue: [(Int, Int)] = []
+            let edge = top <= by0 ? top : bottom
+            for x in left...right where inked(x, edge) { joined.insert(edge * g.width + x); queue.append((x, edge)) }
+            while let (x, y) = queue.popLast() {
+                for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                where nx >= left && nx <= right && ny >= top && ny <= bottom && inked(nx, ny) && !joined.contains(ny * g.width + nx) {
+                    joined.insert(ny * g.width + nx); queue.append((nx, ny))
+                }
+            }
+            var dark = 0
+            for y in top...bottom {
+                for x in left...right where inked(x, y) {
+                    guard joined.contains(y * g.width + x) else { return false }
+                    if Double(g.value(x, y)) < bandThreshold { dark += 1 }
+                }
+            }
+            return 3 * dark >= boxW * boxH
+        }
+        if bottom < top || right < left || speck || cornerWedge() {
             var r = CropRect(x: Double(bx0) / Double(g.width), y: Double(by0) / Double(g.height),
                              width: Double(bx1 - bx0) / Double(g.width), height: Double(by1 - by0) / Double(g.height))
             r.normalize()
