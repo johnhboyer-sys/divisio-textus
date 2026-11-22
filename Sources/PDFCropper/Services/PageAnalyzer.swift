@@ -130,8 +130,11 @@ enum PageAnalyzer {
         // with the line going on just above and below it (a head's underline
         // touching the fold), is no side; nor is a rule running off both ways
         // where the line goes on just past it (one crossing a broken fold).
-        func cornered(_ x: Int, _ rows: Range<Int>) -> Bool {
-            let inked = rows.filter { y in (max(0, x - 1)...min(g.width - 1, x + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
+        // `slope`: the line leans, by that many columns a row, through x at mid-height.
+        func cornered(_ x0: Int, _ rows: Range<Int>, slope: Double = 0) -> Bool {
+            let midRow = (ry0 + ry1) / 2
+            func at(_ y: Int) -> Int { min(g.width - 1, max(0, x0 + Int((Double(y - midRow) * slope).rounded()))) }
+            let inked = rows.filter { y in (max(0, at(y) - 1)...min(g.width - 1, at(y) + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
             let long = max(3, (ry1 - ry0) / 25), near = max(4, (ry1 - ry0) / 50)
             var ends: [(row: Int, onward: Bool)] = []          // onward: the line goes on just past this end
             var start = 0
@@ -146,9 +149,14 @@ enum PageAnalyzer {
                 start = i + 1
             }
             let reach = max(3, rw * 3 / 100)
+            // A rule leaning with the line drifts across rows: a pixel above or below counts.
+            let drift = slope == 0 ? 0 : 1
             func rule(_ y: Int, _ step: Int) -> Bool {
-                var n = 0, cx = x + 2 * step
-                while cx >= 0, cx < g.width, n < reach, Double(g.value(cx, y)) < paper * 0.75 { n += 1; cx += step }
+                var n = 0, cx = at(y) + 2 * step
+                func inked(_ x: Int) -> Bool {
+                    (max(0, y - drift)...min(g.height - 1, y + drift)).contains { Double(g.value(x, $0)) < paper * 0.75 }
+                }
+                while cx >= 0, cx < g.width, n < reach, inked(cx) { n += 1; cx += step }
                 return n >= reach
             }
             return ends.filter { $0.row > rows0 && $0.row < rows1 }.contains { end in
@@ -248,6 +256,47 @@ enum PageAnalyzer {
                 if centred(foldX) { return Double(foldX) / Double(g.width) }
                 if let m = textMiddle(foldX) { return m / Double(g.width) }
             }
+        }
+
+        // 1c. The fold's thin line on a scan laid a degree or two off square: no
+        //     one column holds it, but a straight line leaning that little does,
+        //     inked nearly top to bottom as step 1 asks (text never lines up so).
+        //     The fold runs on to the page's top and bottom; a frame's side,
+        //     leaning with the page, stops short of them, at its corners. The
+        //     fold is where the line crosses the page's middle row.
+        do {
+            let midRow = (ry0 + ry1) / 2, span = rows1 - rows0, end = max(1, span / 20)
+            let lean = max(2, Int(Double(ry1 - ry0) * tan(2.0 * .pi / 180)))     // columns over the trim's height
+            func at(_ x: Int, _ y: Int, _ slope: Double) -> Int { x + Int((Double(y - midRow) * slope).rounded()) }
+            // Rows inked within a pixel of the line (all, first 5%, last 5%), and how dark the line runs.
+            func along(_ x: Int, _ slope: Double) -> (inked: Int, top: Int, bottom: Int, dark: Int) {
+                var n = 0, top = 0, bottom = 0, dark = 0
+                for y in rows0..<rows1 {
+                    let cx = at(x, y, slope)
+                    guard cx >= 1, cx < g.width - 1 else { continue }
+                    if Double(min(g.value(cx - 1, y), g.value(cx, y), g.value(cx + 1, y))) < paper * 0.75 {
+                        n += 1
+                        if y < rows0 + end { top += 1 }
+                        if y >= rows1 - end { bottom += 1 }
+                    }
+                    dark += 255 - Int(g.value(cx, y))
+                }
+                return (n, top, bottom, dark)
+            }
+            // The line inked in the most rows, then the darkest: a fold's line
+            // runs unbroken, where a path along a comb's teeth has gaps.
+            var best: (x: Int, inked: Int, dark: Int)?
+            for d in -lean...lean where abs(d) >= 2 {
+                let slope = Double(d) / Double(ry1 - ry0)
+                for x in shadowLo..<shadowHi {
+                    let a = along(x, slope)
+                    guard Double(a.inked) >= 0.85 * Double(span), 2 * a.top >= end, 2 * a.bottom >= end else { continue }
+                    if let b = best, a.inked < b.inked || (a.inked == b.inked && a.dark <= b.dark) { continue }
+                    if cornered(x, ry0..<ry1, slope: slope) { continue }
+                    best = (x, a.inked, a.dark)
+                }
+            }
+            if let best { return Double(best.x) / Double(g.width) }
         }
 
         // 2. A white gap: columns with (almost) no ink, ignoring the top and

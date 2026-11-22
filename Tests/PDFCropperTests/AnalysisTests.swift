@@ -327,6 +327,58 @@ struct AnalysisTests {
         #expect(abs(r.splitX * 800 - 400) <= 3, "split \(r.splitX * 800) px")
     }
 
+    /// A scan laid a degree or so off square: the fold's thin line leans, so no
+    /// column holds it, and a spiral's holes beside it part the white gap.
+    @Test("A leaning fold line beside a spiral's holes is the split, where it crosses the middle row (hill climb 2)",
+          arguments: [-16, 16])
+    func leaningFoldLine(lean: Int) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for y in 0..<560 { box(400 + Int((Double(y - 280) * Double(lean) / 560).rounded()), y, 2, 1) }   // the fold
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(416, y, 8, 8) }                               // the holes
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 401) <= 3, "split \(r.splitX * 800) px")
+    }
+
+    @Test("A frame's side leaning with the page is no fold (hill climb 2)")
+    func leaningFrameSide() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 300, 6); box(470, 40 + r * 32, 290, 6) }
+            for y in 40..<520 {                                                                          // the frame:
+                let x = 450 + Int((Double(y - 280) * 12 / 560).rounded())
+                box(x, y, 2, 1)                                                                          // its side,
+                if y == 40 || y == 519 { box(x, y, 320, 2) }                                             // top and bottom
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 312 && r.splitX * 800 < 440, "split \(r.splitX * 800) px")
+    }
+
+    /// A comb's teeth hug the leaning fold: a path along the teeth is darker,
+    /// but broken between them; the fold's own line runs unbroken.
+    @Test("A leaning fold line with a comb's teeth against it is the split (hill climb 2)")
+    func leaningFoldLineBesideComb() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 310, 6); box(450, 40 + r * 32, 310, 6) }
+            func at(_ y: Int) -> Int { 400 + Int((Double(y - 280) * 10 / 560).rounded()) }
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            for y in 0..<560 { box(at(y), y, 3, 1) }                                                   // the fold
+            c.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            for y in stride(from: 12, to: 548, by: 18) { box(at(y) - 8, y, 8, 12) }                     // the teeth
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(abs(r.splitX * 800 - 401) <= 2, "split \(r.splitX * 800) px")
+    }
+
     /// A running head's underline touching the fold in a break of its line is
     /// its own short stroke: only the ends of long strokes down the column are corners.
     @Test("A head's underline in a break of the fold does not make the fold a frame's side (review r1b)")
