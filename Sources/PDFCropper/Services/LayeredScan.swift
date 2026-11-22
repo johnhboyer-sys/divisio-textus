@@ -317,13 +317,17 @@ enum LayeredScan {
                 guard let (text, both) = drawing.value else { return nil }
                 var gray = [UInt8](repeating: 255, count: r.w * r.h)
                 var sharp = [Bool](repeating: false, count: r.w * r.h)
-                for y in 0..<r.h {
-                    let row = (r.y + y) * text.width + r.x
-                    for x in 0..<r.w {
-                        gray[y * r.w + x] = both.pixels[row + x]
-                        sharp[y * r.w + x] = text.pixels[row + x] < (previewDPI != nil ? 192 : 128)
+                let cut: UInt8 = previewDPI != nil ? 192 : 128
+                both.pixels.withUnsafeBufferPointer { b in text.pixels.withUnsafeBufferPointer { t in
+                gray.withUnsafeMutableBufferPointer { gray in sharp.withUnsafeMutableBufferPointer { sharp in
+                    for y in 0..<r.h {
+                        let row = (r.y + y) * text.width + r.x
+                        for x in 0..<r.w {
+                            gray[y * r.w + x] = b[row + x]
+                            sharp[y * r.w + x] = t[row + x] < cut
+                        }
                     }
-                }
+                }}}}
                 let ink = BlackAndWhite.ink(gray: gray, sharp: sharp, tone: true, width: r.w, height: r.h,
                                             dpi: dpi, preview: previewDPI != nil, removeShadows: removeShadows)
                 return BlackAndWhite.image(ink, width: r.w, height: r.h)

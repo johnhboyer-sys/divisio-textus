@@ -76,7 +76,13 @@ enum BlackAndWhite {
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
         let cleared = bands(out.indices.map { out[$0] == 0 || pending[$0] }, w, h, dpi: dpi)
-        for i in 0..<(w * h) where cleared[i] { out[i] = 255; pending[i] = false; toneInk[i] = false }
+        cleared.withUnsafeBufferPointer { cleared in
+            out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
+                toneInk.withUnsafeMutableBufferPointer { toneInk in
+                    for i in 0..<(w * h) where cleared[i] { out[i] = 255; pending[i] = false; toneInk[i] = false }
+                }
+            }}
+        }
         // Sharp ink on shadow, a touching group of the sharp layer at a time (a
         // letter half on clean paper is judged whole): kept when the group is at
         // least the size of a full stop and on the whole darker, on the small blur,
@@ -623,61 +629,70 @@ enum BlackAndWhite {
 
     /// What a band leaves about it (see `bands`).
     static func clearRims(_ out: inout [UInt8], _ cleared: [Bool], _ w: Int, _ h: Int, dpi: Double) {
-        guard cleared.contains(true) else { return }
+        guard let box = markBox(cleared, w, h) else { return }
         let c = max(1, Int((dpi / 100).rounded()))
         var stack: [Int] = []
         // The band's ragged rim: ink left touching it that lies mostly (60%) within
         // two cells of it, or in a strip at most a cell and a pixel thick but 0.4
         // inch long; and specks within 0.05 inch of it no more than 0.02 inch
         // across. Print touching the band reaches further, and is bigger than a speck.
-        let zone = blurOfMarks(cleared, w, h, radius: Int((0.05 * dpi).rounded()))
-        let hugging = blurOfMarks(cleared, w, h, radius: 2 * c)
+        let reach = Int((0.05 * dpi).rounded())
+        let zone = blurOfMarks(cleared, w, h, radius: reach, box: box)
+        let hugging = blurOfMarks(cleared, w, h, radius: 2 * c, box: box)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
         var pixels: [Int] = []
-        // Only a group with a pixel in the zone or touching what went can go, so the
-        // search starts from those pixels alone (it still takes in each such group whole).
-        func touching(_ k: Int) -> Bool {
-            let x = k % w, y = k / w
-            for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                for nx in max(0, x - 1)...min(w - 1, x + 1) where cleared[ny * w + nx] { return true }
-            }
-            return false
-        }
-        for start in 0..<(w * h) where out[start] == 0 && !visited[start] && (zone[start] < 255 || touching(start)) {
-            visited[start] = true
-            stack.removeAll(keepingCapacity: true); stack.append(start)
-            pixels.removeAll(keepingCapacity: true)
-            var touches = false, inZone = false, hugs = 0
-            var minX = w, maxX = 0, minY = h, maxY = 0
-            while let k = stack.popLast() {
-                pixels.append(k)
-                if zone[k] < 255 { inZone = true }
-                if hugging[k] < 255 { hugs += 1 }
-                let x = k % w, y = k / w
-                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+        // Pixels touching what went.
+        var touching = [Bool](repeating: false, count: w * h)
+        for y in box.y0...box.y1 {
+            for x in box.x0...box.x1 where cleared[y * w + x] {
                 for ny in max(0, y - 1)...min(h - 1, y + 1) {
-                    for nx in max(0, x - 1)...min(w - 1, x + 1) {
-                        let n = ny * w + nx
-                        if cleared[n] { touches = true }
-                        if out[n] == 0, !visited[n] { visited[n] = true; stack.append(n) }
-                    }
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) { touching[ny * w + nx] = true }
                 }
             }
-            let bw = maxX - minX + 1, bh = maxY - minY + 1
-            let rim = touches && ((bw <= thin && bh >= long) || (bh <= thin && bw >= long)
-                                  || hugs * 5 >= pixels.count * 3)
-            guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
-            for k in pixels { out[k] = 255 }
         }
+        // Only a group with a pixel in the zone or touching what went can go, so the
+        // search starts from those pixels alone (it still takes in each such group
+        // whole); they all lie within the box of what went grown by the zone's reach.
+        let g = max(1, reach)
+        cleared.withUnsafeBufferPointer { cleared in zone.withUnsafeBufferPointer { zone in
+        hugging.withUnsafeBufferPointer { hugging in touching.withUnsafeBufferPointer { touching in
+        visited.withUnsafeMutableBufferPointer { visited in out.withUnsafeMutableBufferPointer { out in
+            for sy in max(0, box.y0 - g)...min(h - 1, box.y1 + g) {
+                for sx in max(0, box.x0 - g)...min(w - 1, box.x1 + g) {
+                    let start = sy * w + sx
+                    guard out[start] == 0, !visited[start], zone[start] < 255 || touching[start] else { continue }
+                    visited[start] = true
+                    stack.removeAll(keepingCapacity: true); stack.append(start)
+                    pixels.removeAll(keepingCapacity: true)
+                    var touches = false, inZone = false, hugs = 0
+                    var minX = w, maxX = 0, minY = h, maxY = 0
+                    while let k = stack.popLast() {
+                        pixels.append(k)
+                        if zone[k] < 255 { inZone = true }
+                        if hugging[k] < 255 { hugs += 1 }
+                        let x = k % w, y = k / w
+                        minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                        for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                            for nx in max(0, x - 1)...min(w - 1, x + 1) {
+                                let n = ny * w + nx
+                                if cleared[n] { touches = true }
+                                if out[n] == 0, !visited[n] { visited[n] = true; stack.append(n) }
+                            }
+                        }
+                    }
+                    let bw = maxX - minX + 1, bh = maxY - minY + 1
+                    let rim = touches && ((bw <= thin && bh >= long) || (bh <= thin && bw >= long)
+                                          || hugs * 5 >= pixels.count * 3)
+                    guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
+                    for k in pixels { out[k] = 255 }
+                }
+            }
+        }}}}}}
     }
 
-    /// `boxBlur` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
-    /// only about the marks: a window holding no mark has mean 255 exactly, so the
-    /// blur is 255 wherever the marks' box grown by `radius` doesn't reach. Within it
-    /// the blur is made on the box grown by twice the radius (cut short at the page's
-    /// edges), where every window reaching that far is cut short just as on the page.
-    static func blurOfMarks(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
+    /// The box holding every mark, nil if there is none.
+    static func markBox(_ marks: [Bool], _ w: Int, _ h: Int) -> (x0: Int, x1: Int, y0: Int, y1: Int)? {
         var x0 = w, x1 = -1, y0 = h, y1 = -1
         marks.withUnsafeBufferPointer { m in
             for y in 0..<h {
@@ -687,8 +702,18 @@ enum BlackAndWhite {
                 if first >= 0 { x0 = min(x0, first); x1 = max(x1, last); y0 = min(y0, y); y1 = max(y1, y) }
             }
         }
+        return x1 >= 0 ? (x0, x1, y0, y1) : nil
+    }
+
+    /// `boxBlur` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
+    /// only about the marks: a window holding no mark has mean 255 exactly, so the
+    /// blur is 255 wherever the marks' box grown by `radius` doesn't reach. Within it
+    /// the blur is made on the box grown by twice the radius (cut short at the page's
+    /// edges), where every window reaching that far is cut short just as on the page.
+    static func blurOfMarks(_ marks: [Bool], _ w: Int, _ h: Int, radius r: Int,
+                            box: (x0: Int, x1: Int, y0: Int, y1: Int)) -> [UInt8] {
+        let (x0, x1, y0, y1) = box
         var out = [UInt8](repeating: 255, count: w * h)
-        guard x1 >= 0 else { return out }
         guard r > 0 else {
             for i in 0..<(w * h) where marks[i] { out[i] = 0 }
             return out
