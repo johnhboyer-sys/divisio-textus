@@ -201,8 +201,8 @@ enum BlackAndWhite {
                           _ w: Int, _ h: Int, dpi: Double, minGlyph: Int) {
         let r = max(1, Int((0.01 * dpi).rounded()))
         let sharpMap = sharp.map { $0 ? UInt8(0) : 255 }
-        let near = boxBlur(sharpMap, w, h, radius: r)    // under 255: sharp ink within r
-        let beside = boxBlur(sharpMap, w, h, radius: 2 * r)
+        let near = belowWhite(sharpMap, w, h, radius: r)    // under 255: sharp ink within r
+        let beside = belowWhite(sharpMap, w, h, radius: 2 * r)
         var seen = [Bool](repeating: false, count: w * h)
         var stack: [Int] = [], group: [Int] = []
         toneInk.withUnsafeBufferPointer { toneInk in sharp.withUnsafeBufferPointer { sharp in
@@ -750,7 +750,17 @@ enum BlackAndWhite {
         return x1 >= 0 ? (x0, x1, y0, y1) : nil
     }
 
-    /// `boxBlur` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
+    /// `boxBlur` of a map of 0 and 255, as far as telling 255 from less (all its callers
+    /// ask). A window's mean is 255 exactly when it holds no 0. For a radius up to 10 it
+    /// is under 255 whenever it holds one: a 0 takes at least 4080/21 sixteenths from its
+    /// row's mean, more than the 8 a row the rounding can give back (the mean is 255 while
+    /// the rows' means fall short by 8 a row or less). So there the window's smallest
+    /// value tells the same, by vImage's minimum filter; larger radii blur.
+    static func belowWhite(_ map: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
+        r <= 10 ? LayeredScan.minFilter(map, w, h, radius: r) : boxBlur(map, w, h, radius: r)
+    }
+
+    /// `belowWhite` of a map that is 0 where `marks` holds and 255 elsewhere, worked out
     /// only about the marks: a window holding no mark has mean 255 exactly, so the
     /// blur is 255 wherever the marks' box grown by `radius` doesn't reach. Within it
     /// the blur is made on the box grown by twice the radius (cut short at the page's
@@ -776,7 +786,7 @@ enum BlackAndWhite {
                 }
             }
         }
-        let blurred = boxBlur(sub, bw, bh, radius: r)
+        let blurred = belowWhite(sub, bw, bh, radius: r)
         let rx0 = max(0, x0 - r), rx1 = min(w - 1, x1 + r)
         let ry0 = max(0, y0 - r), ry1 = min(h - 1, y1 + r)
         blurred.withUnsafeBufferPointer { b in
