@@ -734,6 +734,29 @@ struct GrokReproTests {
         #expect(Self.share(bw, word) > 0.9)
     }
 
+    @Test("Gate: a big capital run into the next letter, starting a row of small capitals beside the block, stays")
+    func capitalStartingRow() throws {
+        var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.body(into: &ink, x0: 430, x1: 860, top: 100, lead: 50, lines: 20)
+        var cap = [UInt8](repeating: 255, count: Self.w * Self.h), rest = cap
+        Self.draw("C", points: 20, x: 40, baseline: 500, into: &cap)
+        let cw = Self.width("C", points: 20)
+        Self.draw("O", points: 11, x: 40 + cw - 2, baseline: 500, into: &cap)
+        Self.draw("PYRIGHT", points: 11, x: 40 + cw + Self.width("O", points: 11) + 2, baseline: 500, into: &rest)
+        // C and O run together, as Cherniss's COPYRIGHT does.
+        var joined = cap
+        for y in 0..<Self.h { for x in 0..<(Self.w - 3) where cap[y * Self.w + x] < 128 { for d in 1...3 { joined[y * Self.w + x + d] = 0 } } }
+        let word = Self.dark(joined) + Self.dark(rest)
+        for i in Self.dark(joined) { ink[i] = 0 }
+        for i in Self.dark(rest) { ink[i] = min(ink[i], rest[i]) }
+        let g = Self.printed(ink, on: [UInt8](repeating: 235, count: Self.w * Self.h))
+        let bw = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
+                                   width: Self.w, height: Self.h, dpi: Self.dpi, removeShadows: true)
+        let co = Self.dark(joined)
+        print("GROK gate capital: Co bw \(Self.r2(Self.share(bw, co))), whole word \(Self.r2(Self.share(bw, word)))")
+        #expect(Self.share(bw, co) > 0.9 && Self.share(bw, word) > 0.9)
+    }
+
     @Test("Gate: a dark cover with light lettering is left as it is (Freudenthal p1, p2)")
     func darkCover() throws {
         var g = [UInt8](repeating: 45, count: Self.w * Self.h)
@@ -1045,6 +1068,25 @@ struct GrokReproCorpus {
                 }
             }
             print("GROKC done2 \(name): \(m.pages.count) pages")
+        }
+    }
+
+    @Test("Debug", .enabled(if: ProcessInfo.processInfo.environment["GROK_DEBUG"] != nil))
+    func debugPage() async throws {
+        let f = Self.env["GROK_DEBUG"]!.split(separator: ":").map(String.init)   // Book:page:k
+        guard let (m, url, page) = await HillClimbShadowTests.loadCase(("debug", f[0], Int(f[1])!)) else { return }
+        let doc = try #require(AppModel.reopen(url, password: nil))
+        var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false, enhanceMode: .blackAndWhite)
+        settings.matchScanResolution = m.matchScanResolution
+        let pairs = HillClimbShadowTests.bwPairs(page, doc.page(at: page.sourceIndex)!, settings: settings)
+        guard let p = pairs.first(where: { $0.mode == "bw" && $0.k == Int(f[2])! }) else { print("GROKD no pair"); return }
+        let cc = ShadowRemoval.Components(p.off, p.w, p.h)
+        let lines = ShadowRemoval.textLines(cc.blobs, dpi: p.dpi)
+        print("GROKD w \(p.w) h \(p.h) dpi \(p.dpi) t \(lines?.t ?? -1) left \(lines?.left ?? -1) right \(lines?.right ?? -1) lines \(lines?.middles.count ?? -1)")
+        for (k, b) in cc.blobs.enumerated() where b.count >= 8 {
+            let gone = cc.count(k, where: { p.on[$0] != 0 })
+            guard gone * 10 > b.count * 7 else { continue }
+            print("GROKD lost \(b.minX),\(b.minY) \(b.width)x\(b.height) count \(b.count) member \(lines?.lineMembers.contains(k) ?? false) chained \(lines?.chained.contains(k) ?? false)")
         }
     }
 

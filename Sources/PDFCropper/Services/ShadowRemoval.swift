@@ -235,8 +235,8 @@ enum ShadowRemoval {
         }
         // And a row of print too small or short for a text line (a word in small capitals,
         // a dedication, dot leaders): three or more solid marks up to 0.3 inch tall (a title
-        // in capitals) or 2.2 `t`, none thin, not touching the side, alike in height (the tallest at most twice the shortest), chained along a row
-        // (each overlapping the next by half the shorter's height, no further off than the
+        // in capitals) or 3 `t`, none thin, not touching the side, alike in height (the
+        // tallest at most twice the shortest), chained along a row (each overlapping the next by half the shorter's height, no further off than the
         // taller is tall or a text height), two thirds of them standing on one line (their
         // feet within a quarter of the middle height). A fold's speckle lies about at random,
         // not on a line.
@@ -244,7 +244,7 @@ enum ShadowRemoval {
         do {
             let rowMarks = list.indices.filter { n in
                 let m = list[n], mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
-                return !keep[n] && m.count >= minGlyph && Double(mh) <= max(2.2 * t, 0.3 * dpi) && mw * 5 >= mh && mh * 5 >= mw
+                return !keep[n] && m.count >= minGlyph && Double(mh) <= max(3 * t, 0.3 * dpi) && mw * 5 >= mh && mh * 5 >= mw
                     && Double(m.count) >= 0.12 * Double(mw * mh) && !touchesSide(m)
             }.sorted { list[$0].minX < list[$1].minX }
             var rowParent = [Int: Int]()
@@ -284,7 +284,7 @@ enum ShadowRemoval {
         // within a quarter of its height of its foot). A clump of speckle has no line to stand on.
         for (n, m) in list.enumerated() where !keep[n] {
             let mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
-            guard Double(mh) >= 0.5 * t, Double(mh) <= max(2.2 * t, 0.3 * dpi), 2 * mw >= 3 * mh,
+            guard Double(mh) >= 0.5 * t, Double(mh) <= max(3 * t, 0.3 * dpi), 2 * mw >= 3 * mh,
                   6 * m.count >= mw * mh, 4 * m.count <= 3 * mw * mh, !touchesSide(m) else { continue }
             var foot = [Int](repeating: -1, count: mw)
             var strokes = 0
@@ -300,6 +300,19 @@ enum ShadowRemoval {
             let inked = foot.filter { $0 >= 0 }
             let onLine = inked.filter { 4 * (m.maxY - $0) <= mh }.count
             if strokes >= 3, 5 * onLine >= 3 * inked.count { keep[n] = true; inRow.insert(n) }
+        }
+        // And a capital starting such a row or word (COPYRIGHT's C, run into its o): at most
+        // 6 `t` and two and a half times the row's height, not thin, sharing the row, no
+        // further off than half its height.
+        for (n, m) in list.enumerated() where !keep[n] {
+            let mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
+            guard Double(mh) >= 0.45 * t, Double(mh) <= 6 * t, mw * 5 >= mh, !touchesSide(m) else { continue }
+            let reachX = max(Int(t.rounded()), mh / 2)
+            keep[n] = near(m, reachX).contains { o in
+                let q = list[o]
+                return o != n && inRow.contains(o) && sameRow(m, q) && 2 * mh <= 5 * (q.maxY - q.minY + 1)
+                    && max(0, q.minX - m.maxX - 1, m.minX - q.maxX - 1) <= reachX
+            }
         }
         // And a letter beside a glyph kept so (the 1 of a folio 10).
         let beside = Int((0.6 * t).rounded())
