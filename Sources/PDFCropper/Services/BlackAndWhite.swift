@@ -429,9 +429,68 @@ enum BlackAndWhite {
 
     /// Each pixel's mean over a square of `radius` (cut short at the page's
     /// edges), by running sums: along each row, then down the columns a row at a
-    /// time, so memory is read in order.
+    /// time, so memory is read in order. Each mean is a whole-number quotient,
+    /// worked out by `Divider` where its sizes allow.
     static func boxBlur(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         guard r > 0, w > 0, h > 0, p.count == w * h else { return p }
+        // Sums of up to 2r + 1 means, each at most 255 × 16: `Divider` holds for them
+        // up to a radius of 512.
+        guard r <= 512 else { return boxBlurDividing(p, w, h, radius: r) }
+        var rows = [UInt32](repeating: 0, count: w * h)     // row means, 4 bits of fraction
+        let span = Divider(2 * r + 1)
+        p.withUnsafeBufferPointer { src in
+            rows.withUnsafeMutableBufferPointer { dst in
+                for y in 0..<h {
+                    var sum = 0
+                    let base = y * w
+                    for x in 0..<min(w, r + 1) { sum += Int(src[base + x]) }
+                    for x in 0..<w {
+                        if x >= r && x + r < w {
+                            dst[base + x] = span.divide(UInt32(sum * 16))
+                        } else {
+                            dst[base + x] = UInt32(sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
+                        }
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        if x - r >= 0 { sum -= Int(src[base + x - r]) }
+                    }
+                }
+            }
+        }
+        var out = [UInt8](repeating: 0, count: w * h)
+        var column = [UInt32](repeating: 0, count: w)
+        rows.withUnsafeBufferPointer { rows in
+            out.withUnsafeMutableBufferPointer { out in
+                column.withUnsafeMutableBufferPointer { col in
+                    for y in 0..<min(h, r + 1) { for x in 0..<w { col[x] &+= rows[y * w + x] } }
+                    for y in 0..<h {
+                        let n = min(h - 1, y + r) - max(0, y - r) + 1
+                        if n == 1 {
+                            for x in 0..<w { out[y * w + x] = UInt8(min(255, (col[x] + 8) / 16)) }
+                        } else {
+                            let d = Divider(n)
+                            for x in 0..<w { out[y * w + x] = UInt8(min(255, (d.divide(col[x]) + 8) / 16)) }
+                        }
+                        if y + r + 1 < h { for x in 0..<w { col[x] &+= rows[(y + r + 1) * w + x] } }
+                        if y - r >= 0 { for x in 0..<w { col[x] &-= rows[(y - r) * w + x] } }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Whole-number division by a fixed `n` of 2 or more, by a multiply and a shift:
+    /// with m = 2^32 / n rounded up, m × n = 2^32 + e (e < n), so a × m / 2^32 is
+    /// a / n plus under a / 2^32, which is under 1/n while a × n < 2^32: never enough
+    /// to reach the next whole number, so dropping the fraction gives a / n exactly.
+    struct Divider {
+        let m: UInt64
+        init(_ n: Int) { m = ((1 << 32) + UInt64(n) - 1) / UInt64(n) }
+        @inline(__always) func divide(_ a: UInt32) -> UInt32 { UInt32(truncatingIfNeeded: (UInt64(a) &* m) >> 32) }
+    }
+
+    /// `boxBlur` by plain division, for radii too big for `Divider`.
+    static func boxBlurDividing(_ p: [UInt8], _ w: Int, _ h: Int, radius r: Int) -> [UInt8] {
         var rows = [Int](repeating: 0, count: w * h)     // row means, 4 bits of fraction
         p.withUnsafeBufferPointer { src in
             rows.withUnsafeMutableBufferPointer { dst in
