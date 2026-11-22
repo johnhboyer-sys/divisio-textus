@@ -131,7 +131,10 @@ enum PageAnalyzer {
         // touching the fold), is no side; nor is a rule running off both ways
         // where the line goes on just past it (one crossing a broken fold).
         // `slope`: the line leans, by that many columns a row, through x at mid-height.
-        func cornered(_ x0: Int, _ rows: Range<Int>, slope: Double = 0) -> Bool {
+        // `whole`: its ends in the outer 5% of rows count too, short of the
+        // scan's edge, where a thin rule turning off one way only is a frame's
+        // corner (an edge line runs off both ways; bed is no thin rule).
+        func cornered(_ x0: Int, _ rows: Range<Int>, slope: Double = 0, whole: Bool = false) -> Bool {
             let midRow = (ry0 + ry1) / 2
             func at(_ y: Int) -> Int { min(g.width - 1, max(0, x0 + Int((Double(y - midRow) * slope).rounded()))) }
             let inked = rows.filter { y in (max(0, at(y) - 1)...min(g.width - 1, at(y) + 1)).contains { Double(g.value($0, y)) < paper * 0.75 } }
@@ -159,8 +162,16 @@ enum PageAnalyzer {
                 while cx >= 0, cx < g.width, n < reach, inked(cx) { n += 1; cx += step }
                 return n >= reach
             }
-            return ends.filter { $0.row > rows0 && $0.row < rows1 }.contains { end in
+            return ends.contains { end in
                 let by = max(0, end.row - 2)...min(g.height - 1, end.row + 2)
+                guard end.row > rows0 && end.row < rows1 else {
+                    func thin(_ y: Int, _ step: Int) -> Bool {
+                        rule(y, step) && !(y - 4 >= 0 && rule(y - 4, step)) && !(y + 4 < g.height && rule(y + 4, step))
+                    }
+                    // Not where the line runs off the scan or trim: what lies beyond is unseen.
+                    return whole && end.row - ry0 > 4 && ry1 - 1 - end.row > 4
+                        && by.contains { thin($0, -1) != thin($0, 1) } && !by.contains { rule($0, -1) && rule($0, 1) }
+                }
                 return by.contains { rule($0, -1) || rule($0, 1) }
                     && !(end.onward && by.contains { rule($0, -1) && rule($0, 1) })
             }
@@ -292,7 +303,7 @@ enum PageAnalyzer {
                     let a = along(x, slope)
                     guard Double(a.inked) >= 0.85 * Double(span), 2 * a.top >= end, 2 * a.bottom >= end else { continue }
                     if let b = best, a.inked < b.inked || (a.inked == b.inked && a.dark <= b.dark) { continue }
-                    if cornered(x, ry0..<ry1, slope: slope) { continue }
+                    if cornered(x, ry0..<ry1, slope: slope, whole: true) { continue }
                     best = (x, a.inked, a.dark)
                 }
             }

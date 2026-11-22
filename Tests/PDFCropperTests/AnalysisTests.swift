@@ -361,6 +361,25 @@ struct AnalysisTests {
         #expect(r.splitX * 800 > 312 && r.splitX * 800 < 440, "split \(r.splitX * 800) px")
     }
 
+    /// A tall chart, scanned tight and a little turned: its frame runs from 20 px
+    /// below the scan's top to 20 px above its bottom, its corners in the outer
+    /// rows where a fold's own end is not looked at (Codex review of hc2).
+    @Test("A tall frame's leaning side, its corners near the scan's edges, is no fold (hill climb 2, review)")
+    func tallLeaningFrameSide() {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(40, 40 + r * 32, 300, 6); box(450, 40 + r * 32, 300, 6) }
+            for y in 20..<540 {                                                                          // the frame:
+                let x = 430 + Int((Double(y - 280) * 12 / 560).rounded())
+                box(x, y, 2, 1)                                                                          // its inner side,
+                if y == 20 || y == 539 { box(x, y, 340, 2) }                                             // top and bottom
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.splitX * 800 > 342 && r.splitX * 800 < 422, "split \(r.splitX * 800) px")
+    }
+
     /// A comb's teeth hug the leaning fold: a path along the teeth is darker,
     /// but broken between them; the fold's own line runs unbroken.
     @Test("A leaning fold line with a comb's teeth against it is the split (hill climb 2)")
