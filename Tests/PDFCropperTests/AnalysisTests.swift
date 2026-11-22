@@ -647,6 +647,24 @@ struct AnalysisTests {
         #expect(abs(r.splitX - 0.51) < 0.015)
     }
 
+    /// A sheet laid a little turned on the glass leaves a thin wedge of scanner
+    /// bed in a corner, along the scan's top or bottom edge: no print.
+    @Test("A blank page with a wedge of bed in its corner is still blank (hill climb 2)", arguments: [true, false])
+    func blankPageWithCornerWedge(top: Bool) {
+        let image = Fixtures.image(800, 560) { c in
+            func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) { c.fill(CGRect(x: x, y: 560 - y - h, width: w, height: h)) }
+            c.setFillColor(CGColor(gray: 0.1, alpha: 1))
+            for r in 0..<15 { box(450, 40 + r * 32, 310, 6) }                         // the right page
+            c.setFillColor(CGColor(gray: 0.03, alpha: 1))
+            for x in 0..<110 {                                                       // the wedge, 15 px deep at the edge
+                let h = Int((15 * Double(110 - x) / 110).rounded())
+                if h > 0 { box(x, top ? 0 : 560 - h, 1, h) }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: image)
+        #expect(r.leftBlank && !r.rightBlank, "left \(r.leftCrop)")
+    }
+
     @Test("A blank page keeps the book's split, and its crop stays on its own side",
           arguments: [false, true])
     @MainActor

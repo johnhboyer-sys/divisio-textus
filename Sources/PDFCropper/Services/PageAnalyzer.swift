@@ -1215,7 +1215,17 @@ enum PageAnalyzer {
         let speck = right >= left && bottom >= top
             && ((Double(boxW) < 0.03 * Double(bx1 - bx0) && Double(boxH) < 0.03 * Double(by1 - by0))
                 || boxW <= 2 || boxH <= 2)
-        if bottom < top || right < left || speck {
+        // So is a wedge of scanner bed in a corner, left by a sheet laid a little
+        // turned: a box in the corner, under 3% of the page tall, a third of it
+        // as dark as bed (a line of print, so thin, is paler over its box).
+        func cornerWedge() -> Bool {
+            guard right >= left, bottom >= top, Double(boxH) < 0.03 * Double(by1 - by0),
+                  top <= by0 || bottom >= by1 - 1, left <= bx0 || right >= bx1 - 1 else { return false }
+            var dark = 0
+            for y in top...bottom { for x in left...right where Double(g.value(x, y)) < bandThreshold { dark += 1 } }
+            return 3 * dark >= boxW * boxH
+        }
+        if bottom < top || right < left || speck || cornerWedge() {
             var r = CropRect(x: Double(bx0) / Double(g.width), y: Double(by0) / Double(g.height),
                              width: Double(bx1 - bx0) / Double(g.width), height: Double(by1 - by0) / Double(g.height))
             r.normalize()
