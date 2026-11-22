@@ -277,6 +277,30 @@ enum ShadowRemoval {
                 for n in members { keep[n] = true; inRow.insert(n) }
             }
         }
+        // And a word whose letters run together (a coarse scan's small capitals): one mark
+        // as tall as a row's above, at least one and a half times as wide as tall, a sixth
+        // to three quarters solid, not touching the side, crossed by three or more strokes
+        // at half its height, and standing on a line (three in five of its columns end
+        // within a quarter of its height of its foot). A clump of speckle has no line to stand on.
+        for (n, m) in list.enumerated() where !keep[n] {
+            let mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
+            guard Double(mh) >= 0.5 * t, Double(mh) <= max(2.2 * t, 0.3 * dpi), 2 * mw >= 3 * mh,
+                  6 * m.count >= mw * mh, 4 * m.count <= 3 * mw * mh, !touchesSide(m) else { continue }
+            var foot = [Int](repeating: -1, count: mw)
+            var strokes = 0
+            let middle = m.minY + mh / 2
+            for b in m.blobs {
+                for (y, row) in zip(cc.rowNumbers(b), cc.rows(b)) {
+                    for (x0, x1) in row {
+                        for x in x0...x1 { foot[x - m.minX] = max(foot[x - m.minX], y) }
+                        if y == middle { strokes += 1 }
+                    }
+                }
+            }
+            let inked = foot.filter { $0 >= 0 }
+            let onLine = inked.filter { 4 * (m.maxY - $0) <= mh }.count
+            if strokes >= 3, 5 * onLine >= 3 * inked.count { keep[n] = true; inRow.insert(n) }
+        }
         // And a letter beside a glyph kept so (the 1 of a folio 10).
         let beside = Int((0.6 * t).rounded())
         for (n, m) in list.enumerated() where !keep[n] && letterTall(m) {
@@ -868,6 +892,11 @@ enum ShadowRemoval {
             var byRow = [Int: [(Int, Int)]]()
             for i in runsOf[k] { byRow[Int(runRow[i]), default: []].append((Int(runStart[i]), Int(runEnd[i]))) }
             return byRow.keys.sorted().map { byRow[$0]! }
+        }
+
+        /// The rows `rows(k)` gives, top first.
+        func rowNumbers(_ k: Int) -> [Int] {
+            Array(Set(runsOf[k].map { Int(runRow[$0]) })).sorted()
         }
 
         /// How many of blob `k`'s pixels `inside` holds.

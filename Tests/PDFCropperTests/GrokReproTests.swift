@@ -714,6 +714,26 @@ struct GrokReproTests {
         #expect(Self.share(bw, word) > 0.9)
     }
 
+    @Test("Gate: a word beside the block whose letters run together stays (Cherniss p3 at 150 DPI)")
+    func joinedWordBesideBlock() throws {
+        var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.body(into: &ink, x0: 430, x1: 860, top: 100, lead: 50, lines: 20)
+        var one = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.draw("ROGER", font: "TimesNewRomanPS-BoldMT", points: 12, x: 40, baseline: 500, into: &one)
+        // Run the letters together, as a coarse scan does: each ink pixel spread 3 px to the right.
+        var joined = one
+        for y in 0..<Self.h { for x in 0..<(Self.w - 3) where one[y * Self.w + x] < 128 {
+            for d in 1...3 { joined[y * Self.w + x + d] = 0 }
+        } }
+        let word = Self.dark(joined)
+        for i in word { ink[i] = 0 }
+        let g = Self.printed(ink, on: [UInt8](repeating: 235, count: Self.w * Self.h))
+        let bw = BlackAndWhite.ink(gray: g, sharp: nil, tone: BlackAndWhite.holdsTones(g, width: Self.w, height: Self.h),
+                                   width: Self.w, height: Self.h, dpi: Self.dpi, removeShadows: true)
+        print("GROK gate joined word: bw \(Self.r2(Self.share(bw, word)))")
+        #expect(Self.share(bw, word) > 0.9)
+    }
+
     @Test("Gate: a dark cover with light lettering is left as it is (Freudenthal p1, p2)")
     func darkCover() throws {
         var g = [UInt8](repeating: 45, count: Self.w * Self.h)
