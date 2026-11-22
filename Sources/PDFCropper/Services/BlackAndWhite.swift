@@ -107,10 +107,13 @@ enum BlackAndWhite {
         var stack: [Int] = [], group: [Int] = []
         var failed: [[Int]] = []
         // The blurs serve this test alone: none are made for a page without such ink.
-        if pending.contains(true) {
-            let blur = boxBlur(gray, w, h, radius: Int((0.008 * dpi).rounded()))
-            let around = boxBlur(gray, w, h, radius: Int((0.05 * dpi).rounded()))
-            blur.withUnsafeBufferPointer { blur in around.withUnsafeBufferPointer { around in
+        var pendingCount = 0
+        pending.withUnsafeBufferPointer { p in for v in p { pendingCount += v ? 1 : 0 } }
+        if pendingCount > 0 {
+            // Where such ink is sparse (under a twentieth of the page), the blurs are
+            // worked out at the pixels the test reads alone (`BoxMeans`); else whole.
+            let blur = BoxMeans(gray, w, h, radius: Int((0.008 * dpi).rounded()), sparse: pendingCount * 20 < w * h)
+            let around = BoxMeans(gray, w, h, radius: Int((0.05 * dpi).rounded()), sparse: pendingCount * 20 < w * h)
             sharpPx.withUnsafeBufferPointer { sharpPx in seen.withUnsafeMutableBufferPointer { seen in
             pending.withUnsafeBufferPointer { pending in out.withUnsafeMutableBufferPointer { out in
                 for start in 0..<(w * h) where pending[start] && !seen[start] {
@@ -120,7 +123,7 @@ enum BlackAndWhite {
                     var sumBlur = 0, sumAround = 0
                     while let k = stack.popLast() {
                         group.append(k)
-                        sumBlur += Int(blur[k]); sumAround += Int(around[k])
+                        sumBlur += blur.at(k); sumAround += around.at(k)
                         let x = k % w, y = k / w
                         for ny in max(0, y - 1)...min(h - 1, y + 1) {
                             for nx in max(0, x - 1)...min(w - 1, x + 1) where sharpPx[ny * w + nx] && !seen[ny * w + nx] {
@@ -136,7 +139,7 @@ enum BlackAndWhite {
                         failed.append(group)
                     }
                 }
-            }}}}}}
+            }}}}
         }
         // A layered scan's text layer is the publisher's own ink: a piece of it too
         // small or faint for the test above (a letter's hairline broken off) stays when
@@ -534,6 +537,56 @@ enum BlackAndWhite {
             }
         }
         return out
+    }
+
+    /// `boxBlur` of a page, read a pixel at a time: made whole, or, `sparse`, worked out
+    /// at each pixel asked for from running sums along the rows, with the same whole-number
+    /// quotients as `boxBlur` (each row's sum times 16 over the row's window, those added
+    /// down the window's rows over their number, rounded to a whole gray), so the same
+    /// value.
+    struct BoxMeans {
+        private let w: Int, h: Int, r: Int
+        private let sparse: Bool
+        private let whole: [UInt8]          // the blur, when made whole
+        private let rowSums: [UInt32]       // each row's running sum, w + 1 a row
+
+        init(_ gray: [UInt8], _ w: Int, _ h: Int, radius r: Int, sparse: Bool) {
+            self.w = w; self.h = h; self.r = r
+            self.sparse = sparse && r > 0
+            if !self.sparse {
+                whole = boxBlur(gray, w, h, radius: r)
+                rowSums = []
+                return
+            }
+            whole = []
+            var sums = [UInt32](repeating: 0, count: (w + 1) * h)
+            gray.withUnsafeBufferPointer { g in
+                sums.withUnsafeMutableBufferPointer { s in
+                    for y in 0..<h {
+                        let from = y * w, to = y * (w + 1)
+                        var run: UInt32 = 0
+                        s[to] = 0
+                        for x in 0..<w { run &+= UInt32(g[from + x]); s[to + x + 1] = run }
+                    }
+                }
+            }
+            rowSums = sums
+        }
+
+        @inline(__always) func at(_ k: Int) -> Int {
+            if !sparse { return Int(whole[k]) }
+            let x = k % w, y = k / w
+            let x0 = max(0, x - r), x1 = min(w - 1, x + r), c = x1 - x0 + 1
+            let y0 = max(0, y - r), y1 = min(h - 1, y + r), n = y1 - y0 + 1
+            var column = 0
+            rowSums.withUnsafeBufferPointer { s in
+                for row in y0...y1 {
+                    let base = row * (w + 1)
+                    column += Int(s[base + x1 + 1] &- s[base + x0]) * 16 / c
+                }
+            }
+            return min(255, (column / n + 8) / 16)
+        }
     }
 
     /// Whole-number division by a fixed `n` of 2 or more, by a multiply and a shift:
