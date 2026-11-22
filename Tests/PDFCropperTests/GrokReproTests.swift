@@ -777,6 +777,35 @@ struct GrokReproTests {
         }
     }
 
+    @Test("Gate: an index page claiming a quarter of its resolution keeps both columns (Cherniss p216)")
+    func indexAtWrongScale() {
+        // Drawn at 400 DPI, judged at the 100 the page claims: two columns of 8 point index
+        // entries, dense with numbers, as Cherniss's index (a scan claiming 72 ppi) is.
+        let real = 400.0, claimed = 100.0, pw = 2200, ph = 1600
+        var px = [UInt8](repeating: 255, count: pw * ph)
+        let names = ["Anaximenes", "Anaxagoras", "Empedocles", "Heraclitus", "Parmenides", "Democritus", "Leucippus",
+                     "Xenophanes", "Diogenes", "Melissus", "Zeno", "Pythagoreans", "Alcmaeon", "Hippo", "Thales"]
+        var rng = HCRandom(11)
+        for column in 0..<2 {
+            let x0 = column == 0 ? 200.0 : 1150.0
+            for line in 0..<25 {
+                var s = line % 3 == 0 ? names[(line / 3 + 5 * column) % names.count] + ": " : "   "
+                for k in 0..<rng.int(3, 7) {
+                    let n = rng.int(1, 240)
+                    s += (k == 0 ? "" : rng.int(0, 2) == 0 ? "; " : ", ") + (rng.int(0, 3) == 0 ? "n. \(n)" : "\(n)")
+                    if rng.int(0, 4) == 0 { s += "-\(n + rng.int(1, 4))" }
+                }
+                Self.draw(s, points: 8, dpi: real, x: x0, baseline: 200 + Double(line) * 55, into: &px, pw, ph)
+            }
+        }
+        var out = px.map { $0 < 128 ? UInt8(0) : 255 }
+        let before = out
+        ShadowRemoval.clearSides(&out, pw, ph, dpi: claimed)
+        let lost = zip(before, out).filter { $0 == 0 && $1 != 0 }.count
+        print("GROK gate index at a quarter scale: \(lost) of \(before.filter { $0 == 0 }.count) ink pixels cleared")
+        #expect(lost == 0)
+    }
+
     // MARK: S5. Teeth on a page under 0.8 inch wide
 
     @Test("Grok S5: on a page 0.7 inch wide a comb's zone stays by the teeth",
@@ -1147,6 +1176,8 @@ struct GrokReproCorpus {
 /// GROK_OFFHASH=Book,Book (with HILLCLIMB_DIR): each book Auto-detected and exported whole in
 /// Color, Grayscale and Black and white without Remove shadows; prints a SHA-256 of every
 /// page's image data per mode, to compare two builds (the options off must not change).
+/// GROK_HASH_ON=1 adds the three modes with Remove shadows (`color-on`, `gray-on`, `bw-on`)
+/// and prints each page's own hash too (`GROKPAGE`), to find the pages that changed.
 @Suite("Grok off-mode hashes", .serialized,
        .enabled(if: ProcessInfo.processInfo.environment["GROK_OFFHASH"] != nil
                     && ProcessInfo.processInfo.environment["HILLCLIMB_DIR"] != nil))
@@ -1159,9 +1190,13 @@ struct GrokOffHashes {
             let m = HillClimb.makeModel()
             await HillClimb.load(url, into: m)
             let doc = try #require(AppModel.reopen(url, password: nil))
-            for (label, mode) in [("color", EnhanceMode.color), ("gray", .grayscale), ("bw", .blackAndWhite)] {
+            let on = ProcessInfo.processInfo.environment["GROK_HASH_ON"] != nil
+            let modes: [(String, EnhanceMode, Bool)] = [("color", .color, false), ("gray", .grayscale, false), ("bw", .blackAndWhite, false)]
+                + (on ? [("color-on", .color, true), ("gray-on", .grayscale, true), ("bw-on", .blackAndWhite, true)] : [])
+            for (label, mode, remove) in modes {
                 var settings = PDFExporter.Settings(dpi: m.exportDPI, direction: m.direction, ocr: false, enhanceMode: mode)
                 settings.matchScanResolution = m.matchScanResolution
+                settings.removeShadows = remove
                 let out = HillClimb.scratch.appendingPathComponent("offhash-\(name)-\(label).pdf")
                 _ = try PDFExporter.export(pages: m.pages, from: doc, to: out, settings: settings)
                 let made = try #require(CGPDFDocument(out as CFURL))
@@ -1179,8 +1214,11 @@ struct GrokOffHashes {
                            let data = CGPDFStreamCopyData(stream, &format) { datas.append(data as Data) }
                         return true
                     }, nil)
-                    for d in datas.sorted(by: { $0.count < $1.count }) { hasher.update(data: d) }
+                    var page = SHA256()
+                    for d in datas.sorted(by: { $0.count < $1.count }) { hasher.update(data: d); page.update(data: d) }
+                    if on { print("GROKPAGE \(name) \(label) \(k) \(page.finalize().map { String(format: "%02x", $0) }.joined().prefix(16))") }
                 }
+                try? FileManager.default.removeItem(at: out)
                 let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
                 print("GROKHASH \(name) \(label) pages=\(made.numberOfPages) \(digest)")
             }

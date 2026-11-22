@@ -42,11 +42,13 @@ enum ShadowRemoval {
     /// anything touching the side. A page with fewer than three text lines is left
     /// as it is. Returns whether it ran.
     @discardableResult
-    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double, keep: [Bool]? = nil) -> Bool {
+    static func clearSides(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi claimed: Double, keep: [Bool]? = nil) -> Bool {
         guard w > 2, h > 2, out.count == w * h else { return false }
         let cc = Components(out, w, h)
         let blobs = cc.blobs
-        guard let lines = textLines(blobs, dpi: dpi) else { return false }
+        // Measured at the page's own resolution (see `scaled`).
+        let (dpi, found) = scaled(blobs, w, h, dpi: claimed)
+        guard let lines = found else { return false }
         let t = lines.t, minGlyph = lines.minGlyph, lineMembers = lines.lineMembers, chained = lines.chained
         let left = lines.left, right = lines.right
         var parent = lines.parent
@@ -364,6 +366,30 @@ enum ShadowRemoval {
         var right: Int
         var parent: [Int]
         var middles: [Int]
+    }
+
+    /// The page's resolution as its print measures it, and its text lines at that
+    /// resolution. A scan can claim far fewer pixels to the inch than it holds (Cherniss's
+    /// claims 72 ppi, so its pages measure 30 inches wide): then every inch measure here
+    /// is a few times too small, few marks pass for letters, the text block comes out a
+    /// column or a few lines, and print beyond it goes, or a rule beside the block fails
+    /// tests made in inches. So on a page 20 inches long or more at `dpi` (no book's page
+    /// is), the lines are found as if at `dpi`, twice and four times it; when those holding
+    /// the most ink (the first, if alike) have a text height of 0.15 inch or more at `dpi`
+    /// (twice ordinary print's), the page's resolution is its text height over 0.1 inch (a
+    /// large text height, so the inch measures err small, keeping more): 1.5 times `dpi`
+    /// or more. Else `dpi`. (A cover's or title page's big letters alone don't do it.)
+    static func scaled(_ blobs: [Blob], _ w: Int, _ h: Int, dpi: Double) -> (dpi: Double, lines: TextLines?) {
+        let lines = textLines(blobs, dpi: dpi)
+        guard Double(max(w, h)) >= 20 * dpi else { return (dpi, lines) }
+        func ink(_ l: TextLines?) -> Int { l.map { $0.lineMembers.reduce(0) { $0 + blobs[$1].count } } ?? 0 }
+        var best = lines
+        for k in [2.0, 4.0] {
+            if let l = textLines(blobs, dpi: k * dpi), ink(l) > ink(best) { best = l }
+        }
+        guard let best, best.t >= 0.15 * dpi else { return (dpi, lines) }
+        let measured = best.t / 0.1
+        return (measured, textLines(blobs, dpi: measured))
     }
 
     /// See `TextLines`; nil for a page with fewer than three text lines.
