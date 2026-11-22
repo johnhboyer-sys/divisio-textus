@@ -465,12 +465,20 @@ enum BlackAndWhite {
                     var sum = 0
                     let base = y * w
                     for x in 0..<min(w, r + 1) { sum += Int(src[base + x]) }
-                    for x in 0..<w {
-                        if x >= r && x + r < w {
-                            dst[base + x] = span.divide(UInt32(sum * 16))
-                        } else {
-                            dst[base + x] = UInt32(sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
-                        }
+                    // The left edge, the middle (whole windows), the right edge.
+                    let lo = min(r, w), hi = max(lo, w - r)
+                    for x in 0..<lo {
+                        dst[base + x] = UInt32(truncatingIfNeeded: sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        if x - r >= 0 { sum -= Int(src[base + x - r]) }
+                    }
+                    for x in lo..<hi {
+                        dst[base + x] = span.divide(UInt32(truncatingIfNeeded: sum * 16))
+                        if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
+                        sum -= Int(src[base + x - r])
+                    }
+                    for x in hi..<w {
+                        dst[base + x] = UInt32(truncatingIfNeeded: sum * 16 / (min(w - 1, x + r) - max(0, x - r) + 1))
                         if x + r + 1 < w { sum += Int(src[base + x + r + 1]) }
                         if x - r >= 0 { sum -= Int(src[base + x - r]) }
                     }
@@ -482,17 +490,29 @@ enum BlackAndWhite {
         rows.withUnsafeBufferPointer { rows in
             out.withUnsafeMutableBufferPointer { out in
                 column.withUnsafeMutableBufferPointer { col in
-                    for y in 0..<min(h, r + 1) { for x in 0..<w { col[x] &+= rows[y * w + x] } }
+                    let c = col.baseAddress!, all = rows.baseAddress!
+                    for y in 0..<min(h, r + 1) { for x in 0..<w { c[x] &+= all[y * w + x] } }
                     for y in 0..<h {
                         let n = min(h - 1, y + r) - max(0, y - r) + 1
+                        let o = out.baseAddress! + y * w
                         if n == 1 {
-                            for x in 0..<w { out[y * w + x] = UInt8(min(255, (col[x] + 8) / 16)) }
+                            for x in 0..<w { o[x] = UInt8(truncatingIfNeeded: min(255, (c[x] + 8) / 16)) }
                         } else {
                             let d = Divider(n)
-                            for x in 0..<w { out[y * w + x] = UInt8(min(255, (d.divide(col[x]) + 8) / 16)) }
+                            for x in 0..<w { o[x] = UInt8(truncatingIfNeeded: min(255, (d.divide(c[x]) + 8) / 16)) }
                         }
-                        if y + r + 1 < h { for x in 0..<w { col[x] &+= rows[(y + r + 1) * w + x] } }
-                        if y - r >= 0 { for x in 0..<w { col[x] &-= rows[(y - r) * w + x] } }
+                        // The window moves down a row: the row entering it in, the one leaving it out.
+                        let entering = y + r + 1 < h, leaving = y - r >= 0
+                        if entering && leaving {
+                            let add = all + (y + r + 1) * w, sub = all + (y - r) * w
+                            for x in 0..<w { c[x] = c[x] &+ add[x] &- sub[x] }
+                        } else if entering {
+                            let add = all + (y + r + 1) * w
+                            for x in 0..<w { c[x] &+= add[x] }
+                        } else if leaving {
+                            let sub = all + (y - r) * w
+                            for x in 0..<w { c[x] &-= sub[x] }
+                        }
                     }
                 }
             }
@@ -559,13 +579,17 @@ enum BlackAndWhite {
         let cw = (w + c - 1) / c, ch = (h + c - 1) / c
         let cellDPI = dpi / Double(c)
         var dark = [Bool](repeating: false, count: cw * ch)
-        for cy in 0..<ch {
-            for cx in 0..<cw {
-                var inked = 0, n = 0
-                for y in (cy * c)..<min(h, cy * c + c) {
-                    for x in (cx * c)..<min(w, cx * c + c) { inked += ink[y * w + x] ? 1 : 0; n += 1 }
+        ink.withUnsafeBufferPointer { ink in
+            dark.withUnsafeMutableBufferPointer { dark in
+                for cy in 0..<ch {
+                    for cx in 0..<cw {
+                        var inked = 0, n = 0
+                        for y in (cy * c)..<min(h, cy * c + c) {
+                            for x in (cx * c)..<min(w, cx * c + c) { inked += ink[y * w + x] ? 1 : 0; n += 1 }
+                        }
+                        dark[cy * cw + cx] = inked * 10 >= n * 3
+                    }
                 }
-                dark[cy * cw + cx] = inked * 10 >= n * 3
             }
         }
         let near = max(1, Int((0.1 * cellDPI).rounded()))
@@ -632,10 +656,12 @@ enum BlackAndWhite {
             }
         }
         var cleared = [Bool](repeating: false, count: w * h)
-        for cy in 0..<ch {
-            for cx in 0..<cw where clear[cy * cw + cx] {
-                for y in (cy * c)..<min(h, cy * c + c) {
-                    for x in (cx * c)..<min(w, cx * c + c) { cleared[y * w + x] = true }
+        cleared.withUnsafeMutableBufferPointer { cleared in
+            for cy in 0..<ch {
+                for cx in 0..<cw where clear[cy * cw + cx] {
+                    for y in (cy * c)..<min(h, cy * c + c) {
+                        for x in (cx * c)..<min(w, cx * c + c) { cleared[y * w + x] = true }
+                    }
                 }
             }
         }
@@ -709,12 +735,16 @@ enum BlackAndWhite {
     /// The box holding every mark, nil if there is none.
     static func markBox(_ marks: [Bool], _ w: Int, _ h: Int) -> (x0: Int, x1: Int, y0: Int, y1: Int)? {
         var x0 = w, x1 = -1, y0 = h, y1 = -1
-        marks.withUnsafeBufferPointer { m in
+        // A Bool is a byte, 1 for true: memchr finds a row's first mark.
+        marks.withUnsafeBytes { m in
+            guard let base = m.baseAddress else { return }
             for y in 0..<h {
-                let row = y * w
-                var first = -1, last = -1
-                for x in 0..<w where m[row + x] { if first < 0 { first = x }; last = x }
-                if first >= 0 { x0 = min(x0, first); x1 = max(x1, last); y0 = min(y0, y); y1 = max(y1, y) }
+                let row = base + y * w
+                guard let hit = memchr(row, 1, w) else { continue }
+                let first = UnsafeRawPointer(hit) - row
+                var last = w - 1
+                while row.load(fromByteOffset: last, as: UInt8.self) == 0 { last -= 1 }
+                x0 = min(x0, first); x1 = max(x1, last); y0 = min(y0, y); y1 = max(y1, y)
             }
         }
         return x1 >= 0 ? (x0, x1, y0, y1) : nil

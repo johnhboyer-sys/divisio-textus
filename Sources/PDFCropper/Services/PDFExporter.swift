@@ -439,14 +439,26 @@ enum PDFExporter {
         guard CFDataGetLength(data) >= stride * h else { return nil }
         let rowBytes = (w + 7) / 8
         var packed = [UInt8](repeating: 0, count: rowBytes * h)
-        for y in 0..<h {
-            let row = base + y * stride
-            for x in 0..<w {
-                let v = row[x]
-                if v == 255 { packed[y * rowBytes + (x >> 3)] |= UInt8(0x80 >> (x & 7)) }
-                else if v != 0 { return nil }
+        // Eight pixels to a byte; a pixel neither 0 nor 255 (v + 1 over 1, wrapping) ends it.
+        let pure = packed.withUnsafeMutableBufferPointer { out -> Bool in
+            for y in 0..<h {
+                let row = base + y * stride
+                var other: UInt8 = 0
+                for b in 0..<rowBytes {
+                    var byte: UInt8 = 0
+                    let x0 = b * 8, n = min(8, w - x0)
+                    for k in 0..<n {
+                        let v = row[x0 + k]
+                        other |= (v &+ 1) > 1 ? 1 : 0
+                        byte |= (v & 0x80) >> UInt8(k)
+                    }
+                    out[y * rowBytes + b] = byte
+                }
+                if other != 0 { return false }
             }
+            return true
         }
+        guard pure else { return nil }
         guard let provider = CGDataProvider(data: Data(packed) as CFData) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
