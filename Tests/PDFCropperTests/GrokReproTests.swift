@@ -679,6 +679,39 @@ struct GrokReproTests {
         #expect(Self.share(r.bw, letter) > 0.9)
     }
 
+    // MARK: What the whole-book gate found
+
+    @Test("Gate: a word in small capitals and dot leaders beside the block stay (Cherniss p3, Freudenthal p2)")
+    func smallRowsBesideBlock() throws {
+        var word: [Int] = [], dots: [Int] = []
+        let r = try Self.besideBlock { ink in
+            var one = [UInt8](repeating: 255, count: Self.w * Self.h)
+            Self.draw("ROGER", points: 5, x: 700, baseline: 400, into: &one)
+            word = Self.dark(one)
+            var two = [UInt8](repeating: 255, count: Self.w * Self.h)
+            for k in 0..<4 { for i in Self.box(700 + 22 * k, 600, 6, 6) { two[i] = 0 } }
+            dots = Self.dark(two)
+            for i in word + dots { ink[i] = min(ink[i], min(one[i], two[i])) }
+        }
+        print("GROK gate rows: word bw \(Self.r2(Self.share(r.bw, word))) color \(Self.r2(Self.share(r.color, word))); "
+              + "dots bw \(Self.r2(Self.share(r.bw, dots))) color \(Self.r2(Self.share(r.color, dots)))")
+        #expect(Self.share(r.bw, word) > 0.9 && Self.share(r.color, word) > 0.9)
+        #expect(Self.share(r.bw, dots) > 0.9 && Self.share(r.color, dots) > 0.9)
+    }
+
+    @Test("Gate: a dark cover with light lettering is left as it is (Freudenthal p1, p2)")
+    func darkCover() throws {
+        var g = [UInt8](repeating: 45, count: Self.w * Self.h)
+        var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
+        Self.body(into: &ink, x0: 100, x1: 800, top: 150, lead: 50, lines: 18)
+        for i in g.indices where ink[i] < 255 { g[i] = UInt8(45 + (255 - Int(ink[i])) * 180 / 255) }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let changed = zip(out, g).filter { abs(Int($0) - Int($1)) > 2 }.count
+        print("GROK gate cover: \(changed) pixels changed")
+        #expect(changed == 0)
+    }
+
     // MARK: S5. Teeth on a page under 0.8 inch wide
 
     @Test("Grok S5: on a page 0.7 inch wide a comb's zone stays by the teeth",

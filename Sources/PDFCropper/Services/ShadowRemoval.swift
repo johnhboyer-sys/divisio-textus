@@ -233,10 +233,54 @@ enum ShadowRemoval {
             let bySide = m.minX < flank || m.maxX >= w - flank
             keep[n] = (!bySide && specks < 8) || crowd * 10 <= m.count
         }
+        // And a row of print too small or short for a text line (a word in small capitals,
+        // a dedication, dot leaders): three or more solid marks, none thin, not touching the
+        // side, alike in height (the tallest at most twice the shortest), chained along a row
+        // (each overlapping the next by half the shorter's height, no further off than the
+        // taller is tall or a text height), two thirds of them standing on one line (their
+        // feet within a quarter of the middle height). A fold's speckle lies about at random,
+        // not on a line.
+        var inRow = Set<Int>()
+        do {
+            let rowMarks = list.indices.filter { n in
+                let m = list[n], mw = m.maxX - m.minX + 1, mh = m.maxY - m.minY + 1
+                return !keep[n] && m.count >= minGlyph && Double(mh) <= 2.2 * t && mw * 5 >= mh && mh * 5 >= mw
+                    && Double(m.count) >= 0.12 * Double(mw * mh) && !touchesSide(m)
+            }.sorted { list[$0].minX < list[$1].minX }
+            var rowParent = [Int: Int]()
+            func rowFind(_ i: Int) -> Int { var r = i; while let p = rowParent[r], p != r { r = p }; return r }
+            for i in rowMarks { rowParent[i] = i }
+            for (k, i) in rowMarks.enumerated() {
+                let a = list[i], ah = a.maxY - a.minY + 1
+                var j = k + 1
+                while j < rowMarks.count, list[rowMarks[j]].minX <= a.maxX + 1 + max(2 * ah, Int(t.rounded())) {
+                    let b = list[rowMarks[j]], bh = b.maxY - b.minY + 1
+                    j += 1
+                    let lo = min(ah, bh), hi = max(ah, bh)
+                    let overlap = min(a.maxY, b.maxY) - max(a.minY, b.minY) + 1
+                    let gap = max(0, b.minX - a.maxX - 1)
+                    guard hi <= 2 * lo, 2 * overlap >= lo, Double(gap) <= max(Double(hi), t) else { continue }
+                    let ra = rowFind(i), rb = rowFind(rowMarks[j - 1])
+                    if ra != rb { rowParent[max(ra, rb)] = min(ra, rb) }
+                }
+            }
+            var rows = [Int: [Int]]()
+            for i in rowMarks { rows[rowFind(i), default: []].append(i) }
+            for (_, members) in rows where members.count >= 3 {
+                let heights = members.map { list[$0].maxY - list[$0].minY + 1 }
+                guard heights.max()! <= 2 * heights.min()! else { continue }
+                let midH = heights.sorted()[heights.count / 2]
+                let feet = members.map { list[$0].maxY }.sorted()
+                let foot = feet[feet.count / 2]
+                let onLine = feet.filter { 4 * abs($0 - foot) <= midH }.count
+                guard 3 * onLine >= 2 * members.count else { continue }
+                for n in members { keep[n] = true; inRow.insert(n) }
+            }
+        }
         // And a letter beside a glyph kept so (the 1 of a folio 10).
         let beside = Int((0.6 * t).rounded())
         for (n, m) in list.enumerated() where !keep[n] && letterTall(m) {
-            keep[n] = near(m, beside).contains { o in o != n && keep[o] && shaped[o] && sameRow(m, list[o]) }
+            keep[n] = near(m, beside).contains { o in o != n && keep[o] && (shaped[o] || inRow.contains(o)) && sameRow(m, list[o]) }
         }
         // And punctuation beside such a glyph, within its rows (the full stop of a list's
         // hanging number 1.).
@@ -244,7 +288,7 @@ enum ShadowRemoval {
             guard Double(m.maxX - m.minX + 1) <= 0.5 * t, Double(m.maxY - m.minY + 1) <= 0.5 * t else { continue }
             keep[n] = near(m, beside).contains { o in
                 let g = list[o]
-                return o != n && keep[o] && shaped[o] && Double(m.minY) >= Double(g.minY) - 0.3 * t
+                return o != n && keep[o] && (shaped[o] || inRow.contains(o)) && Double(m.minY) >= Double(g.minY) - 0.3 * t
                     && Double(m.maxY) <= Double(g.maxY) + 0.3 * t
             }
         }
@@ -619,7 +663,8 @@ enum ShadowRemoval {
     // MARK: Color and grayscale
 
     /// A color or gray output page with its shadows removed (see the type's notes),
-    /// at `dpi`. Pictures (see `BlackAndWhite.pictureCells`) are left as they are.
+    /// at `dpi`. Pictures (see `BlackAndWhite.pictureCells`) are left as they are, and so
+    /// is a page that is mostly dark itself (a cover).
     /// The same kind of image back (gray for gray), or nil if it can't be read.
     static func page(_ image: CGImage, dpi: Double) -> CGImage? {
         let w = image.width, h = image.height
@@ -674,6 +719,11 @@ enum ShadowRemoval {
         let paperRef = channels == 1 ? Double(paperColor[0])
             : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
         let floor = paperRef * 0.35
+        // A page whose paper is mostly that dark is dark itself (a cover, light print on a
+        // dark ground), not a light page with a band beside it: left as it is.
+        var dark = 0
+        for i in stride(from: 0, to: w * h, by: 7) where Double(paper[i]) < floor { dark += 1 }
+        if dark * 2 > (w * h + 6) / 7 { return image }
         // What is painted: what isn't print, and on out to 0.025 inch through pixels
         // joined to it that aren't paper (darker than the paper under them, or off
         // the paper's hue): its soft rim and colored fringe (a comb tooth's pink edge).
