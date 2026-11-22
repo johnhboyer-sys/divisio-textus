@@ -345,9 +345,45 @@ enum Flatten {
         if rep.misfit > maxMisfit * xh || rep.misfit > maxMisfitShare * rep.droop {
             rep.outcome = .unsure; rep.note = "misfit"; return (nil, rep)
         }
+        // Print: every piece from a full stop up, a drop capital or a rule too, in this layer
+        // and the guarded one; not specks, nor what the crop already cuts: a piece on the
+        // region's edge row with ink beyond it, such as the bed or a shadow. On the image's
+        // own edge nothing is beyond, so a piece there is print.
+        // A lone speck, no bigger than half an x-height with no other print within two, is
+        // dirt: a full stop or a dot always sits by a letter (not by the bed or a shadow).
+        let (guardComps, guardBg): ([Comp], [UInt8]) = guardGray.map { gg in
+            let (gi, gb) = inkOf(gg)
+            return (components(gi, w, h), gb)
+        } ?? (comps, bg)
+        func cutByCrop(_ c: Comp) -> Bool {
+            func inkBeyond(_ row: [UInt8]?, _ y: Int) -> Bool {
+                guard let row else { return false }
+                for x in max(0, c.x0 - 1)...min(w - 1, c.x0 + c.w) where Int(row[x]) * 255 < 150 * Int(guardBg[y * w + x]) {
+                    return true
+                }
+                return false
+            }
+            return (c.y0 == 0 && inkBeyond(outside.above, 0)) || (c.y0 + c.h == h && inkBeyond(outside.below, h - 1))
+        }
+        let cut = guardComps.map(cutByCrop)
+        func lone(_ c: Comp) -> Bool {
+            guard Double(c.w) <= 0.5 * xh, Double(c.h) <= 0.5 * xh else { return false }
+            let r = 2 * xh
+            return !guardComps.indices.contains { i in
+                let o = guardComps[i]
+                return !cut[i] && (o.x0 != c.x0 || o.y0 != c.y0) && Double(o.x0) <= Double(c.x0 + c.w) + r
+                    && Double(o.x0 + o.w) >= Double(c.x0) - r && Double(o.y0) <= Double(c.y0 + c.h) + r
+                    && Double(o.y0 + o.h) >= Double(c.y0) - r
+            }
+        }
+        let edgeInk = guardComps.indices.filter {
+            let c = guardComps[$0]
+            return Double(c.h) >= 0.2 * xh && c.n >= 4 && !cut[$0] && !lone(c)
+        }.map { guardComps[$0] }
         // Grid cells holding ink: only there does a stretch show (blank paper may stretch).
+        // The guarded layer's print counts too (a stamp or a big letter only in color).
         var inked = [Bool](repeating: false, count: gy.count * nc)
-        for c in comps where c.n >= 4 {
+        for c in comps.filter({ $0.n >= 4 }) + (guardGray == nil ? [] : edgeInk) {
             let k0 = max(0, Int(Double(c.x0) / step)), k1 = min(nc - 1, Int(Double(c.x0 + c.w) / step) + 1)
             let j0 = max(0, Int(Double(c.y0) / step)), j1 = min(gy.count - 1, Int(Double(c.y0 + c.h) / step) + 1)
             guard k0 <= k1, j0 <= j1 else { continue }
@@ -373,40 +409,6 @@ enum Flatten {
         // Print must not leave the region at its top or bottom edge: where the shift there
         // would push ink out, the shift fades to nothing at the edge instead, if it can do
         // so without stretching letters.
-        // Print: every piece from a full stop up, a drop capital or a rule too, in this layer
-        // and the guarded one; not specks, nor what the crop already cuts: a piece on the
-        // region's edge row with ink beyond it (or the image's edge), such as the bed or a shadow.
-        // A lone speck, no bigger than half an x-height with no other print within two, is
-        // dirt: a full stop or a dot always sits by a letter (not by the bed or a shadow).
-        let (guardComps, guardBg): ([Comp], [UInt8]) = guardGray.map { gg in
-            let (gi, gb) = inkOf(gg)
-            return (components(gi, w, h), gb)
-        } ?? (comps, bg)
-        func cutByCrop(_ c: Comp) -> Bool {
-            func inkBeyond(_ row: [UInt8]?, _ y: Int) -> Bool {
-                guard let row else { return true }
-                for x in max(0, c.x0 - 1)...min(w - 1, c.x0 + c.w) where Int(row[x]) * 255 < 150 * Int(guardBg[y * w + x]) {
-                    return true
-                }
-                return false
-            }
-            return (c.y0 == 0 && inkBeyond(outside.above, 0)) || (c.y0 + c.h == h && inkBeyond(outside.below, h - 1))
-        }
-        let cut = guardComps.map(cutByCrop)
-        func lone(_ c: Comp) -> Bool {
-            guard Double(c.w) <= 0.5 * xh, Double(c.h) <= 0.5 * xh else { return false }
-            let r = 2 * xh
-            return !guardComps.indices.contains { i in
-                let o = guardComps[i]
-                return !cut[i] && (o.x0 != c.x0 || o.y0 != c.y0) && Double(o.x0) <= Double(c.x0 + c.w) + r
-                    && Double(o.x0 + o.w) >= Double(c.x0) - r && Double(o.y0) <= Double(c.y0 + c.h) + r
-                    && Double(o.y0 + o.h) >= Double(c.y0) - r
-            }
-        }
-        let edgeInk = guardComps.indices.filter {
-            let c = guardComps[$0]
-            return Double(c.h) >= 0.2 * xh && c.n >= 4 && !cut[$0] && !lone(c)
-        }.map { guardComps[$0] }
         func pushesInkOut() -> (top: Bool, bottom: Bool) {
             var out = (top: false, bottom: false)
             for c in edgeInk {
@@ -434,8 +436,8 @@ enum Flatten {
         }
 
         // Horizontal: letters narrowed toward the gutter are widened back.
-        let ux = widening(long, comps: comps, xh: xh, lo: lo, hi: hi, width: w, height: h,
-                          gutterOnRight: onRight, report: &rep)
+        let ux = widening(long, print: guardComps.indices.filter { !cut[$0] }.map { guardComps[$0] }, xh: xh,
+                          lo: lo, hi: hi, width: w, gutterOnRight: onRight, report: &rep)
         rep.outcome = .flattened
         let model = Model(gx: gx, gy: gy, v: v, ux: ux)
         rep.model = model
@@ -443,9 +445,10 @@ enum Flatten {
     }
 
     /// Per output column, the input column: identity, or a widening of the band by the
-    /// gutter where letters are narrower than in the middle of the lines.
-    static func widening(_ lines: [Line], comps: [Comp], xh: Double, lo: Double, hi: Double,
-                         width w: Int, height: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
+    /// gutter where letters are narrower than in the middle of the lines. `print`: the
+    /// pieces of ink in both layers that the crop does not cut.
+    static func widening(_ lines: [Line], print: [Comp], xh: Double, lo: Double, hi: Double,
+                         width w: Int, gutterOnRight: Bool, report rep: inout Report) -> [Double] {
         let identity = (0..<w).map(Double.init)
         let span = hi - lo
         let bins = 10
@@ -485,9 +488,9 @@ enum Flatten {
         var extra = 0.0
         for k in 0..<Int(3 * binW) { extra += factor(gutterOnRight ? hi - Double(k) : lo + Double(k)) - 1 }
         // Print in the margin (a folio, a note) is squeezed at most 5%, blank paper 30%. A
-        // piece running to the region's edge is the bed or the fold's shadow, not print.
+        // piece running to the region's side edge is the bed or the fold's shadow, not print.
         var marginInk = false
-        for c in comps where c.n >= 4 && c.x0 > 0 && c.y0 > 0 && c.x0 + c.w < w && c.y0 + c.h < height {
+        for c in print where c.n >= 4 && c.x0 > 0 && c.x0 + c.w < w {
             let cx0 = Double(c.x0), cx1 = Double(c.x0 + c.w - 1)
             if gutterOnRight ? cx1 > hi + xh : cx0 < lo - xh { marginInk = true; rep.note += " margin ink \(c.x0),\(c.y0)"; break }
         }

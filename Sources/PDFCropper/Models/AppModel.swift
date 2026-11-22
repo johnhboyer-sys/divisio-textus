@@ -186,7 +186,9 @@ final class AppModel: ObservableObject {
     // The Export view's pages, made as the export makes them from a small render,
     // remembering the page and settings each was made with.
     private struct CachedOutput {
-        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool, flattenPages: Bool
+        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool
+        /// The settings the warps were measured for; nil with Flatten pages off.
+        let flatten: FlattenKey?
         let images: [CGImage]
     }
     private var outputCache: [Int: CachedOutput] = [:]
@@ -200,6 +202,10 @@ final class AppModel: ObservableObject {
     // are ready it shows unflattened.
     struct FlattenKey: Equatable {
         let mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool, matchScan: Bool, dpi: Double
+    }
+    private var flattenKey: FlattenKey {
+        FlattenKey(mode: enhanceMode, direction: direction, removeShadows: removeShadows,
+                   matchScan: matchScanResolution, dpi: exportDPI)
     }
     private struct CachedFlatten {
         let page: BookPage, key: FlattenKey
@@ -581,7 +587,7 @@ final class AppModel: ObservableObject {
     /// steps (PDFExporter.outputImages) run on a low-resolution render.
     func outputPreview(for page: BookPage) -> [CGImage] {
         if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction,
-           c.removeShadows == removeShadows, c.flattenPages == flattenPages {
+           c.removeShadows == removeShadows, c.flatten == (flattenPages ? flattenKey : nil) {
             outputOrder.removeAll { $0 == page.sourceIndex }
             outputOrder.append(page.sourceIndex)
             return c.images
@@ -613,7 +619,8 @@ final class AppModel: ObservableObject {
             images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
         }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
-                                                     removeShadows: removeShadows, flattenPages: flattenPages, images: images)
+                                                     removeShadows: removeShadows,
+                                                     flatten: flattenPages ? flattenKey : nil, images: images)
         outputOrder.removeAll { $0 == page.sourceIndex }
         outputOrder.append(page.sourceIndex)
         while outputOrder.count > outputCacheLimit { outputCache[outputOrder.removeFirst()] = nil }
@@ -623,8 +630,7 @@ final class AppModel: ObservableObject {
     /// The warps the export would make for `page`'s output pages, once measured; until then
     /// nil, and the page waits for the background job.
     private func flattenModels(for page: BookPage) -> [Flatten.Model?]? {
-        let key = FlattenKey(mode: enhanceMode, direction: direction, removeShadows: removeShadows,
-                             matchScan: matchScanResolution, dpi: exportDPI)
+        let key = flattenKey
         if let c = flattenCache[page.sourceIndex], c.page == page, c.key == key {
             flattenOrder.removeAll { $0 == page.sourceIndex }
             flattenOrder.append(page.sourceIndex)
@@ -660,8 +666,7 @@ final class AppModel: ObservableObject {
         }
         while let index = flattenWanted.popLast() {
             guard let page = pages.first(where: { $0.sourceIndex == index }) else { continue }
-            let key = FlattenKey(mode: enhanceMode, direction: direction, removeShadows: removeShadows,
-                                 matchScan: matchScanResolution, dpi: exportDPI)
+            let key = flattenKey
             if let c = flattenCache[index], c.page == page, c.key == key { continue }
             var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, enhanceMode: enhanceMode)
             settings.matchScanResolution = matchScanResolution
