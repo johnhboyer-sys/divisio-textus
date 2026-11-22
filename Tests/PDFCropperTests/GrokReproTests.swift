@@ -705,11 +705,18 @@ struct GrokReproTests {
         var ink = [UInt8](repeating: 255, count: Self.w * Self.h)
         Self.body(into: &ink, x0: 100, x1: 800, top: 150, lead: 50, lines: 18)
         for i in g.indices where ink[i] < 255 { g[i] = UInt8(45 + (255 - Int(ink[i])) * 180 / 255) }
-        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
-        let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
-        let changed = zip(out, g).filter { abs(Int($0) - Int($1)) > 2 }.count
-        print("GROK gate cover: \(changed) pixels changed")
-        #expect(changed == 0)
+        // And one with a light emblem over most of its middle: dark only all round.
+        var e = g
+        for y in 0..<Self.h { for x in 0..<Self.w where pow(Double(x - 450) / 420, 2) + pow(Double(y - 600) / 560, 2) < 1 {
+            e[y * Self.w + x] = 225
+        } }
+        for (name, px) in [("dark", g), ("emblem", e)] {
+            let image = try #require(BlackAndWhite.image(px, width: Self.w, height: Self.h))
+            let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+            let changed = zip(out, px).filter { abs(Int($0) - Int($1)) > 2 }.count
+            print("GROK gate cover \(name): \(changed) pixels changed")
+            #expect(changed == 0, "\(name)")
+        }
     }
 
     // MARK: S5. Teeth on a page under 0.8 inch wide

@@ -719,11 +719,21 @@ enum ShadowRemoval {
         let paperRef = channels == 1 ? Double(paperColor[0])
             : (Double(paperColor[0]) * 299 + Double(paperColor[1]) * 587 + Double(paperColor[2]) * 114) / 1000
         let floor = paperRef * 0.35
-        // A page whose paper is mostly that dark is dark itself (a cover, light print on a
-        // dark ground), not a light page with a band beside it: left as it is.
+        // A page whose paper is mostly that dark, or that dark all round its edges (three
+        // fifths of its outer 0.1 inch), is dark itself (a cover, light print on a dark
+        // ground), not a light page with a band down a side: left as it is.
         var dark = 0
         for i in stride(from: 0, to: w * h, by: 7) where Double(paper[i]) < floor { dark += 1 }
-        if dark * 2 > (w * h + 6) / 7 { return image }
+        let edge = max(1, Int((0.1 * dpi).rounded()))
+        var ring = 0, ringDark = 0
+        for y in 0..<h {
+            let rim = y < edge || y >= h - edge
+            for x in 0..<w where rim || x < edge || x >= w - edge {
+                ring += 1
+                if Double(paper[y * w + x]) < floor { ringDark += 1 }
+            }
+        }
+        if dark * 2 > (w * h + 6) / 7 || ringDark * 5 >= ring * 3 { return image }
         // What is painted: what isn't print, and on out to 0.025 inch through pixels
         // joined to it that aren't paper (darker than the paper under them, or off
         // the paper's hue): its soft rim and colored fringe (a comb tooth's pink edge).
