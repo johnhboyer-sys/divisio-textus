@@ -440,6 +440,12 @@ enum Flatten {
             if sf.slope > maxSlopeY {
                 rep.outcome = .unsafe; rep.note += "fade slope \(sf.slope) at \(Int(sf.x)),\(Int(sf.y))"; return (nil, rep)
             }
+            // The fade starts a line pitch beyond the outer lines: when they lie nearer the
+            // edge than that, it changes nothing there and the ink would still leave.
+            let still = pushesInkOut()
+            if still.top || still.bottom {
+                rep.outcome = .unsafe; rep.note += "fade leaves ink out"; return (nil, rep)
+            }
         }
 
         // Horizontal: letters narrowed toward the gutter are widened back.
