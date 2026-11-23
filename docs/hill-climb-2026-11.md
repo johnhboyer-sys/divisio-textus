@@ -188,3 +188,11 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   (edge folios and capitals, offset columns, colour-only print, preview at export resolution).
   Off is byte-identical. Limits: a capital wider than tall on the scan's own edge counts as cut;
   some sides with dark strips at the scan edge stay curved.
+- Grok B&W fixes (claude/grok-bw a434b97, merged into claude/finish d250754): Black and white no
+  longer erases print by fold bands, rims and the picture tests (Grok 1, 2, 3, 4, 8). Gate: no
+  book worse; Freudenthal B&W lost letters 1224 → 1211; Freudenthal's cover title kept. Color and
+  Gray off-mode output byte-identical in all 8 books; B&W changes only on the fixed pages.
+  1.03× slower. Open for John: an edge picture in Color/Gray with the options off still exports
+  as the 1-bit text layer (fixing it changes off-mode output). Codex's limits, left as rare: a
+  long rim joined to kept print stays; a narrow letter by a band on a page too sparse for line
+  finding (title page, short caption) gets no extra protection (same as before the fix).
