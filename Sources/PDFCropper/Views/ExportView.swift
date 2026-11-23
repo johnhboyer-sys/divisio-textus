@@ -207,13 +207,18 @@ private struct ExportOptions: View {
             ? ["English"] + applicable.filter { $0 != "eng" }.map(name)
             : applicable.map(name)
         let chosen = names.isEmpty ? "None" : names.joined(separator: ", ")
+        let apple = model.ocrReader != .tesseract
         LabeledContent {
             Button { packsState.wrappedValue = true } label: {
-                Text(chosen + "…").lineLimit(1).truncationMode(.middle)
+                Text(apple || names.isEmpty ? "Choose…" : chosen + "…").lineLimit(1).truncationMode(.middle)
             }
             .help(chosen)
         } label: {
-            Text("Languages").fixedSize()
+            if apple {
+                Text(names.isEmpty ? "Other languages:" : "Other languages: \(chosen)").lineLimit(1).truncationMode(.tail)
+            } else {
+                Text("Languages").fixedSize()
+            }
         }
         let missing = applicable.filter { !model.installedPacks.contains($0) && model.packDownloads[$0] != .downloading }
         if !missing.isEmpty {
@@ -233,6 +238,10 @@ private struct ExportOptions: View {
                         Text(m.label).tag(m)
                     }
                 }
+                Toggle("Remove shadows", isOn: $model.removeShadows)
+                    .help("Clean paper up to the fold: its shadow, dark band, crease and streaks go; print stays.")
+                Toggle("Flatten pages", isOn: $model.flattenPages)
+                    .help("Straighten lines of print that curve into the binding. A page it can't read surely is left as it is.")
                 Toggle("Searchable text (OCR)", isOn: $model.ocrEnabled)
                 if model.ocrEnabled { readerRows }
                 Picker("Reading order", selection: $model.direction) {
@@ -242,12 +251,14 @@ private struct ExportOptions: View {
                 }
                 Toggle("Keep page resolution", isOn: $model.matchScanResolution)
                     .help("Each page keeps its own resolution (kept within 150–600 DPI), so nothing is blurred or blown up.")
-                VStack(alignment: .leading) {
-                    LabeledContent(model.matchScanResolution ? "Resolution if unknown" : "Export resolution") {
-                        Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
+                if !model.matchScanResolution {
+                    VStack(alignment: .leading) {
+                        LabeledContent("Export resolution") {
+                            Text("\(Int(model.exportDPI)) DPI").monospacedDigit()
+                        }
+                        Slider(value: $model.exportDPI, in: 150...600, step: 50)
+                            .labelsHidden()
                     }
-                    Slider(value: $model.exportDPI, in: 150...600, step: 50)
-                        .labelsHidden()
                 }
             }
 

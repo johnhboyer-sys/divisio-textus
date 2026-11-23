@@ -168,22 +168,10 @@ private struct GridCell: View {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(last && chosen ? .white : .red)
             }
             Text("\(page.sourceIndex + 1)").fontWeight(.semibold)
-            if page.classification != .skip, let tilt {
-                Text(tilt).foregroundStyle(last && chosen ? .white : .secondary)
-            }
         }
         .font(.caption.monospacedDigit())
         .padding(.horizontal, 7).padding(.vertical, 1)
         .background(last && chosen ? Color.accentColor : .clear, in: Capsule())
         .foregroundStyle(last && chosen ? .white : .primary)
-    }
-
-    /// The page's straightening, when it has any: one angle, or a spread's two.
-    private var tilt: String? {
-        let l = page.leftSkew, r = page.rightSkew
-        func f(_ v: Double) -> String { String(format: "%+.1f°", v) }
-        if !page.isSpread { return abs(l) < 0.05 ? nil : f(l) }
-        if abs(l) < 0.05 && abs(r) < 0.05 { return nil }
-        return abs(l - r) < 0.05 ? f(l) : "\(f(l)) \(f(r))"
     }
 }

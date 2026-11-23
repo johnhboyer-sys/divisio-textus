@@ -104,7 +104,7 @@ struct PaperTests {
         Self.expectNear(r.rightCrop, r.splitX, 0, 1, 1, tol: 0.004, "right")
     }
 
-    @Test("A black fold between the pages is left out of both")
+    @Test("A black fold between the pages is page: each runs to the split (John, 2026-11-20)")
     func blackFold() {
         let sw = 2 * Self.w
         let img = Fixtures.image(sw, Self.h) { c in
@@ -113,8 +113,40 @@ struct PaperTests {
             c.setFillColor(CGColor(gray: 0.04, alpha: 1)); c.fill(CGRect(x: 970, y: 0, width: 60, height: Self.h))
         }
         let r = PageAnalyzer.analyze(cgImage: img, target: .page)
-        Self.expectNear(r.leftCrop, 0, 0, 970.0 / 2000, 1, tol: 0.004, "left")
-        Self.expectNear(r.rightCrop, 1030.0 / 2000, 0, 1, 1, tol: 0.004, "right")
+        // Was: left ends at 970 px, right starts at 1030, the fold left out.
+        #expect(r.splitX >= 970.0 / 2000 && r.splitX <= 1030.0 / 2000, "split \(r.splitX * 2000) px")
+        Self.expectNear(r.leftCrop, 0, 0, r.splitX, 1, tol: 0.004, "left")
+        Self.expectNear(r.rightCrop, r.splitX, 0, 1, 1, tol: 0.004, "right")
+    }
+
+    @Test("Each page of a spread runs to the split, its fold shadow kept (John, 2026-11-20)", arguments: [false, true])
+    func pageRunsToFold(dark: Bool) {
+        // A soft shadow, darkest (25% grey) at the fold and fading out over 50 px
+        // each way, or a dark grey band 60 px wide, darker in its middle (as on
+        // synth-6-5). The shadow is part of the page:
+        // the page's inner edge is the fold. The text block still stops short of it.
+        let sw = 2 * Self.w
+        let img = Fixtures.image(sw, Self.h) { c in
+            Self.text(c, CGRect(x: 120, y: 150, width: 760, height: 1100))
+            Self.text(c, CGRect(x: 1120, y: 150, width: 760, height: 1100))
+            if dark {
+                c.setFillColor(CGColor(gray: 0.3, alpha: 1)); c.fill(CGRect(x: 970, y: 0, width: 60, height: Self.h))
+                c.setFillColor(CGColor(gray: 0.15, alpha: 1)); c.fill(CGRect(x: 990, y: 0, width: 20, height: Self.h))
+            } else {
+                for x in (Self.w - 50)..<(Self.w + 50) {
+                    let d = abs(Double(x - Self.w) + 0.5) / 50
+                    c.setFillColor(CGColor(gray: 0.25 + 0.75 * d * d, alpha: 1))
+                    c.fill(CGRect(x: x, y: 0, width: 1, height: Self.h))
+                }
+            }
+        }
+        let r = PageAnalyzer.analyze(cgImage: img, target: .page)
+        #expect(r.classification == .spread && abs(r.splitX - 0.5) < 0.02, "split \(r.splitX)")
+        Self.expectNear(r.leftCrop, 0, 0, r.splitX, 1, tol: 1e-9, "left")
+        Self.expectNear(r.rightCrop, r.splitX, 0, 1, 1, tol: 1e-9, "right")
+        let t = PageAnalyzer.analyze(cgImage: img)
+        #expect(t.leftCrop.maxX < 940.0 / 2000 && t.rightCrop.minX > 1060.0 / 2000,
+                "text crops end at \(t.leftCrop.maxX * 2000) and start at \(t.rightCrop.minX * 2000) px")
     }
 
     @Test("A straightened page's crop keeps clear of the corners the turn left empty")

@@ -89,6 +89,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var cropTarget: CropTarget = .page
     /// The page size typed in for Whole page crops (see setPageSize); nil: measured.
     @Published private(set) var pageSizeOverride: PageSize?
+    /// The PDFs opened lately, for the Welcome screen.
+    @Published private(set) var recents: [RecentPDF] = []
+    /// Replaces the app's icon on the Welcome screen (the DEBUG shots build has no bundle icon).
+    @Published var appIcon: NSImage?
+    /// The file checks can stall on a slow network share, so they run off the main thread.
+    func refreshRecents() {
+        Task {
+            let list = await Task.detached(priority: .utility) { RecentFiles.list() }.value
+            if list != recents { recents = list }
+        }
+    }
     @Published var exportDPI: Double = 300
     @Published var matchScanResolution = true
     @Published var autoDeskewEnabled = true
@@ -108,6 +119,14 @@ final class AppModel: ObservableObject {
     private(set) var textCheck: Task<Void, Never>?
     @Published var enhanceMode: EnhanceMode = .color {
         didSet { if enhanceMode != oldValue { clearImageCaches() } }
+    }
+    /// Export: remove the fold's shadow, band, line and streaks (see ShadowRemoval).
+    @Published var removeShadows = false {
+        didSet { if removeShadows != oldValue { outputCache = [:]; outputOrder = [] } }
+    }
+    /// Export: straighten lines of print that curve into the binding (see Flatten).
+    @Published var flattenPages = false {
+        didSet { if flattenPages != oldValue { outputCache = [:]; outputOrder = [] } }
     }
 
     @Published var isAnalyzing = false
@@ -178,13 +197,37 @@ final class AppModel: ObservableObject {
     // The Export view's pages, made as the export makes them from a small render,
     // remembering the page and settings each was made with.
     private struct CachedOutput {
-        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection
+        let page: BookPage, mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool
+        /// The settings the warps were measured for; nil with Flatten pages off.
+        let flatten: FlattenKey?
         let images: [CGImage]
     }
     private var outputCache: [Int: CachedOutput] = [:]
     private var outputOrder: [Int] = []           // least recently used first
     private let outputCacheLimit = 400
     private let outputPreviewDPI: Double = 40
+
+    // Flatten pages in the Export view: the warps the export would make, measured as the
+    // export measures them (at its resolution: the small render is too coarse to trace
+    // small type), in the background, then scaled onto the small pages. Until a page's
+    // are ready it shows unflattened.
+    struct FlattenKey: Equatable {
+        let mode: EnhanceMode, direction: ReadingDirection, removeShadows: Bool, matchScan: Bool, dpi: Double
+    }
+    private var flattenKey: FlattenKey {
+        FlattenKey(mode: enhanceMode, direction: direction, removeShadows: removeShadows,
+                   matchScan: matchScanResolution, dpi: exportDPI)
+    }
+    private struct CachedFlatten {
+        let page: BookPage, key: FlattenKey
+        let models: [Flatten.Model?]
+    }
+    private var flattenCache: [Int: CachedFlatten] = [:]
+    private var flattenOrder: [Int] = []          // least recently used first
+    private let flattenCacheLimit = 200
+    private var flattenWanted: [Int] = []         // source pages waiting, latest asked last
+    /// The background job measuring them, so tests can wait for it.
+    private(set) var flattenJob: Task<Void, Never>?
 
     // Grid cells: each page straightened, from its thumbnail.
     private struct CachedCell {
@@ -358,6 +401,7 @@ final class AppModel: ObservableObject {
         spreadLayout = nil
         document = doc
         sourceURL = url
+        RecentFiles.note(url)
         sourceHasText = false   // until checkForText finds some
         documentPassword = password
         isAnalyzing = false   // any analysis of the previous PDF is abandoned
@@ -554,20 +598,160 @@ final class AppModel: ObservableObject {
     /// The pages Export writes for `page`, in reading order, small: the export's own
     /// steps (PDFExporter.outputImages) run on a low-resolution render.
     func outputPreview(for page: BookPage) -> [CGImage] {
-        if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction {
+        if let c = outputCache[page.sourceIndex], c.page == page, c.mode == enhanceMode, c.direction == direction,
+           c.removeShadows == removeShadows, c.flatten == (flattenPages ? flattenKey : nil) {
             outputOrder.removeAll { $0 == page.sourceIndex }
             outputOrder.append(page.sourceIndex)
             return c.images
         }
-        guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex),
-              let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: outputPreviewDPI) else { return [] }
-        let settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
-        let images = PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? []
-        outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction, images: images)
+        guard let doc = document, let pdfPage = doc.page(at: page.sourceIndex) else { return [] }
+        let layers = LayeredScan.layers(of: pdfPage)
+        let dpi = outputPreviewDPI
+        guard let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return [] }
+        var settings = PDFExporter.Settings(direction: direction, enhanceMode: enhanceMode)
+        settings.removeShadows = removeShadows
+        // The export's warps, scaled down (nil: not measured yet).
+        let models = flattenPages ? flattenModels(for: page) : nil
+        func flattened(_ image: CGImage, _ k: Int) -> CGImage {
+            guard let models, models.indices.contains(k), let m = models[k], !m.ux.isEmpty else { return image }
+            return Flatten.apply(m.scaled(Double(image.width) / Double(m.ux.count), width: image.width), to: image) ?? image
+        }
+        var images = (PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? [])
+            .enumerated().map { flattened($1, $0) }
+        // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
+        if let layers {
+            if let text = LayeredScan.textPages(of: page, pdfPage, layers: layers, direction: direction,
+                                                previewDPI: outputPreviewDPI, bothLayers: settings.bothLayers,
+                                                removeShadows: removeShadows),
+               text.count == images.count {
+                images = zip(text.enumerated().map { k, t in t.map { flattened($0, k) } }, images)
+                    .map { $0 ?? PDFExporter.pictureFinished($1, dpi: outputPreviewDPI, settings: settings) }
+            }
+        } else {
+            images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
+        }
+        outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
+                                                     removeShadows: removeShadows,
+                                                     flatten: flattenPages ? flattenKey : nil, images: images)
         outputOrder.removeAll { $0 == page.sourceIndex }
         outputOrder.append(page.sourceIndex)
         while outputOrder.count > outputCacheLimit { outputCache[outputOrder.removeFirst()] = nil }
         return images
+    }
+
+    /// The warps the export would make for `page`'s output pages, once measured; until then
+    /// nil, and the page waits for the background job.
+    private func flattenModels(for page: BookPage) -> [Flatten.Model?]? {
+        let key = flattenKey
+        if let c = flattenCache[page.sourceIndex], c.page == page, c.key == key {
+            flattenOrder.removeAll { $0 == page.sourceIndex }
+            flattenOrder.append(page.sourceIndex)
+            return c.models
+        }
+        flattenWanted.removeAll { $0 == page.sourceIndex }
+        flattenWanted.append(page.sourceIndex)
+        if flattenJob == nil { startFlattenJob() }
+        return nil
+    }
+
+    private func startFlattenJob() {
+        guard let url = sourceURL, let current = document else { return }
+        let password = documentPassword
+        flattenJob = Task.detached(priority: .utility) { [self] in
+            let doc = Self.reopen(url, password: password)
+            while let job = await MainActor.run(body: { self.nextFlattenJob(for: current) }) {
+                let models = autoreleasepool {
+                    doc?.page(at: job.page.sourceIndex).flatMap { Self.exportFlattenModels(of: job.page, $0, settings: job.settings) }
+                }
+                await MainActor.run { self.storeFlatten(job.page, job.key, models, for: current) }
+            }
+        }
+    }
+
+    /// The next page for the background job, with the settings now; nil when none is left,
+    /// which ends the job. Another PDF opened meanwhile: a new job starts for its pages.
+    private func nextFlattenJob(for doc: PDFDocument) -> (page: BookPage, key: FlattenKey, settings: PDFExporter.Settings)? {
+        guard document === doc else {
+            flattenJob = nil
+            if !flattenWanted.isEmpty { startFlattenJob() }
+            return nil
+        }
+        while let index = flattenWanted.popLast() {
+            guard let page = pages.first(where: { $0.sourceIndex == index }) else { continue }
+            let key = flattenKey
+            if let c = flattenCache[index], c.page == page, c.key == key { continue }
+            var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, enhanceMode: enhanceMode)
+            settings.matchScanResolution = matchScanResolution
+            settings.removeShadows = removeShadows
+            settings.flattenPages = true
+            return (page, key, settings)
+        }
+        flattenJob = nil
+        return nil
+    }
+
+    private func storeFlatten(_ page: BookPage, _ key: FlattenKey, _ models: [Flatten.Model?]?, for doc: PDFDocument) {
+        guard document === doc else { return }
+        let i = page.sourceIndex
+        flattenCache[i] = CachedFlatten(page: page, key: key, models: models ?? [])
+        flattenOrder.removeAll { $0 == i }
+        flattenOrder.append(i)
+        while flattenOrder.count > flattenCacheLimit { flattenCache[flattenOrder.removeFirst()] = nil }
+        // The page's small pages are made again, now flattened.
+        if models?.contains(where: { $0 != nil }) == true, outputCache[i] != nil {
+            outputCache[i] = nil
+            outputOrder.removeAll { $0 == i }
+            objectWillChange.send()
+        }
+    }
+
+    /// The warp the export makes for each of `page`'s output pages (nil: left as it is),
+    /// measured as the export measures it: a layered page on its text layer at that
+    /// layer's resolution (see LayeredScan.textPages), any other on the page as the
+    /// export renders it (see PDFExporter.outputImages). nil if the page can't be drawn.
+    nonisolated static func exportFlattenModels(of page: BookPage, _ pdfPage: PDFPage,
+                                                settings: PDFExporter.Settings) -> [Flatten.Model?]? {
+        let crops = page.outputCrops(direction: settings.direction)
+        var models = [Flatten.Model?](repeating: nil, count: crops.count)
+        var rendered = Array(crops.indices)          // pages made from the page's render
+        if let layers = LayeredScan.layers(of: pdfPage) {
+            let marked = LayeredScan.holdsPicture(page, pdfPage, layers: layers, crops: crops,
+                                                  edges: settings.bothLayers)
+            rendered = crops.indices.filter { marked[$0] }
+            if rendered.count < crops.count {
+                let dpi = LayeredScan.textDPI(layers)
+                guard let text = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                    LayeredScan.drawText(layers, of: pdfPage, in: ctx, scale: scale) }) else { return nil }
+                var both: [UInt8]?
+                if settings.bothLayers {
+                    let decoded = layers.patches.compactMap { p in LayeredScan.patchImage(p).map { (p, $0) } }
+                    both = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                        LayeredScan.drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
+                        LayeredScan.drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) })?.pixels
+                }
+                for k in crops.indices where !marked[k] {
+                    guard let r = LayeredScan.pixelRect(crops[k], width: text.width, height: text.height) else { return nil }
+                    models[k] = LayeredScan.flattenModel(true, crops[k], page, text, r, guardGray: both)
+                }
+            }
+        }
+        guard !rendered.isEmpty else { return models }
+        var dpi = PDFExporter.renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
+        // Black and white of a skewed page at a low resolution is made from a render twice as fine.
+        if settings.enhanceMode == .blackAndWhite, dpi < 250,
+           abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01) {
+            dpi = min(600, 2 * dpi)
+        }
+        guard let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return nil }
+        let composite = ImageTransform.deskewedComposite(cg, splitX: page.splitX, leftDegrees: page.leftSkew,
+                                                         rightDegrees: page.rightSkew, isSpread: page.isSpread)
+        let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+        let size = CGSize(width: enhanced.width, height: enhanced.height)
+        let found = Flatten.models(enhanced, regions: rendered.map {
+            (crops[$0].normalized().pixelRect(in: size).integral, Flatten.gutterOnRight(crops[$0], of: page))
+        })
+        for (k, m) in zip(rendered, found) { models[k] = m }
+        return models
     }
 
     /// A page as the grid shows it: straightened like the editor's page, small.
@@ -599,6 +783,9 @@ final class AppModel: ObservableObject {
     }
 
     private func clearImageCaches() {
+        flattenCache.removeAll()
+        flattenOrder.removeAll()
+        flattenWanted.removeAll()
         previewCache.removeAll()
         previewOrder.removeAll()
         thumbnailCache.removeAll()
@@ -2037,6 +2224,8 @@ final class AppModel: ObservableObject {
         var settings = PDFExporter.Settings(dpi: exportDPI, direction: direction, ocr: ocrEnabled,
                                             reader: ocrReader, packs: ocrPacks, enhanceMode: enhanceMode)
         settings.matchScanResolution = matchScanResolution
+        settings.removeShadows = removeShadows
+        settings.flattenPages = flattenPages
         let cancel = CancelFlag()
         exportCancel = cancel
         let openedKey = projectKey

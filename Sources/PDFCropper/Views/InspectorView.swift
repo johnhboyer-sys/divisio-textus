@@ -132,9 +132,9 @@ private struct PageSections: View {
                 Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
             }
             .help("Auto-detect this page: its type, split and crops, found again.")
-            if page.isSpread {
-                MatchMenu(differs: readout?.same == false) { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) }
-            }
+        }
+        if page.isSpread {
+            MatchMenu(differs: readout?.same == false) { model.matchCropSizes(of: page.id, rightMatchesLeft: $0) }
         }
         if page.isSpread {
             if let readout { SpreadSizeControls(readout: readout) }
@@ -146,16 +146,27 @@ private struct PageSections: View {
             .help("Copies the split line and both crops to every spread. The left and right crops stay separate.")
         } else {
             if let readout { LabeledContent("Size") { Text(readout.lengths.first ?? "").monospacedDigit() } }
-            Menu {
-                Button("To All Single Pages") { model.applySingleCrop(alternate: false) }
-                Button("To Alternate Pages") { model.applySingleCrop(alternate: true) }
-                    .help("Copies this crop to every other single page, so left-hand and right-hand pages can have different crops.")
-            } label: {
-                Text("Apply crop").frame(maxWidth: .infinity)
+            // At the narrowest sidebar the buttons drop under the label.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text("Apply crop")
+                    Spacer(minLength: 0)
+                    applyCropButtons
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Apply crop")
+                    HStack(spacing: 6) { applyCropButtons }
+                }
             }
-            .menuStyle(.button)
+            .controlSize(.small)
             .help("Copy this crop to all single pages, or to every other one, so left-hand and right-hand pages can have different crops.")
         }
+    }
+
+    @ViewBuilder
+    private var applyCropButtons: some View {
+        Button("All single pages") { model.applySingleCrop(alternate: false) }
+        Button("Alternate pages") { model.applySingleCrop(alternate: true) }
     }
 
     /// A row: the side's name, its slider, its angle and a reset to 0°.
@@ -178,6 +189,7 @@ private struct PageSections: View {
                 model.perform("Straighten") { value.wrappedValue = min(8, max(-8, ((value.wrappedValue + step) * 10).rounded() / 10)) }
             }
             .labelsHidden()     // else the Form gives it only the value column
+            .skewTicks()
             Text(String(format: "%+.1f°", value.wrappedValue))
                 .monospacedDigit().foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
@@ -295,9 +307,9 @@ private struct SelectionSections: View {
                         Label("Detect", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
                     }
                     .help("Auto-detect each chosen page")
-                    if !spreads.isEmpty {
-                        MatchMenu(differs: difference.differs) { model.matchCropSizes(of: ids, rightMatchesLeft: $0) }
-                    }
+                }
+                if !spreads.isEmpty {
+                    MatchMenu(differs: difference.differs) { model.matchCropSizes(of: ids, rightMatchesLeft: $0) }
                 }
                 if !readouts.isEmpty {
                     SizeRows(left: readouts.map { $0.lengths[0] }.shared ?? "mixed",
@@ -330,6 +342,7 @@ private struct SelectionSections: View {
                 if editing { model.beginEdit(of: ids) } else { model.endEdit(of: ids, "Straighten") }
             }
             .labelsHidden()
+            .skewTicks()
             .accessibilityAdjustableAction { direction in
                 let step = direction == .increment ? 0.1 : -0.1
                 model.perform("Straighten") {
@@ -507,18 +520,13 @@ private struct StackSections: View {
                 }
                 .disabled(stack.members.isEmpty)
             }
-            // A long book has hundreds of pages: scroll the list rather than grow the sidebar.
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(pages) { member in
-                        Toggle("p. \(member.page.sourceIndex + 1)", isOn: Binding(
-                            get: { !(model.stackExclusions[stack.id]?.contains(member.id) ?? false) },
-                            set: { model.setStackPage(member.id, included: $0, in: stack.id) }))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // A long book has hundreds of pages: the list scrolls rather than grow the sidebar.
+            StackThumbList(stack: stack, pages: pages)
+            let left = stack.excludedMembers.count
+            if left > 0 {
+                Text("\(left) \(left == 1 ? "page" : "pages") left out of Apply; still exported.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            .frame(height: min(180, Double(pages.count) * 24 + 4))
         } header: {
             Text("Pages in this stack")
         }
@@ -648,5 +656,29 @@ private struct CropTargetPicker: View {
         .pickerStyle(.segmented)
         .disabled(model.isBusy)
         .help("For the whole book. Text block crops close around the printed text. Whole page keeps the sheet with its margins, leaving out the scanner background. Changing this re-detects every page.")
+    }
+}
+
+extension View {
+    /// Tick marks under a -8...8° slider. A slider with `step:` draws its own, but
+    /// then macOS uses the thick style, so these are drawn here: one a degree, the
+    /// zero and the ends longer.
+    fileprivate func skewTicks() -> some View {
+        overlay(alignment: .bottom) {
+            Canvas { context, size in
+                let inset: CGFloat = 7          // half the thumb: where the track starts
+                let width = size.width - inset * 2
+                for degree in -8...8 {
+                    let x = inset + width * CGFloat(degree + 8) / 16
+                    let long = degree == 0 || abs(degree) == 8
+                    var path = Path()
+                    path.move(to: CGPoint(x: x, y: size.height - (long ? 5 : 3)))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    context.stroke(path, with: .color(.secondary.opacity(0.7)), lineWidth: 1)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }

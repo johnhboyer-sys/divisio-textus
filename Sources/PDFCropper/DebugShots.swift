@@ -36,6 +36,21 @@ enum DebugShots {
         let scratch = URL(fileURLWithPath: plan.scratchDir, isDirectory: true)
         try? FileManager.default.removeItem(at: scratch)
         ProjectStore.directory = scratch
+        // The Welcome screen shows a realistic recent list, from the books folder,
+        // kept apart from the user's own.
+        UserDefaults.standard.removePersistentDomain(forName: "divisio-shots")
+        RecentFiles.defaults = UserDefaults(suiteName: "divisio-shots") ?? .standard
+        let books = URL(fileURLWithPath: plan.smith).deletingLastPathComponent()
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: books.path)) ?? []).filter { $0.hasSuffix(".pdf") }.sorted()
+        let now = Date()
+        for (i, name) in names.reversed().enumerated() {
+            RecentFiles.note(books.appendingPathComponent(name), at: now.addingTimeInterval(-Double(i) * 86_400 * 1.7 - 3_600))
+        }
+        // A debug build run from the build folder has no app icon: use the site's.
+        if let icon = NSImage(contentsOfFile: "/Users/johnboyer/Developer/divisio-site/img/icon-256.png") {
+            model.appIcon = icon
+        }
+        model.refreshRecents()
         Task { @MainActor in
             let run = Run(model: model, plan: plan)
             await run.go()
@@ -221,8 +236,21 @@ enum DebugShots {
             await shoot("page-trim", also: { self.model.trimmingPage != nil })
             model.cancelTrim()
 
+            // The same page as a single page, for the "Apply crop" row.
+            model.setClassification(.single, for: spread.id)
+            await shoot("page-single")
+            model.setClassification(.spread, for: spread.id)
+
             model.showsStack = true
             await shoot("stack", also: { self.model.stackImageReady })
+            // The same stack with its first three pages unticked (for the "left out" line).
+            if let stack = model.stacks.first(where: { $0.id == model.stackKind }) {
+                for member in stack.allMembers.prefix(3) {
+                    model.setStackPage(member.id, included: false, in: stack.id)
+                }
+            }
+            await shoot("stack-leftout", also: { self.model.stackImageReady })
+            model.setAllStackPages(included: true, in: model.stacks.first(where: { $0.id == model.stackKind })!)
             model.showsStack = false
 
             model.viewMode = .grid

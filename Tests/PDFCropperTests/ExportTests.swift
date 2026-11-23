@@ -21,6 +21,19 @@ struct ExportTests {
         return s
     }
 
+    @Test("Keep page resolution: a page with no scan renders at 300 DPI whatever the slider says")
+    func unknownScanDPIFallsBackTo300() {
+        var s = PDFExporter.Settings()
+        s.dpi = 450
+        s.matchScanResolution = true
+        #expect(PDFExporter.renderDPI(scanDPI: nil, settings: s) == 300)
+        #expect(PDFExporter.renderDPI(scanDPI: 1200, settings: s) == 600)
+        #expect(PDFExporter.renderDPI(scanDPI: 72, settings: s) == 150)
+        s.matchScanResolution = false
+        #expect(PDFExporter.renderDPI(scanDPI: nil, settings: s) == 450)
+        #expect(PDFExporter.renderDPI(scanDPI: 1200, settings: s) == 450)
+    }
+
     @Test("Pages keep their physical size at the scan's own resolution")
     func physicalPageSize() throws {
         let (doc, pages) = try letterScan("size-src.pdf")
@@ -187,5 +200,20 @@ struct ExportTests {
         // Red ink on white: color stays color.
         let red = image(16, 4, gray: false) { x, y in x == 3 && y == 2 ? [255, 0, 0] : [255, 255, 255] }
         #expect(PDFExporter.blackAndWhiteBits(red) == nil)
+    }
+
+    @Test("Batches stop at the byte budget but keep small pages together")
+    func batchPlanner() {
+        let big = 12_000 * 12_000 * 4          // one 600 DPI scan: about 576 MB
+        let budget = PDFExporter.batchByteBudget
+        let huge = PDFExporter.planBatches(sizes: Array(repeating: big, count: 8), maxPages: 8)
+        #expect(huge == [0..<2, 2..<4, 4..<6, 6..<8])
+        for r in huge.dropLast() { #expect(r.count * big >= budget && (r.count - 1) * big < budget) }
+        // One page over the budget still goes alone.
+        #expect(PDFExporter.planBatches(sizes: [3 * budget, 1, 1], maxPages: 8) == [0..<1, 1..<3])
+        // Small pages group up to the page cap, in order.
+        let small = PDFExporter.planBatches(sizes: Array(repeating: 10_000_000, count: 20), maxPages: 8)
+        #expect(small == [0..<8, 8..<16, 16..<20])
+        #expect(PDFExporter.planBatches(sizes: [], maxPages: 8).isEmpty)
     }
 }

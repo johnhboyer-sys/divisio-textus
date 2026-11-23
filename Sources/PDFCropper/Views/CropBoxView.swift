@@ -33,6 +33,15 @@ struct CropBoxView: View {
                height: crop.height * imageFrame.height)
     }
 
+    /// Tags carry white text. Green and orange are darkened to 65% of the system colours
+    /// (52,199,89 and 255,149,0) so white on them passes WCAG AA: 4.9:1 and 4.85:1.
+    private var tagFill: Color {
+        if color == .green { return Color(red: 34 / 255, green: 129 / 255, blue: 58 / 255) }
+        if color == .orange { return Color(red: 166 / 255, green: 97 / 255, blue: 0) }
+        return color
+    }
+    private var tagText: Color { .white }
+
     var body: some View {
         let r = viewRect
         ZStack(alignment: .topLeading) {
@@ -48,8 +57,8 @@ struct CropBoxView: View {
             Text(label)
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(color, in: RoundedRectangle(cornerRadius: 4))
-                .foregroundStyle(color == .green || color == .orange ? Color.black : Color.white)
+                .background(tagFill, in: RoundedRectangle(cornerRadius: 4))
+                .foregroundStyle(tagText)
                 .fixedSize()
                 // A zero-height frame along the top edge; the chip stands on it.
                 .frame(width: max(0, r.width - handle * 2), height: 0,
