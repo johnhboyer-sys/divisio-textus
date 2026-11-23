@@ -295,7 +295,7 @@ enum LayeredScan {
                         removeShadows: Bool = false, flatten: Bool = false) -> [(() -> CGImage?)?]? {
         let crops = page.outputCrops(direction: direction)
         let layers = widened(layers)
-        let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
+        let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops, edges: true)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
         let dpi = previewDPI ?? textDPI(layers)
         // Patches that can't be decoded were found to be pictures above; any left
@@ -413,17 +413,21 @@ enum LayeredScan {
     /// run to within 0.06 inch of the page half's edge (or of 0.3 inch past the crop) are the
     /// fold's shadow, the page's edge or the scanner bed, and don't count, but for a
     /// picture in them, one at the edge or joining the shadow (see
-    /// `BlackAndWhite.picturesInShading`); nor do thin ones: pen, a stamp, a printed
-    /// rule. Over `pictureLimit` square inches of picture and the crop keeps its color.
-    static func holdsPicture(_ page: BookPage, _ pdfPage: PDFPage, layers: Layers, crops: [CropRect]) -> [Bool] {
-        pictureArea(of: page, pdfPage, layers: layers, crops: crops).map { $0 > pictureLimit }
+    /// `BlackAndWhite.picturesInShading`, with `edges`: Black and white and Remove
+    /// shadows ask it; the text layer alone, in Color and Grayscale with the options off,
+    /// is judged as before); nor do thin ones: pen, a stamp, a printed rule. Over
+    /// `pictureLimit` square inches of picture and the crop keeps its color.
+    static func holdsPicture(_ page: BookPage, _ pdfPage: PDFPage, layers: Layers, crops: [CropRect],
+                             edges: Bool = false) -> [Bool] {
+        pictureArea(of: page, pdfPage, layers: layers, crops: crops, edges: edges).map { $0 > pictureLimit }
     }
 
     static let pictureLimit = 0.15
 
     /// Square inches of picture inside each crop (see `holdsPicture`). Infinity for
     /// every crop when a patch can't be decoded: unseen, it might be a picture.
-    static func pictureArea(of page: BookPage, _ pdfPage: PDFPage, layers: Layers, crops: [CropRect]) -> [Double] {
+    static func pictureArea(of page: BookPage, _ pdfPage: PDFPage, layers: Layers, crops: [CropRect],
+                            edges: Bool = false) -> [Double] {
         let dpi = 50.0
         var decoded: [(PDFRenderer.DrawnImage, CGImage)] = []
         for patch in layers.patches {
@@ -486,6 +490,7 @@ enum LayeredScan {
                     if maxX - minX >= 19, maxY - minY >= 19, inside * 2 >= size { counted += size }
                     continue
                 }
+                guard edges else { continue }
                 // A picture at the crop's edge, or joining the fold's shadow, touches the
                 // window too: what of the group isn't shading along those sides, three
                 // quarters of it inside the crop (shading beyond the crop runs into it).

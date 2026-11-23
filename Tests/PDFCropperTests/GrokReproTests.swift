@@ -206,12 +206,12 @@ struct GrokReproTests {
         return Double(d) / Double(max(1, n))
     }
 
-    @Test("Grok 2: a layered page's picture reaching the page's edge keeps its color export")
+    @Test("Grok 2: in Black and white, a layered page's picture reaching the page's edge keeps its color export")
     func layeredPictureAtEdge() throws {
         let rect = CGRect(x: 0, y: 60, width: 108, height: 90)        // full bleed at the left
         let (doc, _) = try Self.layeredPicture("grok2-edge.pdf", rect)
         let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
-        var settings = PDFExporter.Settings(); settings.ocr = false
+        var settings = PDFExporter.Settings(); settings.ocr = false; settings.enhanceMode = .blackAndWhite
         let out = Fixtures.url("grok2-edge-out.pdf")
         _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: settings)
         let shown = try Self.pictureShown(out, rect)
@@ -220,18 +220,33 @@ struct GrokReproTests {
         #expect(shown > 0.8)
     }
 
-    @Test("Grok 2: a layered page's picture joining the fold's shadow keeps its color export")
+    @Test("Grok 2: in Black and white, a layered page's picture joining the fold's shadow keeps its color export")
     func layeredPictureByFold() throws {
         let rect = CGRect(x: 225, y: 60, width: 108, height: 90)      // ends inside the shadow strip (331.2 on)
         let (doc, _) = try Self.layeredPicture("grok2-fold.pdf", rect)
         let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
-        var settings = PDFExporter.Settings(); settings.ocr = false
+        var settings = PDFExporter.Settings(); settings.ocr = false; settings.enhanceMode = .blackAndWhite
         let out = Fixtures.url("grok2-fold-out.pdf")
         _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: settings)
         let shown = try Self.pictureShown(out, rect)
         print("GROK 2 fold: depths \(Self.depths(out, page: 0)) picture shown \(Self.r2(shown))")
         #expect(Self.depths(out, page: 0) == [8])
         #expect(shown > 0.8)
+    }
+
+    @Test("Grok 2: in Color and Grayscale with the options off, a picture at the edge or by the fold is judged as before (text layer)")
+    func layeredPictureOffModes() throws {
+        for (name, rect) in [("edge", CGRect(x: 0, y: 60, width: 108, height: 90)), ("fold", CGRect(x: 225, y: 60, width: 108, height: 90))] {
+            let (doc, _) = try Self.layeredPicture("grok2-off-\(name).pdf", rect)
+            let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
+            for mode in [EnhanceMode.color, .grayscale] {
+                var settings = PDFExporter.Settings(); settings.ocr = false; settings.enhanceMode = mode
+                let out = Fixtures.url("grok2-off-\(name)-\(mode)-out.pdf")
+                _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: settings)
+                // As on claude/finish: the text layer alone, packed to 1 bit.
+                #expect(Self.depths(out, page: 0) == [1], "\(name) \(mode)")
+            }
+        }
     }
 
     @Test("Grok 2 control: the same picture 0.5 inch inside keeps its color export")
@@ -302,6 +317,22 @@ struct GrokReproTests {
     }
 
     // MARK: 4. Narrow print touching the fold band
+
+    @Test("Grok 1/4 review: print kept in a smooth shadow's band stays though it joins a rim that hugs the band")
+    func keptPrintJoinedToRim() {
+        // A band down the right (x 150 on, cleared) and a mark joined to it: its left 4
+        // columns are print kept in the band (`keep`), its right 6 a rim hugging the band.
+        let w = 200, h = 200
+        var out = [UInt8](repeating: 255, count: w * h)
+        var cleared = [Bool](repeating: false, count: w * h), keep = cleared
+        for y in 0..<h { for x in 150..<w { cleared[y * w + x] = true } }
+        var mark: [Int] = []
+        for y in 50..<90 { for x in 140..<150 { out[y * w + x] = 0; mark.append(y * w + x); if x < 144 { keep[y * w + x] = true } } }
+        BlackAndWhite.clearRims(&out, cleared, w, h, dpi: 300, keep: keep)
+        let kept = mark.filter { out[$0] == 0 }.count
+        print("GROK review keep+rim: \(kept) of \(mark.count) kept")
+        #expect(kept == mark.count)
+    }
 
     @Test("Grok 4: an i, l and full stop touching or near the fold band stay")
     func narrowMarksByBand() {
@@ -1108,6 +1139,34 @@ struct GrokReproCorpus {
             let gone = cc.count(k, where: { p.on[$0] != 0 })
             guard gone * 10 > b.count * 7 else { continue }
             print("GROKD lost \(b.minX),\(b.minY) \(b.width)x\(b.height) count \(b.count) member \(lines?.lineMembers.contains(k) ?? false) chained \(lines?.chained.contains(k) ?? false)")
+        }
+        // GROK_DEBUG_AT=x,y;x,y (with GROK_CORPUS): the scan, Black and white without and
+        // with Remove shadows about each point, at 100%, in one sheet.
+        guard let at = Self.env["GROK_DEBUG_AT"] else { return }
+        var color = settings; color.enhanceMode = .color
+        let src = try #require(doc.page(at: page.sourceIndex))
+        let scan = PDFRenderer.renderCGImage(page: src, dpi: p.dpi).flatMap { PDFExporter.outputImages(of: page, rendered: $0, settings: color) }?[p.k]
+        let gray = scan.map(BlackAndWhite.grayPixels)
+        var rows: [[(String, CGImage)]] = []
+        for pt in at.split(separator: ";") {
+            let c = pt.split(separator: ",").compactMap { Int($0) }
+            guard c.count == 2 else { continue }
+            let pad = 150, x0 = max(0, c[0] - pad), y0 = max(0, c[1] - pad)
+            let x1 = min(p.w - 1, c[0] + pad), y1 = min(p.h - 1, c[1] + pad)
+            func cut(_ px: [UInt8]) -> CGImage? {
+                var o = [UInt8](repeating: 255, count: (x1 - x0 + 1) * (y1 - y0 + 1))
+                for y in y0...y1 { for x in x0...x1 { o[(y - y0) * (x1 - x0 + 1) + x - x0] = px[y * p.w + x] } }
+                return BlackAndWhite.image(o, width: x1 - x0 + 1, height: y1 - y0 + 1)
+            }
+            var row: [(String, CGImage)] = []
+            if let gray, gray.count == p.w * p.h, let g = cut(gray) { row.append(("scan \(c[0]),\(c[1])", g)) }
+            if let a = cut(p.off) { row.append(("bw", a)) }
+            if let b = cut(p.on) { row.append(("bw + Remove shadows", b)) }
+            rows.append(row)
+        }
+        try FileManager.default.createDirectory(at: Self.out, withIntermediateDirectories: true)
+        if let im = BWShowTests.grid(rows, height: nil) {
+            HillClimb.png(im, to: Self.out.appendingPathComponent("debug-\(f[0])-\(f[1])-\(f[2]).png"))
         }
     }
 

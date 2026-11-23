@@ -79,6 +79,14 @@ enum BlackAndWhite {
             candidates.withUnsafeMutableBufferPointer { c in for i in 0..<(w * h) { c[i] = out[i] == 0 || pending[i] } }
         }}
         var cleared = bands(candidates, w, h, dpi: dpi)
+        // Letters are measured at the resolution the page's print shows: a scan claiming
+        // far fewer pixels to the inch than it holds (Cherniss's) has letters several times
+        // the inches its claim gives them (see `ShadowRemoval.scaled`). Bands, rims and the
+        // page's sides stay measured at `dpi`.
+        let letterDPI: Double = {
+            guard Double(max(w, h)) >= 20 * dpi else { return dpi }
+            return max(dpi, ShadowRemoval.scaled(ShadowRemoval.Components(out, w, h).blobs, w, h, dpi: dpi).dpi)
+        }()
         // But a smooth shadow under half gray makes a band too, and print in it stays:
         // a touching group of ink by its tone (on paper not near black: 50 or more) the
         // size of a letter (a full stop to 0.25 inch each way), holding a stroke (a
@@ -102,9 +110,9 @@ enum BlackAndWhite {
             var seen = 0, smooth = false
             for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { smooth = n > 0 && v <= 8; break } }
             if smooth {
-                let stroke = max(4, Int((0.02 * dpi).rounded())), most = Int((0.25 * dpi).rounded())
-                let least = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
-                let square = max(3, Int((0.025 * dpi).rounded()))
+                let stroke = max(4, Int((0.02 * letterDPI).rounded())), most = Int((0.25 * letterDPI).rounded())
+                let least = max(4, Int((0.012 * letterDPI * 0.012 * letterDPI).rounded()))
+                let square = max(3, Int((0.025 * letterDPI).rounded()))
                 var maybe = [Bool](repeating: false, count: w * h)
                 cleared.withUnsafeBufferPointer { cleared in maybe.withUnsafeMutableBufferPointer { maybe in
                 out.withUnsafeBufferPointer { out in paper.withUnsafeBufferPointer { paper in
@@ -271,7 +279,7 @@ enum BlackAndWhite {
         // Letters that keep a mark by a band lie on clean paper; on a smooth shadow's
         // page (gray print kept in it), anywhere: the speckle of a 1-bit shadow is no letter.
         clearRims(&out, cleared, w, h, dpi: dpi, keep: inShadow,
-                  letterPaper: inShadow != nil ? { _ in true } : { Int(paper[$0]) >= clean })
+                  letterPaper: inShadow != nil ? { _ in true } : { Int(paper[$0]) >= clean }, letterDPI: letterDPI)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
         if removeShadows {
             let teeth = ShadowRemoval.teeth(gray, w, h, dpi: dpi, paper: clean + 20, ink: out)
@@ -827,9 +835,22 @@ enum BlackAndWhite {
     }
 
     /// What a band leaves about it (see `bands`). `keep`: print that stays whatever it
-    /// touches; `letterPaper`, if given, where a letter may lie that keeps a mark by it.
+    /// touches; `letterPaper`, if given, where a letter may lie that keeps a mark by it;
+    /// `letterDPI` the resolution letters are measured at (`dpi` if not given).
     static func clearRims(_ out: inout [UInt8], _ cleared: [Bool], _ w: Int, _ h: Int, dpi: Double, keep: [Bool]? = nil,
-                          letterPaper: ((Int) -> Bool)? = nil) {
+                          letterPaper: ((Int) -> Bool)? = nil, letterDPI: Double? = nil) {
+        let ld = letterDPI ?? dpi
+        // The page's text lines (`ShadowRemoval.textLines`, at the resolution its print
+        // shows), found once and only if a mark comes to need them.
+        var lines: ShadowRemoval.TextLines?? = nil
+        func onTextLine(_ out: UnsafeMutableBufferPointer<UInt8>, _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int) -> Bool {
+            if lines == nil {
+                lines = .some(ShadowRemoval.scaled(ShadowRemoval.Components(Array(out), w, h).blobs, w, h, dpi: dpi).lines)
+            }
+            guard let l = lines!, x1 >= l.left, x0 <= l.right else { return false }
+            let middle = (y0 + y1) / 2
+            return l.middles.contains { Double(abs($0 - middle)) <= 0.75 * l.t }
+        }
         guard let box = markBox(cleared, w, h) else { return }
         let c = max(1, Int((dpi / 100).rounded()))
         var stack: [Int] = []
@@ -842,7 +863,7 @@ enum BlackAndWhite {
         let hugging = MarkReach(cleared, w, h, radius: 2 * c, box: box)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
-        let piece = Int((0.15 * dpi).rounded()), stop = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
+        let piece = Int((0.15 * ld).rounded()), stop = max(4, Int((0.012 * ld * 0.012 * ld).rounded()))
         var pixels: [Int] = []
         // Pixels touching what went: all within the box grown by a pixel.
         let tx0 = max(0, box.x0 - 1), tx1 = min(w - 1, box.x1 + 1)
@@ -895,16 +916,18 @@ enum BlackAndWhite {
                     let hugsMostly = touches && hugs * 5 >= pixels.count * 3
                     let small = inZone && bw <= speck && bh <= speck
                     guard (touches && strip) || hugsMostly || small else { continue }
-                    // Print in a smooth shadow that made a band (see `ink`).
-                    if let keep, pixels.filter({ keep[$0] }).count * 2 >= pixels.count { continue }
+                    // Print in a smooth shadow that made a band (see `ink`), and whatever
+                    // touches it: a rim joined to a kept letter stays rather than take it.
+                    if let keep, pixels.contains(where: { keep[$0] }) { continue }
                     // A letter's last stroke or a full stop by the band (a full stop's size
                     // or more, no more than 0.15 inch across, and no solid square 0.025 inch
                     // across, as a wedge of the fold's dark is) has the rest of its word beside
                     // it on its line, past 0.05 inch from the band, on paper `letterPaper`
                     // takes: kept.
                     if let letterPaper, !(touches && strip), pixels.count >= stop, bw <= piece, bh <= piece,
-                       !holdsSquare(out, pixels, w, h, dpi: dpi),
-                       letterBeside(out, minX, maxX, minY, maxY, w, h, dpi: dpi, clearOf: zone, on: letterPaper) {
+                       !holdsSquare(out, pixels, w, h, dpi: ld),
+                       letterBeside(out, minX, maxX, minY, maxY, w, h, dpi: ld, clearOf: zone, on: letterPaper,
+                                    onLine: { onTextLine(out, $0, $1, $2, $3) }) {
                         continue
                     }
                     for k in pixels { out[k] = 255 }
@@ -931,9 +954,12 @@ enum BlackAndWhite {
     /// of ink 0.02 inch long, across or down), as `ink` asks of the letters its rescued
     /// pieces lie by, but less than `ink`'s search takes in (a band or a page's dark frame
     /// is no letter), 0.02 inch or more each way and under 0.25 inch tall (the page's
-    /// edges, thin lines down or along it, are none). A shadow's speckle holds none.
+    /// edges, thin lines down or along it, are none), and on one of the page's text
+    /// lines (`onLine`: within the text block, its middle row within 0.75 of the text
+    /// height of a line's). A shadow's speckle holds none.
     static func letterBeside(_ out: UnsafeMutableBufferPointer<UInt8>, _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int,
-                             _ w: Int, _ h: Int, dpi: Double, clearOf reach: MarkReach, on paper: (Int) -> Bool) -> Bool {
+                             _ w: Int, _ h: Int, dpi: Double, clearOf reach: MarkReach, on paper: (Int) -> Bool,
+                             onLine: (Int, Int, Int, Int) -> Bool) -> Bool {
         let apart = max(2, Int((0.08 * dpi).rounded()))
         let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
         let stroke = max(4, Int((0.02 * dpi).rounded())), looked = 40 * minGlyph
@@ -953,7 +979,8 @@ enum BlackAndWhite {
             guard seen.count >= 3 * minGlyph, seen.count < looked else { return false }
             let xs = seen.map { $0 % w }, ys = seen.map { $0 / w }
             guard xs.max()! - xs.min()! + 1 >= stroke, ys.max()! - ys.min()! + 1 >= stroke, ys.max()! - ys.min()! < tall,
-                  ys.min()! <= middle, ys.max()! >= middle, !seen.contains(where: { reach.under($0 % w, $0 / w) }) else { return false }
+                  ys.min()! <= middle, ys.max()! >= middle, !seen.contains(where: { reach.under($0 % w, $0 / w) }),
+                  onLine(xs.min()!, xs.max()!, ys.min()!, ys.max()!) else { return false }
             for k in seen {
                 let x = k % w
                 if x + stroke <= w, !seen.contains(k - 1), (0..<stroke).allSatisfy({ seen.contains(k + $0) }) { return true }
