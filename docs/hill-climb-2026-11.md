@@ -215,3 +215,12 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   own jobs after the install: Cherniss B&W speed (about 17 min, one core) and the scanner bed
   auto leaves in (Wallace: every left page, a band 23–32% of the page wide; Freudenthal: thin
   strips on 7 of 16 sampled pages; Riezler: one sliver). Same on main; cause not yet found.
+- Eye fixes (claude/eye-fixes, fast-forwarded into claude/finish 19f1d61): Oesterle B&W comb
+  pages now 1-bit (picture test needs solid ground, ignores groups reaching the comb), teeth
+  cleared with Remove shadows (p70, p111 and the picture pages), Freudenthal's dithered corner
+  curl cleared in B&W (clearDither, bounded to 0.3 in from the dense field; dots and 0.05 in
+  strokes by letters kept, after Codex found the first version whitened them). Off-mode
+  byte-identical in all 8 books; Freudenthal B&W 1.02–1.04× slower; full suite 533 tests pass.
+  Limits: Freudenthal 1, 2, 94, 215, 237, 240–244 stay gray in B&W (a dark board reads as a
+  plate); a few clumps of dither stay; 17 Oesterle pages in Color/Gray with Remove shadows keep
+  thin edge strips; a 1-px rule at 600 DPI shorter than about 0.09 in in the dither fringe goes.
