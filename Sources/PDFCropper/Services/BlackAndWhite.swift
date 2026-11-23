@@ -78,7 +78,93 @@ enum BlackAndWhite {
         out.withUnsafeBufferPointer { out in pending.withUnsafeBufferPointer { pending in
             candidates.withUnsafeMutableBufferPointer { c in for i in 0..<(w * h) { c[i] = out[i] == 0 || pending[i] } }
         }}
-        let cleared = bands(candidates, w, h, dpi: dpi)
+        var cleared = bands(candidates, w, h, dpi: dpi)
+        // Letters are measured at the resolution the page's print shows: a scan claiming
+        // far fewer pixels to the inch than it holds (Cherniss's) has letters several times
+        // the inches its claim gives them (see `ShadowRemoval.scaled`). Bands, rims and the
+        // page's sides stay measured at `dpi`.
+        let letterDPI: Double = {
+            guard Double(max(w, h)) >= 20 * dpi else { return dpi }
+            return max(dpi, ShadowRemoval.scaled(ShadowRemoval.Components(out, w, h).blobs, w, h, dpi: dpi).dpi)
+        }()
+        // But a smooth shadow under half gray makes a band too, and print in it stays:
+        // a touching group of ink by its tone (on paper not near black: 50 or more) the
+        // size of a letter (a full stop to 0.25 inch each way), holding a stroke (a
+        // straight run of 0.02 inch, across or down) but no solid square 0.025 inch
+        // across, 0.02 inch clear of the crop's sides, somewhere a third of its paper's
+        // gray or darker on that shadow (paper under half gray), and on the shadow's
+        // smooth paper. A comb's teeth, the rims of what made the band and the dark
+        // beyond the page's edge are none of these. What stays and what touches it are
+        // no rim either (`clearRims`). A shadow is smooth when the paper in it is mostly
+        // (the median) within 8 of the paper map; a 1-bit scan drawn smaller shows its
+        // speckle as rough gray, and keeps none.
+        var inShadow: [Bool]? = nil
+        if tone, markBox(cleared, w, h) != nil {
+            var counts = [Int](repeating: 0, count: 256), n = 0
+            pending.withUnsafeBufferPointer { pending in paper.withUnsafeBufferPointer { paper in
+            gray.withUnsafeBufferPointer { gray in
+                for i in 0..<(w * h) where pending[i] && paper[i] >= 50 {
+                    counts[abs(Int(gray[i]) - Int(paper[i]))] += 1; n += 1
+                }
+            }}}
+            var seen = 0, smooth = false
+            for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { smooth = n > 0 && v <= 8; break } }
+            if smooth {
+                let stroke = max(4, Int((0.02 * letterDPI).rounded())), most = Int((0.25 * letterDPI).rounded())
+                let least = max(4, Int((0.012 * letterDPI * 0.012 * letterDPI).rounded()))
+                let square = max(3, Int((0.025 * letterDPI).rounded()))
+                var maybe = [Bool](repeating: false, count: w * h)
+                cleared.withUnsafeBufferPointer { cleared in maybe.withUnsafeMutableBufferPointer { maybe in
+                out.withUnsafeBufferPointer { out in paper.withUnsafeBufferPointer { paper in
+                    for i in 0..<(w * h) where cleared[i] && out[i] == 0 && paper[i] >= 50 { maybe[i] = true }
+                }}}}
+                var keep = [Bool](repeating: false, count: w * h), any = false
+                var seen = [Bool](repeating: false, count: w * h), stack: [Int] = [], group: [Int] = []
+                for start in 0..<(w * h) where maybe[start] && !seen[start] {
+                    seen[start] = true
+                    stack = [start]; group = []
+                    var minX = w, maxX = 0, minY = h, maxY = 0, stroked = false, cored = false
+                    while let k = stack.popLast() {
+                        group.append(k)
+                        let x = k % w, y = k / w
+                        minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                        if !cored { cored = paper[k] < 128 && Int(gray[k]) * 3 <= Int(paper[k]) }
+                        if !stroked {
+                            stroked = (x + stroke <= w && (0..<stroke).allSatisfy { maybe[k + $0] })
+                                || (y + stroke <= h && (0..<stroke).allSatisfy { maybe[k + $0 * w] })
+                        }
+                        for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                            for nx in max(0, x - 1)...min(w - 1, x + 1) where maybe[ny * w + nx] && !seen[ny * w + nx] {
+                                seen[ny * w + nx] = true; stack.append(ny * w + nx)
+                            }
+                        }
+                    }
+                    guard cored, stroked, group.count >= least, maxX - minX < most, maxY - minY < most,
+                          minX >= stroke, maxX < w - stroke, minY >= stroke, maxY < h - stroke else { continue }
+                    // No stroke of print is a solid square 0.025 inch across.
+                    let solid = group.contains { k in
+                        let x = k % w, y = k / w
+                        return x + square <= w && y + square <= h
+                            && (0..<square).allSatisfy { dy in (0..<square).allSatisfy { maybe[k + dy * w + $0] } }
+                    }
+                    guard !solid else { continue }
+                    // And lies on the shadow's own smooth paper: most of what went within
+                    // 0.02 inch about it is within 8 of the paper map (between a comb's
+                    // teeth it is not).
+                    var around = 0, smoothHere = 0
+                    for y in max(0, minY - stroke)...min(h - 1, maxY + stroke) {
+                        for x in max(0, minX - stroke)...min(w - 1, maxX + stroke) where cleared[y * w + x] && !maybe[y * w + x] {
+                            around += 1
+                            if abs(Int(gray[y * w + x]) - Int(paper[y * w + x])) <= 8 { smoothHere += 1 }
+                        }
+                    }
+                    guard smoothHere * 2 >= around else { continue }
+                    for k in group { keep[k] = true; cleared[k] = false }
+                    any = true
+                }
+                if any { inShadow = keep }
+            }
+        }
         cleared.withUnsafeBufferPointer { cleared in
             out.withUnsafeMutableBufferPointer { out in pending.withUnsafeMutableBufferPointer { pending in
                 toneInk.withUnsafeMutableBufferPointer { toneInk in
@@ -190,7 +276,10 @@ enum BlackAndWhite {
         }
         for group in rescued { for k in group where pending[k] { out[k] = 0 } }
         if let sharp { clearHalo(&out, toneInk, sharp, gray, w, h, dpi: dpi, minGlyph: minGlyph) }
-        clearRims(&out, cleared, w, h, dpi: dpi)
+        // Letters that keep a mark by a band lie on clean paper; on a smooth shadow's
+        // page (gray print kept in it), anywhere: the speckle of a 1-bit shadow is no letter.
+        clearRims(&out, cleared, w, h, dpi: dpi, keep: inShadow,
+                  letterPaper: inShadow != nil ? { _ in true } : { Int(paper[$0]) >= clean }, letterDPI: letterDPI)
         clearEdgeLines(&out, toneInk, paper, gray, clean: clean, w, h, dpi: dpi)
         if removeShadows {
             let teeth = ShadowRemoval.teeth(gray, w, h, dpi: dpi, paper: clean + 20, ink: out)
@@ -639,9 +728,10 @@ enum BlackAndWhite {
     /// of touching dark cells that runs off the crop (a figure printed near a side has
     /// paper between it and the edge) and comes within 0.1 inch of a side, the solid cells
     /// (dark for 0.03 inch all round, as print's strokes never are) go white. If
-    /// the group runs at least an inch along that side and is somewhere 0.04 inch
-    /// thick across it (more than a printed rule), it is a band, and its cells in a
-    /// straight run of 0.4 inch or more along that side (no letter has one) go too.
+    /// the group runs at least an inch along that side (within 0.25 inch of it) and
+    /// is somewhere 0.04 inch thick across it (more than a printed rule), it is a
+    /// band, and its cells in a straight run of 0.4 inch or more along that side (no
+    /// letter has one) go too.
     /// The pixels to white out. Print touching a band keeps the rest of its pixels.
     static func bands(_ ink: [Bool], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
         let c = max(1, Int((dpi / 100).rounded()))
@@ -665,6 +755,9 @@ enum BlackAndWhite {
         let longRun = max(2, Int((0.4 * cellDPI).rounded()))
         let inch = Int(cellDPI.rounded())
         let thick = max(2, Int((0.04 * cellDPI).rounded()))
+        // The inch along a side is measured within 0.25 inch of it: a rule running from
+        // the page into a band down the side makes the group wide, not a band along the foot.
+        let along = Int((0.25 * cellDPI).rounded())
         // Straight runs of dark cells, down each column and along each row.
         var vRun = [Int](repeating: 0, count: cw * ch), hRun = [Int](repeating: 0, count: cw * ch)
         for x in 0..<cw {
@@ -702,10 +795,14 @@ enum BlackAndWhite {
             seen[start] = true
             stack = [start]; group = []
             var minX = cw, maxX = 0, minY = ch, maxY = 0
+            // How far the group runs along each side, within `along` of it.
+            var sideY = (lo: ch, hi: -1), edgeX = (lo: cw, hi: -1)
             while let k = stack.popLast() {
                 group.append(k)
                 let x = k % cw, y = k / cw
                 minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                if x < along || x >= cw - along { sideY = (min(sideY.lo, y), max(sideY.hi, y)) }
+                if y < along || y >= ch - along { edgeX = (min(edgeX.lo, x), max(edgeX.hi, x)) }
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                     let nx = x + dx, ny = y + dy
                     guard nx >= 0, ny >= 0, nx < cw, ny < ch else { continue }
@@ -718,8 +815,8 @@ enum BlackAndWhite {
             // A band runs off the crop; a figure printed near the side, however long,
             // has paper between it and the edge.
             guard minX == 0 || maxX == cw - 1 || minY == 0 || maxY == ch - 1 else { continue }
-            let side = atSide && maxY - minY + 1 >= inch && group.contains { hRun[$0] >= thick }
-            let edge = atEdge && maxX - minX + 1 >= inch && group.contains { vRun[$0] >= thick }
+            let side = atSide && sideY.hi - sideY.lo + 1 >= inch && group.contains { hRun[$0] >= thick }
+            let edge = atEdge && edgeX.hi - edgeX.lo + 1 >= inch && group.contains { vRun[$0] >= thick }
             for k in group where solid(k) || (side && vRun[k] >= longRun) || (edge && hRun[k] >= longRun) {
                 clear[k] = true
             }
@@ -737,8 +834,23 @@ enum BlackAndWhite {
         return cleared
     }
 
-    /// What a band leaves about it (see `bands`).
-    static func clearRims(_ out: inout [UInt8], _ cleared: [Bool], _ w: Int, _ h: Int, dpi: Double) {
+    /// What a band leaves about it (see `bands`). `keep`: print that stays whatever it
+    /// touches; `letterPaper`, if given, where a letter may lie that keeps a mark by it;
+    /// `letterDPI` the resolution letters are measured at (`dpi` if not given).
+    static func clearRims(_ out: inout [UInt8], _ cleared: [Bool], _ w: Int, _ h: Int, dpi: Double, keep: [Bool]? = nil,
+                          letterPaper: ((Int) -> Bool)? = nil, letterDPI: Double? = nil) {
+        let ld = letterDPI ?? dpi
+        // The page's text lines (`ShadowRemoval.textLines`, at the resolution its print
+        // shows), found once and only if a mark comes to need them.
+        var lines: ShadowRemoval.TextLines?? = nil
+        func onTextLine(_ out: UnsafeMutableBufferPointer<UInt8>, _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int) -> Bool {
+            if lines == nil {
+                lines = .some(ShadowRemoval.scaled(ShadowRemoval.Components(Array(out), w, h).blobs, w, h, dpi: dpi).lines)
+            }
+            guard let l = lines!, x1 >= l.left, x0 <= l.right else { return false }
+            let middle = (y0 + y1) / 2
+            return l.middles.contains { Double(abs($0 - middle)) <= 0.75 * l.t }
+        }
         guard let box = markBox(cleared, w, h) else { return }
         let c = max(1, Int((dpi / 100).rounded()))
         var stack: [Int] = []
@@ -751,6 +863,7 @@ enum BlackAndWhite {
         let hugging = MarkReach(cleared, w, h, radius: 2 * c, box: box)
         var visited = [Bool](repeating: false, count: w * h)
         let thin = c + 1, long = Int((0.4 * dpi).rounded()), speck = Int((0.02 * dpi).rounded())
+        let piece = Int((0.15 * ld).rounded()), stop = max(4, Int((0.012 * ld * 0.012 * ld).rounded()))
         var pixels: [Int] = []
         // Pixels touching what went: all within the box grown by a pixel.
         let tx0 = max(0, box.x0 - 1), tx1 = min(w - 1, box.x1 + 1)
@@ -778,12 +891,12 @@ enum BlackAndWhite {
                     visited[start] = true
                     stack.removeAll(keepingCapacity: true); stack.append(start)
                     pixels.removeAll(keepingCapacity: true)
-                    var touches = false, inZone = false, hugs = 0
+                    var touches = false, inZone = false, hugs = 0, zoned = 0
                     var minX = w, maxX = 0, minY = h, maxY = 0
                     while let k = stack.popLast() {
                         pixels.append(k)
                         let x = k % w, y = k / w
-                        if zone.under(x, y) { inZone = true }
+                        if zone.under(x, y) { inZone = true; zoned += 1 }
                         if hugging.under(x, y) { hugs += 1 }
                         minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
                         for ny in max(0, y - 1)...min(h - 1, y + 1) {
@@ -795,13 +908,97 @@ enum BlackAndWhite {
                         }
                     }
                     let bw = maxX - minX + 1, bh = maxY - minY + 1
-                    let rim = touches && ((bw <= thin && bh >= long) || (bh <= thin && bw >= long)
-                                          || hugs * 5 >= pixels.count * 3)
-                    guard rim || (inZone && bw <= speck && bh <= speck) else { continue }
+                    // A strip runs along the band (a third of it or more within 0.05 inch of
+                    // what went) or is under an inch long; a rule running into the band from
+                    // the page, over an inch of it away from the band, is print.
+                    let strip = ((bw <= thin && bh >= long) || (bh <= thin && bw >= long))
+                        && (zoned * 3 >= pixels.count || max(bw, bh) < Int(dpi.rounded()))
+                    let hugsMostly = touches && hugs * 5 >= pixels.count * 3
+                    let small = inZone && bw <= speck && bh <= speck
+                    guard (touches && strip) || hugsMostly || small else { continue }
+                    // Print in a smooth shadow that made a band (see `ink`), and whatever
+                    // touches it: a rim joined to a kept letter stays rather than take it.
+                    if let keep, pixels.contains(where: { keep[$0] }) { continue }
+                    // A letter's last stroke or a full stop by the band (a full stop's size
+                    // or more, no more than 0.15 inch across, and no solid square 0.025 inch
+                    // across, as a wedge of the fold's dark is) has the rest of its word beside
+                    // it on its line, past 0.05 inch from the band, on paper `letterPaper`
+                    // takes: kept.
+                    if let letterPaper, !(touches && strip), pixels.count >= stop, bw <= piece, bh <= piece,
+                       !holdsSquare(out, pixels, w, h, dpi: ld),
+                       letterBeside(out, minX, maxX, minY, maxY, w, h, dpi: ld, clearOf: zone, on: letterPaper,
+                                    onLine: { onTextLine(out, $0, $1, $2, $3) }) {
+                        continue
+                    }
                     for k in pixels { out[k] = 255 }
                 }
             }
         }}}}
+    }
+
+    /// Whether the ink about `pixels` (a touching group of it) holds a solid square
+    /// 0.025 inch across, as no stroke of body type does.
+    static func holdsSquare(_ out: UnsafeMutableBufferPointer<UInt8>, _ pixels: [Int], _ w: Int, _ h: Int,
+                            dpi: Double) -> Bool {
+        let side = max(3, Int((0.025 * dpi).rounded()))
+        return pixels.contains { k in
+            let x = k % w, y = k / w
+            return x + side <= w && y + side <= h
+                && (0..<side).allSatisfy { dy in (0..<side).allSatisfy { out[k + dy * w + $0] == 0 } }
+        }
+    }
+
+    /// Whether ink of a letter lies beside the box (on its rows, within 0.08 inch left or
+    /// right, across its middle row, where `paper` holds), all of it clear of `reach`: a
+    /// group three times the size of a full stop or more holding a stroke (a straight run
+    /// of ink 0.02 inch long, across or down), as `ink` asks of the letters its rescued
+    /// pieces lie by, but less than `ink`'s search takes in (a band or a page's dark frame
+    /// is no letter), 0.02 inch or more each way and under 0.25 inch tall (the page's
+    /// edges, thin lines down or along it, are none), and on one of the page's text
+    /// lines (`onLine`: within the text block, its middle row within 0.75 of the text
+    /// height of a line's). A shadow's speckle holds none.
+    static func letterBeside(_ out: UnsafeMutableBufferPointer<UInt8>, _ x0: Int, _ x1: Int, _ y0: Int, _ y1: Int,
+                             _ w: Int, _ h: Int, dpi: Double, clearOf reach: MarkReach, on paper: (Int) -> Bool,
+                             onLine: (Int, Int, Int, Int) -> Bool) -> Bool {
+        let apart = max(2, Int((0.08 * dpi).rounded()))
+        let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))
+        let stroke = max(4, Int((0.02 * dpi).rounded())), looked = 40 * minGlyph
+        let tall = Int((0.25 * dpi).rounded()), middle = (y0 + y1) / 2
+        var tried = Set<Int>()
+        func letter(_ start: Int) -> Bool {
+            var seen: Set<Int> = [start], todo = [start]
+            while let k = todo.popLast(), seen.count < looked {
+                let x = k % w, y = k / w
+                for ny in max(0, y - 1)...min(h - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(w - 1, x + 1) where out[ny * w + nx] == 0 && !seen.contains(ny * w + nx) {
+                        seen.insert(ny * w + nx); todo.append(ny * w + nx)
+                    }
+                }
+            }
+            tried.formUnion(seen)
+            guard seen.count >= 3 * minGlyph, seen.count < looked else { return false }
+            let xs = seen.map { $0 % w }, ys = seen.map { $0 / w }
+            guard xs.max()! - xs.min()! + 1 >= stroke, ys.max()! - ys.min()! + 1 >= stroke, ys.max()! - ys.min()! < tall,
+                  ys.min()! <= middle, ys.max()! >= middle, !seen.contains(where: { reach.under($0 % w, $0 / w) }),
+                  onLine(xs.min()!, xs.max()!, ys.min()!, ys.max()!) else { return false }
+            for k in seen {
+                let x = k % w
+                if x + stroke <= w, !seen.contains(k - 1), (0..<stroke).allSatisfy({ seen.contains(k + $0) }) { return true }
+                if !seen.contains(k - w), (0..<stroke).allSatisfy({ seen.contains(k + $0 * w) }) { return true }
+            }
+            return false
+        }
+        for y in y0...y1 {
+            for x in max(0, x0 - apart)..<x0 where out[y * w + x] == 0 && !reach.under(x, y) && !tried.contains(y * w + x)
+                && paper(y * w + x) {
+                if letter(y * w + x) { return true }
+            }
+            for x in (x1 + 1)..<min(w, x1 + 1 + apart) where out[y * w + x] == 0 && !reach.under(x, y) && !tried.contains(y * w + x)
+                && paper(y * w + x) {
+                if letter(y * w + x) { return true }
+            }
+        }
+        return false
     }
 
     /// The box holding every mark, nil if there is none.
@@ -903,8 +1100,9 @@ enum BlackAndWhite {
     /// A picture on the paper map: a group of touching places at least 20% darker
     /// than the page's usual paper, at least 0.4 inch each way, not a band or shadow
     /// (near a side, with the scan `gray` dark at the crop's edge beside it: it runs
-    /// off the crop), and over 0.15 square inch in all. Print is gone from the paper
-    /// map, but a photo, plate or shaded figure stays.
+    /// off the crop, though a plate in it, at the edge or joining the shadow, still
+    /// counts: see `picturesInShading`), and over 0.15 square inch in all. Print is gone
+    /// from the paper map, but a photo, plate or shaded figure stays.
     static func holdsPicture(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> Bool {
         pictureCells(paper, gray, w, h, dpi: dpi).area > LayeredScan.pictureLimit
     }
@@ -968,16 +1166,83 @@ enum BlackAndWhite {
                 return joined * 10 >= lines.count * 3
             }
             let x0 = minX * step, x1 = min(w, (maxX + 1) * step), y0 = minY * step, y1 = min(h, (maxY + 1) * step)
-            let runsOff = (minX < edge && inward < w && runsIn(y0..<y1) { y, d in dark(d, y) })
-                || (maxX >= sw - edge && inward < w && runsIn(y0..<y1) { y, d in dark(w - 1 - d, y) })
-                || (minY < edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, d) })
-                || (maxY >= sh - edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, h - 1 - d) })
-            if !runsOff, maxX - minX >= span, maxY - minY >= span {
-                area += size
-                for k in group { picture[k] = true }
+            let left = minX < edge && inward < w && runsIn(y0..<y1) { y, d in dark(d, y) }
+            let right = maxX >= sw - edge && inward < w && runsIn(y0..<y1) { y, d in dark(w - 1 - d, y) }
+            let top = minY < edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, d) }
+            let foot = maxY >= sh - edge && inward < h && runsIn(x0..<x1) { x, d in dark(x, h - 1 - d) }
+            if !(left || right || top || foot) {
+                if maxX - minX >= span, maxY - minY >= span {
+                    area += size
+                    for k in group { picture[k] = true }
+                }
+            } else {
+                // A plate at the crop's edge, or joining the fold's shadow, runs off too.
+                for part in picturesInShading(group, sw, sh, value: { Int(small[$0]) }, sides: (left, right, top, foot),
+                                              edge: edge, span: span, darker: { $0 * 5 <= $1 * 4 }) {
+                    area += part.count
+                    for k in part { picture[k] = true }
+                }
             }
         }
         return (picture, sw, step, Double(area) / (cellDPI * cellDPI))
+    }
+
+    /// The pictures in a group of cells (indices into a `w` × `h` map read by `value`)
+    /// that runs off the `sides` named (left, right, top, foot): shading that runs off a
+    /// side (the fold's shadow, a band, the scanner bed) is much the same all along it,
+    /// a picture is not. Each cell is measured against the median of the map along the
+    /// side at its distance from it (for each side named), and kept when `darker`
+    /// (its value, that median) holds for all; touching kept cells make a part. A part
+    /// is a picture when at least `span` cells each way, unless it is still shading:
+    /// within `edge` cells of a side and `span` of one meeting it (a corner's shadow),
+    /// or within `edge` cells of one side for half its length or more, or for less than
+    /// twice `span` away from it (a strip down the side).
+    static func picturesInShading(_ group: [Int], _ w: Int, _ h: Int, value: (Int) -> Int,
+                                  sides: (left: Bool, right: Bool, top: Bool, foot: Bool), edge: Int, span: Int,
+                                  darker: (Int, Int) -> Bool) -> [[Int]] {
+        var medians: [Int: Int] = [:]
+        func median(_ side: Int, _ d: Int) -> Int {
+            if let m = medians[side * (w + h) + d] { return m }
+            var counts = [Int](repeating: 0, count: 256)
+            let n = side < 2 ? h : w
+            for i in 0..<n {
+                let k = side == 0 ? i * w + d : side == 1 ? i * w + w - 1 - d : side == 2 ? d * w + i : (h - 1 - d) * w + i
+                counts[max(0, min(255, value(k)))] += 1
+            }
+            var seen = 0, m = 255
+            for v in 0..<256 { seen += counts[v]; if seen * 2 >= n { m = v; break } }
+            medians[side * (w + h) + d] = m
+            return m
+        }
+        var kept = Set<Int>()
+        for k in group {
+            let x = k % w, y = k / w, v = value(k)
+            if sides.left, !darker(v, median(0, x)) { continue }
+            if sides.right, !darker(v, median(1, w - 1 - x)) { continue }
+            if sides.top, !darker(v, median(2, y)) { continue }
+            if sides.foot, !darker(v, median(3, h - 1 - y)) { continue }
+            kept.insert(k)
+        }
+        var parts: [[Int]] = []
+        while let start = kept.first {
+            kept.remove(start)
+            var part: [Int] = [], stack = [start]
+            var minX = w, maxX = 0, minY = h, maxY = 0
+            while let k = stack.popLast() {
+                part.append(k)
+                let x = k % w, y = k / w
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                for n in [x > 0 ? k - 1 : -1, x < w - 1 ? k + 1 : -1, k - w, k + w] where n >= 0 && kept.contains(n) {
+                    kept.remove(n); stack.append(n)
+                }
+            }
+            let l = minX < edge, r = maxX >= w - edge, t = minY < edge, f = maxY >= h - edge
+            let corner = ((l || r) && (minY < span || maxY >= h - span)) || ((t || f) && (minX < span || maxX >= w - span))
+            let along = ((l || r) && (maxY - minY + 1) * 2 >= h) || ((t || f) && (maxX - minX + 1) * 2 >= w)
+                || ((l || r) && maxX - minX + 1 < 2 * span) || ((t || f) && maxY - minY + 1 < 2 * span)
+            if !corner, !along, maxX - minX >= span, maxY - minY >= span { parts.append(part) }
+        }
+        return parts
     }
 
     /// An 8-bit gray image of `pixels` (top-left origin rows).

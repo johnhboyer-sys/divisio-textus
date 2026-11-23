@@ -715,7 +715,8 @@ final class AppModel: ObservableObject {
         var models = [Flatten.Model?](repeating: nil, count: crops.count)
         var rendered = Array(crops.indices)          // pages made from the page's render
         if let layers = LayeredScan.layers(of: pdfPage) {
-            let marked = LayeredScan.holdsPicture(page, pdfPage, layers: layers, crops: crops)
+            let marked = LayeredScan.holdsPicture(page, pdfPage, layers: layers, crops: crops,
+                                                  edges: settings.bothLayers)
             rendered = crops.indices.filter { marked[$0] }
             if rendered.count < crops.count {
                 let dpi = LayeredScan.textDPI(layers)
