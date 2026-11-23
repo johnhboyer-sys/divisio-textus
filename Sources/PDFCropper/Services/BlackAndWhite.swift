@@ -28,9 +28,11 @@ enum BlackAndWhite {
     /// with `preview`, ink keeps its gray instead of turning black. With
     /// `removeShadows`, what is not print beside the text block goes too
     /// (`ShadowRemoval.clearSides`). `paper`, if given, is `background` of `gray` at `dpi`,
-    /// already made by the caller.
+    /// already made by the caller. With `dither`, a bitonal scan's dithered shadow goes
+    /// (`clearDither`); Color and Grayscale leave its dots as they are.
     static func ink(gray: [UInt8], sharp: [Bool]?, tone: Bool, width w: Int, height h: Int,
-                    dpi: Double, preview: Bool = false, removeShadows: Bool = false, paper given: [UInt8]? = nil) -> [UInt8] {
+                    dpi: Double, preview: Bool = false, removeShadows: Bool = false, paper given: [UInt8]? = nil,
+                    dither: Bool = true) -> [UInt8] {
         guard w > 0, h > 0, gray.count == w * h else { return gray }
         let paper = given ?? background(gray, w, h, dpi: dpi)
         let clean = cleanLevel(paper)
@@ -75,7 +77,7 @@ enum BlackAndWhite {
         // A bitonal scan draws a shadow (a page's curl at its corner) as a scatter of
         // single dots, each on paper the paper map calls clean (see `clearDither`); drawn
         // again straightened, its dots turn partly gray, so the page may read as tones.
-        if sharp == nil { clearDither(&out, gray, w, h, dpi: dpi) }
+        if sharp == nil, dither { clearDither(&out, w, h, dpi: dpi) }
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
         var candidates = [Bool](repeating: false, count: w * h)
@@ -441,12 +443,11 @@ enum BlackAndWhite {
     /// a cell 0.05 inch across, in a field of such cells (touching, or one cell apart) that
     /// comes within 0.25 inch of the crop's side and covers 0.25 square inch or more, and on
     /// from it through cells holding a speck (see below). Those specks go white. Ink the
-    /// size of a full stop or more starting in the field (dots run together into a line, a
-    /// heading printed on the shadow) stays when it holds a solid square 2 px across (a
-    /// stroke) and is darker, on a small blur, than the mean 0.05 inch around by a margin, as
-    /// sharp ink on shadow is judged in `ink`: a letter's strokes are both, a line of dots
-    /// neither. A halftone picture apart from the crop's sides stays.
-    static func clearDither(_ out: inout [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) {
+    /// size of a full stop or more starting in the field stays when it holds a solid square
+    /// 2 px across, as any stroke of print does (a heading printed on the shadow), and goes
+    /// when it holds none (dots run together into a line). A halftone picture apart from
+    /// the crop's sides stays.
+    static func clearDither(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double) {
         let cell = max(2, Int((0.05 * dpi).rounded()))
         let cw = (w + cell - 1) / cell, ch = (h + cell - 1) / cell
         let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))   // a full stop
@@ -487,18 +488,12 @@ enum BlackAndWhite {
                 }
             }
         }
-        guard shadow.contains(true) else { return }
-        let blur = BoxMeans(gray, w, h, radius: Int((0.008 * dpi).rounded()), sparse: true)
-        let around = BoxMeans(gray, w, h, radius: Int((0.05 * dpi).rounded()), sparse: true)
         for (k, b) in cc.blobs.enumerated() where shadow[(b.minY / cell) * cw + b.minX / cell] {
             if b.count >= minGlyph {
-                var sumBlur = 0, sumAround = 0
                 let solid = cc.count(k, where: { i in
-                    sumBlur += blur.at(i); sumAround += around.at(i)
-                    return i % w < w - 1 && i / w < h - 1 && out[i + 1] == 0 && out[i + w] == 0 && out[i + w + 1] == 0
+                    i % w < w - 1 && i / w < h - 1 && out[i + 1] == 0 && out[i + w] == 0 && out[i + w + 1] == 0
                 })
-                let mb = sumBlur / b.count, ma = sumAround / b.count
-                guard solid == 0 || mb >= ma - max(20, ma / 6) else { continue }
+                guard solid == 0 else { continue }
             }
             cc.clear(k, in: &out)
         }
@@ -1181,7 +1176,7 @@ enum BlackAndWhite {
 
     /// Where a picture is (see `holdsPicture`), pixel by pixel, grown by 0.1 inch.
     static func pictureMap(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
-        let cells = pictureCells(paper, gray, w, h, dpi: dpi)
+        let cells = pictureCells(paper, gray, w, h, dpi: dpi, solid: false)
         var out = [Bool](repeating: false, count: w * h)
         guard cells.mark.contains(true) else { return out }
         let grow = max(1, Int((0.1 * dpi / Double(cells.step)).rounded()))
@@ -1194,8 +1189,9 @@ enum BlackAndWhite {
     }
 
     /// The picture groups of `holdsPicture` on cells of `step` pixels, `width` cells
-    /// a row, and their area in square inches.
-    static func pictureCells(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double)
+    /// a row, and their area in square inches. Without `solid`, thin places count too:
+    /// where a picture is, Remove shadows leaves all of it as it is (`pictureMap`).
+    static func pictureCells(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, solid: Bool = true)
         -> (mark: [Bool], width: Int, step: Int, area: Double) {
         let step = max(1, Int((dpi / 50).rounded()))
         let sw = (w + step - 1) / step, sh = (h + step - 1) / step
@@ -1205,7 +1201,7 @@ enum BlackAndWhite {
         // A picture is solid: what is under 0.14 inch thick all through (the thin dark edge
         // of the pages beneath, down the side or along the foot, which the paper map follows
         // however narrow) is none. Beyond the crop counts as paper.
-        let thin = max(1, Int((0.06 * dpi / Double(step)).rounded()))
+        let thin = solid ? max(1, Int((0.06 * dpi / Double(step)).rounded())) : 0
         let pw = sw + 2 * thin, ph = sh + 2 * thin
         var padded = [UInt8](repeating: 255, count: pw * ph)
         for y in 0..<sh { for x in 0..<sw where Int(small[y * sw + x]) * 5 <= usual * 4 { padded[(y + thin) * pw + x + thin] = 0 } }
