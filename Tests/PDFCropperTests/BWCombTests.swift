@@ -291,4 +291,119 @@ struct BWCombTests {
         let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
         #expect(Double(rule.filter { color[$0] < 160 }.count) > 0.95 * Double(rule.count), "rule in color")
     }
+
+    // MARK: Teeth are no picture
+
+    /// Oesterle's big teeth (0.37 × 0.35 inch, gray 45, every 0.6 inch) by the right
+    /// side, 5 px from the page's thin dark edge (0.05 inch, gray 20) down the crop's side.
+    /// On the paper map the edge joins the teeth into one group the size of a plate.
+    static func bigTeeth() -> (gray: [UInt8], text: [Int], teeth: [Int]) {
+        var g = [UInt8](repeating: 235, count: w * h)
+        let text = BlackAndWhiteExportTests.text(in: CGRect(x: 150, y: 100, width: 520, height: 1000))
+        var teeth: [Int] = []
+        for k in 0..<6 { teeth += box(770, 60 + k * 180, 110, 105) }
+        for i in text { g[i] = 30 }
+        for i in teeth { g[i] = 45 }
+        for i in box(885, 0, 15, h) { g[i] = 20 }
+        return (g, text, teeth)
+    }
+
+    @Test("Teeth joined by the page's edge are no picture: the page comes out black and white")
+    func teethNoPicture() throws {
+        let p = Self.bigTeeth()
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        for remove in [false, true] {
+            let out = try #require(BlackAndWhite.page(image, dpi: Self.dpi, removeShadows: remove), "kept as a picture")
+            let px = BlackAndWhite.grayPixels(out)
+            #expect(share(px, p.text) > 0.99, "text \(share(px, p.text))")
+            if remove { #expect(share(px, p.teeth) == 0, "teeth \(share(px, p.teeth))") }
+        }
+        // In color, Remove shadows paints them as it does other teeth.
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let left = p.teeth.filter { abs(Int(color[$0]) - 235) > 15 }.count
+        #expect(left == 0, "\(left) tooth pixels not paper in color")
+        #expect(p.text.allSatisfy { color[$0] < 100 })
+    }
+
+    // MARK: Teeth the search missed
+
+    /// Oesterle p72: the crop takes in 1.3 inch beyond the comb, so its teeth stand
+    /// 1.3 to 1.7 inch from the side. A page 7 inches wide: text from x 650, six teeth
+    /// (130 x 105, gray 45) at x 390 every 0.6 inch, the comb's back (gray 150) between
+    /// them, so that on the paper map they make one long group: a picture, but for the teeth.
+    @Test("Teeth 1.3 inch in from the side are no picture, and go")
+    func teethFarIn() throws {
+        let w = 2100
+        var g = [UInt8](repeating: 235, count: w * Self.h)
+        var text: [Int] = [], teeth: [Int] = []
+        for line in 0..<20 {
+            let y = 100 + line * 50
+            for x in stride(from: 650, to: 1950, by: 45) {
+                for (bx, by, bw, bh) in [(x, y + 8, 3, 22), (x + 17, y + 8, 3, 22), (x, y + 8, 20, 3), (x, y + 27, 20, 3), (x + 28, y, 3, 30)] {
+                    for yy in by..<(by + bh) { for xx in bx..<(bx + bw) { text.append(yy * w + xx) } }
+                }
+            }
+        }
+        for yy in 60..<1065 { for xx in 390..<520 { g[yy * w + xx] = 150 } }
+        for k in 0..<6 {
+            for yy in (60 + k * 180)..<(165 + k * 180) { for xx in 390..<520 { teeth.append(yy * w + xx) } }
+        }
+        for i in text { g[i] = 30 }
+        for i in teeth { g[i] = 45 }
+        let image = try #require(BlackAndWhite.image(g, width: w, height: Self.h))
+        for remove in [false, true] {
+            let out = try #require(BlackAndWhite.page(image, dpi: Self.dpi, removeShadows: remove), "kept as a picture")
+            let px = BlackAndWhite.grayPixels(out)
+            #expect(share(px, text) > 0.99, "text \(share(px, text))")
+            if remove { #expect(share(px, teeth) == 0, "teeth \(share(px, teeth))") }
+        }
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let left = teeth.filter { abs(Int(color[$0]) - 235) > 15 }.count
+        #expect(left == 0, "\(left) tooth pixels not paper in color")
+        #expect(text.allSatisfy { color[$0] < 100 })
+    }
+
+    /// Oesterle p111: between the teeth, bits of the comb's back and loops stand in a
+    /// row, three to a gap, as a short line of letters does. Ten such lines by the
+    /// side, among the page's twenty, moved the text block's side out over the teeth.
+    @Test("Bits between the teeth in rows like letters don't hide the teeth")
+    func teethWithLetterlikeBits() throws {
+        var p = Self.page(clumps: false)
+        var bits: [Int] = []
+        for k in 0..<10 {
+            let y = 80 + k * 100 + 68
+            for x in [845, 858, 871] { bits += Self.box(x, y, 10, 20) }
+        }
+        for i in bits { p.gray[i] = 30 }
+        let bw = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: true, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                   removeShadows: true)
+        #expect(share(bw, p.teeth) == 0, "teeth \(share(bw, p.teeth))")
+        #expect(share(bw, p.text) > 0.99, "text \(share(bw, p.text))")
+        let image = try #require(BlackAndWhite.image(p.gray, width: Self.w, height: Self.h))
+        let color = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let left = p.teeth.filter { abs(Int(color[$0]) - 235) > 15 }.count
+        #expect(left == 0, "\(left) tooth pixels not paper in color")
+    }
+
+    /// Oesterle p70: down the left side, teeth whose dark part (100 px, gray 45) ends at a
+    /// pale shine (15 px, gray 165) before their inner end (35 px, gray 135): the end
+    /// reaches 0.17 inch past the dark part, and is the tooth too. Left out, it stays in
+    /// black and white as a bar of print beside the comb.
+    @Test("A tooth's end past its shine is the tooth too")
+    func toothEndPastShine() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        var ends: [Int] = []
+        for k in 0..<8 {
+            let y = 60 + k * 150
+            for i in Self.box(60, y, 100, 75) { g[i] = 45 }
+            for i in Self.box(160, y, 15, 75) { g[i] = 165 }
+            let end = Self.box(175, y, 35, 75)
+            for i in end { g[i] = 135 }
+            ends += end
+        }
+        let t = ShadowRemoval.teeth(g, Self.w, Self.h, dpi: Self.dpi, paper: 235)
+        #expect(t.found)
+        let inCore = ends.filter { t.core[$0] }.count
+        #expect(inCore * 100 >= ends.count * 95, "\(inCore) of \(ends.count) end pixels in the teeth")
+    }
 }

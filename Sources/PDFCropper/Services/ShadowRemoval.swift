@@ -475,8 +475,8 @@ enum ShadowRemoval {
     /// still there after an opening that wipes out anything under 0.03 inch or twice
     /// the page's stroke thick: letters' strokes, rules; dark runs down a column over
     /// 0.8 inch, the spine's band, left out), 0.06 to 0.6 inch tall and at least 0.03
-    /// inch wide, three-fifths solid, within 0.8 inch of the left or right side, and
-    /// four or more of them in one column (all sharing its columns), alike in height and
+    /// inch wide, three-fifths solid, within 0.8 inch (or `within`) of the left or right
+    /// side, and four or more of them in one column (all sharing its columns), alike in height and
     /// width (within half to twice the middle one), apart, at a steady pitch (each gap
     /// one to four times the middle gap, give or take a fifth of a pitch each: teeth
     /// may be missed), spanning 1.5 inch or more (not a dark corner's or a shadow's
@@ -493,12 +493,13 @@ enum ShadowRemoval {
         var boxes: [Blob] = []  // each tooth's box, in the page's pixels
     }
 
-    static func teeth(_ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, paper paperRef: Int, ink: [UInt8]? = nil) -> Teeth {
+    static func teeth(_ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double, paper paperRef: Int, ink: [UInt8]? = nil,
+                      within: Double = 0.8) -> Teeth {
         var core = [Bool](repeating: false, count: w * h), zone = core
         var found = false
         var boxes: [Blob] = []
-        var block: TextLines?? = nil       // the text block in `ink`, measured when first needed
-        let strip = min(w, Int((0.8 * dpi).rounded()))
+        var block: (TextLines, [Blob])?? = nil   // the text block in `ink`, measured when first needed
+        let strip = min(w, Int((within * dpi).rounded()))
         guard strip > 4, h > 4 else { return Teeth(core: core, zone: zone, found: false) }
         // The page's stroke: the middle length of dark runs across its middle half. The
         // opening wipes out anything up to twice that thick (bold letters at the line
@@ -580,16 +581,22 @@ enum ShadowRemoval {
             // more), stand beside the text block (not in it, as bullets starting its lines
             // do), and keep their own pitch, not the lines' (a list's markers, even hanging
             // apart from the block, sit on its lines: three in four or more of them have
-            // their middle within 0.3 of a text height of a line's middle).
+            // their middle within 0.3 of a text height of a line's middle). Lines lying
+            // within the teeth's columns (grown by 0.03 inch) are left out of the block: the
+            // comb's own loops and ends, chained into short lines, are none of its print.
             guard (best[best.count - 1].maxY - best[0].minY) * 2 >= h else { continue }
             if let ink {
-                if block == nil { block = .some(textLines(Components(ink, w, h).blobs, dpi: dpi)) }
-                if let b = block ?? nil {
-                    best = best.filter { x0 + $0.maxX < b.left || x0 + $0.minX > b.right }
+                if block == nil {
+                    let blobs = Components(ink, w, h).blobs
+                    block = .some(textLines(blobs, dpi: dpi).map { ($0, blobs) })
+                }
+                let c0 = x0 + best.map(\.minX).min()! - grow, c1 = x0 + best.map(\.maxX).max()! + grow
+                if let (b, blobs) = block ?? nil, let (left, right, middles) = besideTeeth(b, blobs, c0, c1) {
+                    best = best.filter { x0 + $0.maxX < left || x0 + $0.minX > right }
                     guard best.count >= 4 else { continue }
                     let near = 0.3 * b.t
                     let onLines = best.filter { o in
-                        b.middles.contains { Double(abs($0 - (o.minY + o.maxY) / 2)) <= near }
+                        middles.contains { Double(abs($0 - (o.minY + o.maxY) / 2)) <= near }
                     }.count
                     guard onLines * 4 < best.count * 3 else { continue }
                 }
@@ -602,12 +609,14 @@ enum ShadowRemoval {
             let colMin = best.map(\.minX).min()!, colMax = best.map(\.maxX).max()!
             let paler = blocks(75)
             // A tooth's paler end, past its dark part (curling up to 0.06 inch past its
-            // rows, and reaching up to 0.15 inch past it toward the page), is the tooth too.
+            // rows, and reaching up to 0.2 inch past it toward the page, as it does past a
+            // pale shine), is the tooth too.
             var ends: [Blob] = []
+            let reach = Int((0.2 * dpi).rounded())
             for b in paler.blobs where b.maxX >= colMin && b.minX <= colMax && b.height * 2 >= mid && b.height <= 2 * mid {
                 if let d = best.first(where: { $0.maxY >= b.minY && $0.minY <= b.maxY }) {
                     if b.minY >= d.minY - 2 * grow, b.maxY <= d.maxY + 2 * grow,
-                       right ? b.minX >= d.minX - inward - grow : b.maxX <= d.maxX + inward + grow { ends.append(b) }
+                       right ? b.minX >= d.minX - reach : b.maxX <= d.maxX + reach { ends.append(b) }
                 } else {
                     let r = Double(b.minY - best[best.count / 2].minY) / Double(pitch)
                     if b.width * 2 >= midW, b.width <= 2 * midW, abs(r - r.rounded()) <= 0.2 { teeth.append((b, paler.opened)) }
@@ -640,6 +649,26 @@ enum ShadowRemoval {
         }
         if found { core = LayeredScan.minFilter(core.map { $0 ? 0 : 255 }, w, h, radius: 2).map { $0 == 0 } }
         return Teeth(core: core, zone: zone, found: found, boxes: boxes)
+    }
+
+    /// The text block's sides and its lines' middles (as `textLines` finds them), leaving
+    /// out lines lying within columns `c0` to `c1`; nil when under three lines are left.
+    static func besideTeeth(_ b: TextLines, _ blobs: [Blob], _ c0: Int, _ c1: Int) -> (Int, Int, [Int])? {
+        var lines: [Int: (lo: Int, hi: Int, mids: [Int])] = [:]
+        for k in b.lineMembers {
+            var r = k
+            while b.parent[r] != r { r = b.parent[r] }
+            let o = blobs[k]
+            var l = lines[r] ?? (o.minX, o.maxX, [])
+            l.lo = min(l.lo, o.minX); l.hi = max(l.hi, o.maxX); l.mids.append((o.minY + o.maxY) / 2)
+            lines[r] = l
+        }
+        let kept = lines.values.filter { $0.lo < c0 || $0.hi > c1 }
+        guard kept.count < lines.count else { return (b.left, b.right, b.middles) }
+        guard kept.count >= 3 else { return nil }
+        let starts = kept.map(\.lo).sorted(), ends = kept.map(\.hi).sorted(by: >)
+        let k = max(2, min(5, kept.count / 8))
+        return (starts[k - 1], ends[k - 1], kept.map { $0.mids.sorted()[$0.mids.count / 2] })
     }
 
     /// Black and white: what a binding's teeth leave. Ink on a tooth goes. A mark lying

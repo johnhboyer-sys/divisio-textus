@@ -48,6 +48,63 @@ struct BlackAndWhiteExportTests {
         Double(px.filter { out[$0] == 0 }.count) / Double(max(1, px.count))
     }
 
+    /// Freudenthal's pages: a bitonal scan draws the page's curl at a top corner as a
+    /// scatter of single dots on a grid (every 4 px, fewer away from the corner), with a
+    /// heading in it, 0.2 inch below the crop's top (paper above), and here and there dots
+    /// run together into a wavy line. A halftone picture inside the page is such dots too,
+    /// apart from the sides. Text below.
+    static func ditheredCorner() -> (gray: [UInt8], shadow: [Int], heading: [Int], halftone: [Int], text: [Int]) {
+        var g = [UInt8](repeating: 255, count: w * h)
+        var rng = HCRandom(7)
+        var shadow: [Int] = [], halftone: [Int] = []
+        for y in stride(from: 61, to: 420, by: 4) {
+            for x in stride(from: 480, to: 899, by: 4) {
+                let t = 1 - ((899.0 - Double(x)) * (899.0 - Double(x)) + Double((y - 60) * (y - 60))).squareRoot() / 450
+                if t > 0, rng.chance(t) { shadow.append(y * w + x) }
+            }
+        }
+        for line in [120, 260] {
+            for x in 700..<880 { shadow.append((line + x % 2) * w + x) }
+        }
+        for y in stride(from: 600, to: 800, by: 4) {
+            for x in stride(from: 200, to: 400, by: 4) where rng.chance(0.5) { halftone.append(y * w + x) }
+        }
+        let heading = glyphs(600, 190) + glyphs(645, 190) + glyphs(690, 190)
+        let text = Self.text(in: CGRect(x: 100, y: 850, width: 700, height: 300))
+        for i in shadow + halftone + heading + text { g[i] = 0 }
+        return (g, shadow, heading, halftone, text)
+    }
+
+    @Test("A bitonal scan's dithered corner shadow goes white; a heading in it, text and a halftone stay")
+    func ditheredCornerShadow() {
+        let p = Self.ditheredCorner()
+        let near = Set(p.heading.flatMap { i in (-1...1).flatMap { dy in (-1...1).map { dx in i + dy * Self.w + dx } } })
+        for remove in [false, true] { for tone in [false, true] {
+            let out = BlackAndWhite.ink(gray: p.gray, sharp: nil, tone: tone, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                        removeShadows: remove)
+            let left = p.shadow.filter { out[$0] == 0 && !near.contains($0) }.count
+            #expect(left == 0, "\(left) of \(p.shadow.count) shadow dots left (remove \(remove), tone \(tone))")
+            #expect(inkShare(out, p.heading) > 0.99, "heading \(inkShare(out, p.heading))")
+            #expect(inkShare(out, p.text) > 0.99, "text \(inkShare(out, p.text))")
+            #expect(inkShare(out, p.halftone) == 1, "halftone \(inkShare(out, p.halftone))")
+        }}
+    }
+
+    /// Oesterle's pages judged a picture whole: the dark edges of the pages beneath, a thin
+    /// strip (0.07 inch, gray 60) down the left side and along the foot, make one group on
+    /// the paper map as wide and tall as a plate, though a plate is solid and they are not.
+    @Test("Thin dark strips down the side and along the foot are no picture")
+    func thinEdgeStripsNoPicture() throws {
+        var g = [UInt8](repeating: 235, count: Self.w * Self.h)
+        let text = Self.text(in: CGRect(x: 150, y: 100, width: 600, height: 1000))
+        for y in 200..<Self.h { for x in 0..<21 { g[y * Self.w + x] = 60 } }
+        for y in (Self.h - 21)..<Self.h { for x in 0..<600 { g[y * Self.w + x] = 60 } }
+        for i in text { g[i] = 30 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let out = try #require(BlackAndWhite.page(image, dpi: Self.dpi), "kept as a picture")
+        #expect(inkShare(BlackAndWhite.grayPixels(out), text) > 0.99)
+    }
+
     @Test("A faint glyph inside a soft shadow survives; the shadow goes white")
     func faintGlyphInShadow() {
         var g = Self.shadowed()

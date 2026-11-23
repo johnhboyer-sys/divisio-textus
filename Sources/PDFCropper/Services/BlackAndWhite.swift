@@ -72,6 +72,10 @@ enum BlackAndWhite {
                 }
             }
         }}}}}
+        // A bitonal scan draws a shadow (a page's curl at its corner) as a scatter of
+        // single dots, each on paper the paper map calls clean (see `clearDither`); drawn
+        // again straightened, its dots turn partly gray, so the page may read as tones.
+        if sharp == nil { clearDither(&out, gray, w, h, dpi: dpi) }
         // Bands first, found on all that might be ink, so a band's solid core
         // doesn't carry the speckle around it through as one dark group.
         var candidates = [Bool](repeating: false, count: w * h)
@@ -431,6 +435,73 @@ enum BlackAndWhite {
             if total >= Int(dpi.rounded()) { for k in s.pixels { out[k] = 255; cleared[k] = true } }
         }
         clearRims(&out, cleared, w, h, dpi: dpi)
+    }
+
+    /// A bitonal scan's dithered shadow: specks under a full stop in size, four or more to
+    /// a cell 0.05 inch across, in a field of such cells (touching, or one cell apart) that
+    /// comes within 0.25 inch of the crop's side and covers 0.25 square inch or more, and on
+    /// from it through cells holding a speck (see below). Those specks go white. Ink the
+    /// size of a full stop or more starting in the field (dots run together into a line, a
+    /// heading printed on the shadow) stays when it holds a solid square 2 px across (a
+    /// stroke) and is darker, on a small blur, than the mean 0.05 inch around by a margin, as
+    /// sharp ink on shadow is judged in `ink`: a letter's strokes are both, a line of dots
+    /// neither. A halftone picture apart from the crop's sides stays.
+    static func clearDither(_ out: inout [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) {
+        let cell = max(2, Int((0.05 * dpi).rounded()))
+        let cw = (w + cell - 1) / cell, ch = (h + cell - 1) / cell
+        let minGlyph = max(4, Int((0.012 * dpi * 0.012 * dpi).rounded()))   // a full stop
+        let cc = ShadowRemoval.Components(out, w, h)
+        var specks = [Int](repeating: 0, count: cw * ch)
+        for b in cc.blobs where b.count < minGlyph { specks[(b.minY / cell) * cw + b.minX / cell] += 1 }
+        let dense = specks.map { $0 >= 4 ? UInt8(0) : 255 }
+        guard dense.contains(0) else { return }
+        var field = LayeredScan.maxFilter(LayeredScan.minFilter(dense, cw, ch, radius: 1), cw, ch, radius: 1).map { $0 == 0 }
+        let edge = max(1, Int((0.25 * dpi / Double(cell)).rounded()))
+        let least = Int((0.25 * dpi * dpi / Double(cell * cell)).rounded())
+        var shadow = [Bool](repeating: false, count: cw * ch)
+        for start in field.indices where field[start] {
+            field[start] = false
+            var stack = [start], group: [Int] = [], side = false
+            while let k = stack.popLast() {
+                group.append(k)
+                let x = k % cw, y = k / cw
+                if x < edge || y < edge || x >= cw - edge || y >= ch - edge { side = true }
+                for ny in max(0, y - 1)...min(ch - 1, y + 1) {
+                    for nx in max(0, x - 1)...min(cw - 1, x + 1) where field[ny * cw + nx] {
+                        field[ny * cw + nx] = false
+                        stack.append(ny * cw + nx)
+                    }
+                }
+            }
+            if side, group.count >= least { for k in group { shadow[k] = true } }
+        }
+        // Where the shadow fades, its dots thin out: the field reaches on through cells
+        // holding a speck within two cells of it.
+        var stack = shadow.indices.filter { shadow[$0] }
+        while let k = stack.popLast() {
+            let x = k % cw, y = k / cw
+            for ny in max(0, y - 2)...min(ch - 1, y + 2) {
+                for nx in max(0, x - 2)...min(cw - 1, x + 2) where !shadow[ny * cw + nx] && specks[ny * cw + nx] > 0 {
+                    shadow[ny * cw + nx] = true
+                    stack.append(ny * cw + nx)
+                }
+            }
+        }
+        guard shadow.contains(true) else { return }
+        let blur = BoxMeans(gray, w, h, radius: Int((0.008 * dpi).rounded()), sparse: true)
+        let around = BoxMeans(gray, w, h, radius: Int((0.05 * dpi).rounded()), sparse: true)
+        for (k, b) in cc.blobs.enumerated() where shadow[(b.minY / cell) * cw + b.minX / cell] {
+            if b.count >= minGlyph {
+                var sumBlur = 0, sumAround = 0
+                let solid = cc.count(k, where: { i in
+                    sumBlur += blur.at(i); sumAround += around.at(i)
+                    return i % w < w - 1 && i / w < h - 1 && out[i + 1] == 0 && out[i + w] == 0 && out[i + w + 1] == 0
+                })
+                let mb = sumBlur / b.count, ma = sumAround / b.count
+                guard solid == 0 || mb >= ma - max(20, ma / 6) else { continue }
+            }
+            cc.clear(k, in: &out)
+        }
     }
 
     /// Paper at least this light is clean: no shadow on it to speak of. Judged
@@ -1098,7 +1169,8 @@ enum BlackAndWhite {
     }
 
     /// A picture on the paper map: a group of touching places at least 20% darker
-    /// than the page's usual paper, at least 0.4 inch each way, not a band or shadow
+    /// than the page's usual paper, solid, at least 0.4 inch each way, not reaching a
+    /// binding's teeth (see `pictureCells`), not a band or shadow
     /// (near a side, with the scan `gray` dark at the crop's edge beside it: it runs
     /// off the crop, though a plate in it, at the edge or joining the shadow, still
     /// counts: see `picturesInShading`), and over 0.15 square inch in all. Print is gone
@@ -1130,7 +1202,30 @@ enum BlackAndWhite {
         var small = [UInt8](repeating: 255, count: sw * sh)
         for y in 0..<sh { for x in 0..<sw { small[y * sw + x] = paper[(y * step) * w + x * step] } }
         let usual = cleanLevel(small) + 20
-        var mark = small.map { Int($0) * 5 <= usual * 4 }
+        // A picture is solid: what is under 0.14 inch thick all through (the thin dark edge
+        // of the pages beneath, down the side or along the foot, which the paper map follows
+        // however narrow) is none. Beyond the crop counts as paper.
+        let thin = max(1, Int((0.06 * dpi / Double(step)).rounded()))
+        let pw = sw + 2 * thin, ph = sh + 2 * thin
+        var padded = [UInt8](repeating: 255, count: pw * ph)
+        for y in 0..<sh { for x in 0..<sw where Int(small[y * sw + x]) * 5 <= usual * 4 { padded[(y + thin) * pw + x + thin] = 0 } }
+        let opened = LayeredScan.minFilter(LayeredScan.maxFilter(padded, pw, ph, radius: thin), pw, ph, radius: thin)
+        var mark = [Bool](repeating: false, count: sw * sh)
+        for y in 0..<sh { for x in 0..<sw { mark[y * sw + x] = opened[(y + thin) * pw + x + thin] == 0 } }
+        // A group reaching a binding's teeth (`ShadowRemoval.teeth`, looked for within 2
+        // inches of a side, as a crop can take in more than an inch beyond the comb; their
+        // zone grown by 0.04 inch) is the binding and its shading, no picture: the teeth,
+        // joined by the page's thin edge down the side, the shadow at its foot or the comb's
+        // back, can make a group the size of a plate.
+        var byComb: [Bool]? = nil
+        if mark.contains(true) {
+            let comb = ShadowRemoval.teeth(gray, w, h, dpi: dpi, paper: cleanLevel(paper) + 20, within: 2)
+            if comb.found {
+                var zone = [UInt8](repeating: 255, count: sw * sh)
+                for y in 0..<sh { for x in 0..<sw where comb.zone[(y * step) * w + x * step] { zone[y * sw + x] = 0 } }
+                byComb = LayeredScan.minFilter(zone, sw, sh, radius: max(1, Int((0.04 * dpi / Double(step)).rounded()))).map { $0 == 0 }
+            }
+        }
         var picture = [Bool](repeating: false, count: sw * sh)
         var group: [Int] = []
         let cellDPI = dpi / Double(step)
@@ -1153,6 +1248,7 @@ enum BlackAndWhite {
                     stack.append(ny * sw + nx)
                 }
             }
+            if let byComb, group.contains(where: { byComb[$0] }) { continue }
             // A band or shadow runs off the crop: on 30% or more of its rows (or columns)
             // the scan is as dark without a break from the crop's edge inward for 0.1
             // inch. A picture near a side has paper between it and the edge, even with a
