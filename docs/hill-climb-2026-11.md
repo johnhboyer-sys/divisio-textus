@@ -225,7 +225,7 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   plate); a few clumps of dither stay; 17 Oesterle pages in Color/Gray with Remove shadows keep
   thin edge strips; a 1-px rule at 600 DPI shorter than about 0.09 in in the dither fringe goes.
 
-## Crop to the page's edge (diagnosed and built 2026-11-23, branch claude/crop-page-edge-c4cd8b)
+## Crop to the page's edge (diagnosed, built, merged 2026-11-23)
 
 John: "the lack of trimming". His target (a): trim to the page's own edge, cutting off scanner
 bed and comb strip and keeping the book's margins (not tight to the text). All 8 books open in
@@ -255,7 +255,7 @@ scan 35's split too? Pages of slightly different export size OK? Replaces his 20
 that bed is the user's to trim? Crops and the per-page table:
 ~/Developer/divisio-hillclimb/results/crop-edge/.
 
-**Built (2026-11-23), not merged.** John's calls: comb books keep cropping to the comb's
+**Built and merged (2026-11-23).** John's calls: comb books keep cropping to the comb's
 middle, Remove shadows clears the teeth ("if user wants to keep teeth, that's his
 business"); one size for the book, a page narrower only where its scan shows less of the
 sheet; auto crop leaves out bed (the 11-20 note was about shadow removal). Changes:
@@ -273,7 +273,9 @@ Pages with >2% bed at an outer edge, base → after: Wallace 53 → 0, Riezler 8
 (every 4th page) 1 → 0, Freudenthal 54 → 19 (2–4% strips where the band reads as print);
 Cherniss, both Simons unchanged; Smith loses a bed strip at the foot on 29 sides. Synthetic
 printCut 5 → 5; the 22 real pages whose glyph-cut counts rose were triaged: fold dashes,
-edge streaks, bed corners. 543 tests pass. Found, not fixed: Riezler 42–56 split runs
-through the left page's text (same on main). Before/after crops:
+edge streaks, bed corners. 543 tests pass. Top and foot (bedV in the score): 3 of 1,524
+crops keep >2% bed, all Freudenthal cover scans. Riezler's PDF has a CropBox well inside
+its MediaBox: render it with `pdftoppm -cropbox` (a MediaBox render put its splits in the
+wrong place and showed bed the app never sees). Merged and installed (main 03d681f). Crops:
 https://claude.ai/artifact/BTcQZH5FUw6urebXZKqD29 . Scores: results/crop-edge-base, crop-edge-r5.
 

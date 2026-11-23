@@ -53,32 +53,37 @@ struct HillClimbSplitTests {
         return r.insetBy(dx: -pad, dy: -pad)
     }
 
-    /// Scanner bed kept in a crop, at its left and right sides, as shares of the
-    /// crop's width: from each side inward, a light lead-in of at most 3% (the
-    /// glass's white frame), then columns at least 80% darker than half the paper.
-    /// Zero where no such band starts within the lead-in.
-    private func bedShare(_ gray: [UInt8], _ w: Int, _ h: Int, _ r: CGRect) -> [Double] {
+    /// Scanner bed kept in a crop, at its left and right sides (`rows`: its top and
+    /// foot), as shares of the crop's width (height): from each side inward, a light
+    /// lead-in of at most 3% (the glass's white frame), then lines at least 80%
+    /// darker than half the paper. Zero where no such band starts within the lead-in.
+    private func bedShare(_ gray: [UInt8], _ w: Int, _ h: Int, _ r: CGRect, rows: Bool = false) -> [Double] {
         let x0 = max(0, Int(r.minX)), x1 = min(w, Int(r.maxX)), y0 = max(0, Int(r.minY)), y1 = min(h, Int(r.maxY))
         guard x1 - x0 > 10, y1 - y0 > 10 else { return [0, 0] }
         var sample: [UInt8] = []
         for y in stride(from: y0, to: y1, by: 4) { for x in stride(from: x0, to: x1, by: 4) { sample.append(gray[y * w + x]) } }
         sample.sort()
         let dark = Int(sample[sample.count * 9 / 10]) / 2
-        func band(_ x: Int) -> Bool {
+        func band(_ i: Int) -> Bool {
             var d = 0
-            for y in y0..<y1 where Int(gray[y * w + x]) < dark { d += 1 }
+            if rows {
+                for x in x0..<x1 where Int(gray[i * w + x]) < dark { d += 1 }
+                return d * 5 >= (x1 - x0) * 4
+            }
+            for y in y0..<y1 where Int(gray[y * w + i]) < dark { d += 1 }
             return d * 5 >= (y1 - y0) * 4
         }
-        let width = x1 - x0, leadIn = max(1, width * 3 / 100)
+        let (lo, hi) = rows ? (y0, y1) : (x0, x1)
+        let length = hi - lo, leadIn = max(1, length * 3 / 100)
         func side(_ start: Int, _ step: Int) -> Double {
-            var x = start, k = 0
-            while k <= leadIn && !band(x) { x += step; k += 1 }
+            var i = start, k = 0
+            while k <= leadIn && !band(i) { i += step; k += 1 }
             guard k <= leadIn else { return 0 }
             var gap = 0, last = k
-            while k < width && gap <= 2 { if band(x) { last = k; gap = 0 } else { gap += 1 }; x += step; k += 1 }
-            return HillClimb.r(Double(last + 1) / Double(width), 4)
+            while k < length && gap <= 2 { if band(i) { last = k; gap = 0 } else { gap += 1 }; i += step; k += 1 }
+            return HillClimb.r(Double(last + 1) / Double(length), 4)
         }
-        return [side(x0, 1), side(x1 - 1, -1)]
+        return [side(lo, 1), side(hi - 1, -1)]
     }
 
     private func scoreSynthetic(into records: inout [[String: Any]]) async -> [String: Any] {
@@ -285,6 +290,7 @@ struct HillClimbSplitTests {
                     let cropCutsAll = HCGlyphDetector.cutByCrops(straightAll, rects)
                     record["glyphs"] = straightGlyphs.count
                     record["bed"] = rects.map { bedShare(straightGray, w, h, $0) }
+                    record["bedV"] = rects.map { bedShare(straightGray, w, h, $0, rows: true) }
                     record["splitCutsGlyphs"] = splitCuts
                     record["cropCutsGlyphs"] = cropCuts
                     record["splitCutsGlyphsAll"] = splitCutsAll
