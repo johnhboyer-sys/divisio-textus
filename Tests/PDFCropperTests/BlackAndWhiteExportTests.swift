@@ -90,6 +90,96 @@ struct BlackAndWhiteExportTests {
         }}
     }
 
+    /// The corner shadow of `ditheredCorner` alone: dots every 4 px, thinning away from the
+    /// top right corner (the top left, with `left`) over 1.5 inch.
+    static func ditherField(left: Bool = false) -> [Int] {
+        var rng = HCRandom(7)
+        var px: [Int] = []
+        for y in stride(from: 61, to: 420, by: 4) {
+            for x in stride(from: 480, to: 899, by: 4) {
+                let t = 1 - ((899.0 - Double(x)) * (899.0 - Double(x)) + Double((y - 60) * (y - 60))).squareRoot() / 450
+                if t > 0, rng.chance(t) { px.append(y * w + (left ? w - 1 - x : x)) }
+            }
+        }
+        return px
+    }
+
+    /// Lines of "öi." in a box: an "o" with a diaeresis 3 px above it, an "i" with its dot
+    /// 4 px above, and a full stop, each dot 3 px square (under a full stop's least size).
+    /// The letters' pixels, then the dots'.
+    static func dottedText(in box: CGRect) -> (letters: [Int], dots: [Int]) {
+        var letters = Set<Int>(), dots = Set<Int>()
+        func bar(_ x0: Int, _ y0: Int, _ bw: Int, _ bh: Int, _ into: inout Set<Int>) {
+            for yy in y0..<(y0 + bh) { for xx in x0..<(x0 + bw) { into.insert(yy * w + xx) } }
+        }
+        for y in stride(from: Int(box.minY), to: Int(box.maxY) - 40, by: 50) {
+            for x in stride(from: Int(box.minX), to: Int(box.maxX) - 45, by: 45) {
+                bar(x, y + 8, 3, 22, &letters); bar(x + 17, y + 8, 3, 22, &letters)
+                bar(x, y + 8, 20, 3, &letters); bar(x, y + 27, 20, 3, &letters)      // o
+                bar(x + 4, y + 2, 3, 3, &dots); bar(x + 13, y + 2, 3, 3, &dots)       // its diaeresis
+                bar(x + 26, y + 10, 3, 20, &letters); bar(x + 26, y + 3, 3, 3, &dots)  // i
+                bar(x + 34, y + 27, 3, 3, &dots)                                       // a full stop
+            }
+        }
+        return (Array(letters), Array(dots))
+    }
+
+    /// Finding: the field grew on through any cell holding a speck, so light noise led it
+    /// into the text, and there every mark under a full stop's size went.
+    @Test("Dots of print beside a dithered shadow stay: full stops, i dots, a diaeresis")
+    func dotsBesideDitherStay() {
+        var g = [UInt8](repeating: 255, count: Self.w * Self.h)
+        let field = Self.ditherField()
+        let text = Self.dottedText(in: CGRect(x: 100, y: 440, width: 720, height: 300))
+        var rng = HCRandom(3)
+        var noise: [Int] = []
+        for _ in 0..<80 { noise.append(rng.int(380, 434) * Self.w + rng.int(420, 890)) }
+        for i in field + noise + text.letters + text.dots { g[i] = 0 }
+        for remove in [false, true] {
+            let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: false, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                        removeShadows: remove)
+            #expect(inkShare(out, text.letters) == 1, "letters \(inkShare(out, text.letters)) (remove \(remove))")
+            #expect(inkShare(out, text.dots) == 1, "dots \(inkShare(out, text.dots)) (remove \(remove))")
+            let left = field.filter { out[$0] == 0 }.count
+            #expect(left * 20 < field.count, "\(left) of \(field.count) shadow dots left (remove \(remove))")
+        }
+    }
+
+    /// Finding: ink the size of a full stop or more starting in the field went when it held
+    /// no solid 2 px square, so a printed rule 1 px thick went, out beyond the field too.
+    @Test("A rule 1 px thick running out of a dithered shadow stays")
+    func thinRuleOutOfDitherStays() {
+        var g = [UInt8](repeating: 255, count: Self.w * Self.h)
+        let field = Self.ditherField(left: true)
+        let rule = (200...800).map { 203 * Self.w + $0 }       // between the field's rows of dots
+        for i in field + rule { g[i] = 0 }
+        for remove in [false, true] {
+            let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: false, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                        removeShadows: remove)
+            #expect(inkShare(out, rule) == 1, "rule \(inkShare(out, rule)) (remove \(remove))")
+        }
+    }
+
+    /// Finding: the field's growth had no end, so a sparse line of specks led it from the
+    /// corner into a halftone picture well inside the page.
+    @Test("A halftone joined to a dithered shadow by a line of specks stays")
+    func halftoneJoinedBySpecksStays() {
+        var g = [UInt8](repeating: 255, count: Self.w * Self.h)
+        let field = Self.ditherField()
+        var rng = HCRandom(5)
+        var halftone: [Int] = []
+        for y in stride(from: 650, to: 850, by: 4) {
+            for x in stride(from: 150, to: 350, by: 4) where rng.chance(0.5) { halftone.append(y * Self.w + x) }
+        }
+        let chain = (0...15).map { k in (330 + 20 * k) * Self.w + 650 - 18 * k }   // (650, 330) to (380, 630)
+        for i in field + halftone + chain { g[i] = 0 }
+        for remove in [false, true] {
+            let out = BlackAndWhite.ink(gray: g, sharp: nil, tone: false, width: Self.w, height: Self.h, dpi: Self.dpi,
+                                        removeShadows: remove)
+            #expect(inkShare(out, halftone) == 1, "halftone \(inkShare(out, halftone)) (remove \(remove))")
+        }
+    }
+
     /// Oesterle's pages judged a picture whole: the dark edges of the pages beneath, a thin
     /// strip (0.07 inch, gray 60) down the left side and along the foot, make one group on
     /// the paper map as wide and tall as a plate, though a plate is solid and they are not.

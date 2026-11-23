@@ -442,11 +442,15 @@ enum BlackAndWhite {
     /// A bitonal scan's dithered shadow: specks under a full stop in size, four or more to
     /// a cell 0.05 inch across, in a field of such cells (touching, or one cell apart) that
     /// comes within 0.25 inch of the crop's side and covers 0.25 square inch or more, and on
-    /// from it through cells holding a speck (see below). Those specks go white. Ink the
-    /// size of a full stop or more starting in the field stays when it holds a solid square
-    /// 2 px across, as any stroke of print does (a heading printed on the shadow), and goes
-    /// when it holds none (dots run together into a line). A halftone picture apart from
-    /// the crop's sides stays.
+    /// from it, up to 0.3 inch, through cells holding a speck (see below). Those specks go
+    /// white. Ink the size of a full stop or more starting in the field stays when it holds a
+    /// solid square 2 px across, as any stroke of print does (a heading printed on the
+    /// shadow), or a straight run of 0.05 inch (a rule or a letter of thin strokes), and goes
+    /// when it holds neither (dots run together into a line). A speck holding a solid 2 px
+    /// square within 0.04 inch of such print or of a letter beside the field stays (a full
+    /// stop, an i's dot or a diaeresis) unless three more such specks crowd it there, as
+    /// the shadow's dots do. A halftone picture apart from the crop's sides stays, and the
+    /// field reaches neither into it nor beside it.
     static func clearDither(_ out: inout [UInt8], _ w: Int, _ h: Int, dpi: Double) {
         let cell = max(2, Int((0.05 * dpi).rounded()))
         let cw = (w + cell - 1) / cell, ch = (h + cell - 1) / cell
@@ -460,6 +464,7 @@ enum BlackAndWhite {
         let edge = max(1, Int((0.25 * dpi / Double(cell)).rounded()))
         let least = Int((0.25 * dpi * dpi / Double(cell * cell)).rounded())
         var shadow = [Bool](repeating: false, count: cw * ch)
+        var halftone = [UInt8](repeating: 255, count: cw * ch)
         for start in field.indices where field[start] {
             field[start] = false
             var stack = [start], group: [Int] = [], side = false
@@ -474,29 +479,79 @@ enum BlackAndWhite {
                     }
                 }
             }
-            if side, group.count >= least { for k in group { shadow[k] = true } }
+            if side, group.count >= least { for k in group { shadow[k] = true } } else { for k in group { halftone[k] = 0 } }
         }
         // Where the shadow fades, its dots thin out: the field reaches on through cells
-        // holding a speck within two cells of it.
+        // holding a speck within two cells of it, but no further than 0.3 inch from where
+        // it is dense, and never into a halftone or the cell beside one.
+        let reach = LayeredScan.minFilter(shadow.map { $0 ? 0 : 255 }, cw, ch,
+                                          radius: max(1, Int((0.3 * dpi / Double(cell)).rounded())))
+        let picture = LayeredScan.minFilter(halftone, cw, ch, radius: 1)
         var stack = shadow.indices.filter { shadow[$0] }
         while let k = stack.popLast() {
             let x = k % cw, y = k / cw
             for ny in max(0, y - 2)...min(ch - 1, y + 2) {
-                for nx in max(0, x - 2)...min(cw - 1, x + 2) where !shadow[ny * cw + nx] && specks[ny * cw + nx] > 0 {
-                    shadow[ny * cw + nx] = true
-                    stack.append(ny * cw + nx)
+                for nx in max(0, x - 2)...min(cw - 1, x + 2) {
+                    let n = ny * cw + nx
+                    guard !shadow[n], specks[n] > 0, reach[n] == 0, picture[n] != 0 else { continue }
+                    shadow[n] = true
+                    stack.append(n)
                 }
             }
         }
-        for (k, b) in cc.blobs.enumerated() where shadow[(b.minY / cell) * cw + b.minX / cell] {
-            if b.count >= minGlyph {
-                let solid = cc.count(k, where: { i in
-                    i % w < w - 1 && i / w < h - 1 && out[i + 1] == 0 && out[i + w] == 0 && out[i + w + 1] == 0
-                })
-                guard solid == 0 else { continue }
-            }
-            cc.clear(k, in: &out)
+        func solid(_ k: Int) -> Bool {
+            cc.count(k, where: { i in
+                i % w < w - 1 && i / w < h - 1 && out[i + 1] == 0 && out[i + w] == 0 && out[i + w + 1] == 0
+            }) > 0
         }
+        // Print: what stays of the ink the size of a full stop or more, up to 0.3 inch each
+        // way, filed under each cell its box covers.
+        let run = max(4, Int((0.05 * dpi).rounded())), most = Int((0.3 * dpi).rounded())
+        let near = max(2, Int((0.04 * dpi).rounded()))
+        var gone: [Int] = [], small: [Int] = []
+        var letters = [[Int]](repeating: [], count: cw * ch)
+        for (k, b) in cc.blobs.enumerated() {
+            let inShadow = shadow[(b.minY / cell) * cw + b.minX / cell]
+            if b.count < minGlyph {
+                if inShadow { small.append(k) }
+                continue
+            }
+            if inShadow, !solid(k), !cc.hasStroke(k, run, in: out) { gone.append(k); continue }
+            guard b.width <= most, b.height <= most else { continue }
+            for cy in (b.minY / cell)...(b.maxY / cell) { for cx in (b.minX / cell)...(b.maxX / cell) { letters[cy * cw + cx].append(k) } }
+        }
+        // The specks holding a solid 2 px square, filed the same way.
+        var dots = [[Int]](repeating: [], count: cw * ch), dotted: [Int] = []
+        for k in small {
+            let b = cc.blobs[k]
+            guard solid(k) else { gone.append(k); continue }
+            dotted.append(k)
+            for cy in (b.minY / cell)...(b.maxY / cell) { for cx in (b.minX / cell)...(b.maxX / cell) { dots[cy * cw + cx].append(k) } }
+        }
+        // How many of the blobs filed in `filed`, other than `k`, lie within `near` of it (up to `limit`).
+        func beside(_ k: Int, _ filed: [[Int]], limit: Int) -> Int {
+            let b = cc.blobs[k]
+            var seen: [Int] = []
+            for cy in max(0, (b.minY - near) / cell)...min(ch - 1, (b.maxY + near) / cell) {
+                for cx in max(0, (b.minX - near) / cell)...min(cw - 1, (b.maxX + near) / cell) {
+                    for l in filed[cy * cw + cx] where l != k && !seen.contains(l) {
+                        let a = cc.blobs[l]
+                        let dx = max(0, a.minX - b.maxX - 1, b.minX - a.maxX - 1)
+                        let dy = max(0, a.minY - b.maxY - 1, b.minY - a.maxY - 1)
+                        guard max(dx, dy) <= near else { continue }
+                        seen.append(l)
+                        if seen.count >= limit { return seen.count }
+                    }
+                }
+            }
+            return seen.count
+        }
+        // A dot of print stays beside its letter; one among three or more such specks
+        // within reach is the shadow's (a diaeresis has one other, an ellipsis two).
+        for k in dotted {
+            if beside(k, letters, limit: 1) == 0 || beside(k, dots, limit: 3) >= 3 { gone.append(k) }
+        }
+        for k in gone { cc.clear(k, in: &out) }
     }
 
     /// Paper at least this light is clean: no shadow on it to speak of. Judged
