@@ -1232,7 +1232,8 @@ struct GrokReproCorpus {
 /// GROK_PAGES=1 prints the pages' hashes without it; GROK_MODES=bw,... runs only those
 /// labels. Each export's wall time is printed (`GROKTIME`). GROK_PNG=<folder> with
 /// GROK_PNG_PAGES=Book:k,... (output page, 1-based) draws those pages of each mode there at
-/// their own resolution, `<Book>-p<k>-<label>.png`.
+/// their own resolution, `<Book>-p<k>-<label>.png`. With per-page hashes, `GROKBPC` gives each
+/// page's images' bits per component (1 for a page made black and white).
 @Suite("Grok off-mode hashes", .serialized,
        .enabled(if: ProcessInfo.processInfo.environment["GROK_OFFHASH"] != nil
                     && ProcessInfo.processInfo.environment["HILLCLIMB_DIR"] != nil))
@@ -1265,12 +1266,15 @@ struct GrokOffHashes {
                     var res: CGPDFDictionaryRef?, xo: CGPDFDictionaryRef?
                     guard CGPDFDictionaryGetDictionary(dict, "Resources", &res), let res,
                           CGPDFDictionaryGetDictionary(res, "XObject", &xo), let xo else { continue }
-                    var datas: [Data] = []
+                    var datas: [Data] = [], bits: [Int] = []
                     CGPDFDictionaryApplyBlock(xo, { _, object, _ in
                         var stream: CGPDFStreamRef?
                         var format = CGPDFDataFormat.raw
                         if CGPDFObjectGetValue(object, .stream, &stream), let stream,
                            let data = CGPDFStreamCopyData(stream, &format) { datas.append(data as Data) }
+                        var bpc: CGPDFInteger = 0
+                        if let stream, let d = CGPDFStreamGetDictionary(stream),
+                           CGPDFDictionaryGetInteger(d, "BitsPerComponent", &bpc) { bits.append(Int(bpc)) }
                         return true
                     }, nil)
                     var page = SHA256()
@@ -1282,6 +1286,7 @@ struct GrokOffHashes {
                        let im = PDFRenderer.renderCGImage(page: pdf, dpi: Double(px) * 72 / pdf.bounds(for: .cropBox).width) {
                         HillClimb.png(im, to: URL(fileURLWithPath: dir).appendingPathComponent("\(name)-p\(k)-\(label).png"))
                     }
+                    if perPage { print("GROKBPC \(name) \(label) \(k) \(bits.sorted())") }
                     if perPage { print("GROKPAGE \(name) \(label) \(k) \(page.finalize().map { String(format: "%02x", $0) }.joined().prefix(16))") }
                 }
                 try? FileManager.default.removeItem(at: out)
