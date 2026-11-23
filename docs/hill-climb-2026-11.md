@@ -209,3 +209,9 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   clears a margin digit within 0.25 in of the side if a speck sits near it; Flatten can miss an
   edge piece cut by the crop, and a dark crease touching letters can bend a straight line;
   stack thumbnails show the page before straightening.
+- John's calls, 2026-11-23: an edge picture on a layered scan exporting as the 1-bit text layer
+  in Color/Gray off stays for this release (off-mode output keeps its byte match). After his
+  review of claude/finish: merge to main, reinstall, then start the erase tool. Later, as their
+  own jobs after the install: Cherniss B&W speed (about 17 min, one core) and the scanner bed
+  auto leaves in (Wallace: every left page, a band 23–32% of the page wide; Freudenthal: thin
+  strips on 7 of 16 sampled pages; Riezler: one sliver). Same on main; cause not yet found.
