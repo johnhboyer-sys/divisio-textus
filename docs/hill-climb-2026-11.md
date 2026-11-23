@@ -196,3 +196,16 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   as the 1-bit text layer (fixing it changes off-mode output). Codex's limits, left as rare: a
   long rim joined to kept print stays; a narrow letter by a band on a page too sparse for line
   finding (title page, short caption) gets no extra protection (same as before the fix).
+- Grok review of all changes (claude/finish vs main, 2026-11-22, three static reads). Fixed:
+  Flatten could push the gutter end of a line out when the first or last baseline sits within
+  a pitch of the crop edge; such a side now stays curved (claude/flatten-edge dbb34e8, Codex: no
+  findings; Smith 392/488 flattened, unchanged). Checked and false: text operators break image
+  DPI reading (tested: the scanner drops leftover operands); Export grid freezes with the new
+  options (timed: same cost as plain Color). By design: layered scans export their text layer
+  in Color/Gray off; Keep page resolution uses 300 DPI for a page with no image; the new
+  options aren't remembered across launches. Left as rare: B&W clears a rule within 0.05 in of
+  the crop side or inside a dark top shadow, and a faint colour-layer-only accent next to a
+  letter; Remove shadows can lift gray print where the fold pulls the paper map below it, and
+  clears a margin digit within 0.25 in of the side if a speck sits near it; Flatten can miss an
+  edge piece cut by the crop, and a dark crease touching letters can bend a straight line;
+  stack thumbnails show the page before straightening.
