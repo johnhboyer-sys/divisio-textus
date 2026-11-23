@@ -120,6 +120,49 @@ struct FlattenTests {
         #expect(after * 100 >= before * 97 && onEdge == 0, "capital ink \(before) -> \(after), \(onEdge) on the edge row")
     }
 
+    /// The leaf with a raised capital at the gutter end of its first line, or a long tail
+    /// below the gutter end of its last line, curled so the lines bend into the gutter (down
+    /// at the top, up at the bottom); the running head, the short last line and the folio
+    /// gone, so the crop can sit tight on the text.
+    static func markedLeaf(top: Bool) throws -> (g: [UInt8], w: Int, h: Int) {
+        var l = try #require(leaf())
+        #expect(l.right, "the first leaf has its gutter on the right")
+        paint(&l.g, l.w, 0, 100, l.w, 180, 255)
+        paint(&l.g, l.w, 0, 2375, l.w, l.h, 255)
+        if top {
+            paint(&l.g, l.w, 1740, 200, 1810, 275, 255)
+            paint(&l.g, l.w, 1750, 200, 1790, 257, 0)
+        } else {
+            paint(&l.g, l.w, 1740, 2328, 1810, 2375, 255)
+            paint(&l.g, l.w, 1750, 2347, 1790, 2409, 0)
+        }
+        let wp = HillClimbFlattenTests.Warp(band: 0.4, tilt: -30, drop: 0, squash: 0)
+        return (HillClimbFlattenTests.warp(l.g, l.w, l.h, wp, gutterOnRight: true), l.w, l.h)
+    }
+
+    @Test("Review 3: a raised capital by the gutter stays in a crop tight on the first line")
+    func capitalTightTop() throws {
+        let l = try Self.markedLeaf(top: true)
+        // The crop 2 px above the first ink: the first baseline is under a line pitch below it.
+        let first = try #require((0..<l.h).first { y in (0..<l.w).contains { l.g[y * l.w + $0] < 128 } })
+        let top = first - 2
+        let before = Self.inkCount(l.g, l.w, 1740, top, 1800, top + 55)
+        let out = Flatten.pages(Self.image(l.g, l.w, l.h), regions: [(CGRect(x: 0, y: top, width: l.w, height: l.h - top), true)])
+        let after = Self.inkCount(out.map { HillClimb.gray($0.image) } ?? l.g, l.w, 1740, top, 1800, top + 55)
+        #expect(before > 1500 && after * 100 >= before * 97, "capital ink \(before) -> \(after)")
+    }
+
+    @Test("Review 3: a long tail by the gutter stays in a crop tight on the last line")
+    func tailTightBottom() throws {
+        let l = try Self.markedLeaf(top: false)
+        let last = try #require((0..<l.h).last { y in (0..<l.w).contains { l.g[y * l.w + $0] < 128 } })
+        let bottom = last + 3
+        let before = Self.inkCount(l.g, l.w, 1740, bottom - 70, 1800, bottom)
+        let out = Flatten.pages(Self.image(l.g, l.w, l.h), regions: [(CGRect(x: 0, y: 0, width: l.w, height: bottom), true)])
+        let after = Self.inkCount(out.map { HillClimb.gray($0.image) } ?? l.g, l.w, 1740, bottom - 70, 1800, bottom)
+        #expect(before > 1500 && after * 100 >= before * 97, "tail ink \(before) -> \(after)")
+    }
+
     @Test("Review b: two close columns with offset baselines are not bent")
     func offsetColumns() throws {
         let l = try #require(Self.leaf())
