@@ -225,7 +225,7 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   plate); a few clumps of dither stay; 17 Oesterle pages in Color/Gray with Remove shadows keep
   thin edge strips; a 1-px rule at 600 DPI shorter than about 0.09 in in the dither fringe goes.
 
-## Next: crop to the page's edge (diagnosed 2026-11-23, not started)
+## Crop to the page's edge (diagnosed and built 2026-11-23, branch claude/crop-page-edge-c4cd8b)
 
 John: "the lack of trimming". His target (a): trim to the page's own edge, cutting off scanner
 bed and comb strip and keeping the book's margins (not tight to the text). All 8 books open in
@@ -254,3 +254,26 @@ Open for John: cut at the teeth or 0.12 in past (loops showing through holes)? F
 scan 35's split too? Pages of slightly different export size OK? Replaces his 2026-11-20 note
 that bed is the user's to trim? Crops and the per-page table:
 ~/Developer/divisio-hillclimb/results/crop-edge/.
+
+**Built (2026-11-23), not merged.** John's calls: comb books keep cropping to the comb's
+middle, Remove shadows clears the teeth ("if user wants to keep teeth, that's his
+business"); one size for the book, a page narrower only where its scan shows less of the
+sheet; auto crop leaves out bed (the 11-20 note was about shadow removal). Changes:
+- `brokenByPaper`: a column's paper ends count as the glass's frame only when both are under
+  3%, as wide as the strip at the scan's side (within 2 px), round 98% solid bed (Codex: a
+  plate with thin even margins stayed print-loss until the last two conditions).
+- `page()`: the text block's 1.2% padding stops at a seen sheet edge (ink never cut).
+- `detectGutter`: a faint, drifting fold line in a white gap is the fold (Freudenthal: the
+  split had taken the middle of the gap's wider half, 2% off).
+- `placeSheets`: a measured-size box stops at the sheet's trusted outer edge and the found
+  crop's outer edge, never inside the text; a typed size is the user's.
+- `splitMoves`: a side whose "print" fills its half from the scan's top to foot (a blank
+  page's edge clutter, Oesterle scan 35) is blank too, and the split only moves to grow it.
+Pages with >2% bed at an outer edge, base → after: Wallace 53 → 0, Riezler 8 → 0, Oesterle
+(every 4th page) 1 → 0, Freudenthal 54 → 19 (2–4% strips where the band reads as print);
+Cherniss, both Simons unchanged; Smith loses a bed strip at the foot on 29 sides. Synthetic
+printCut 5 → 5; the 22 real pages whose glyph-cut counts rose were triaged: fold dashes,
+edge streaks, bed corners. 543 tests pass. Found, not fixed: Riezler 42–56 split runs
+through the left page's text (same on main). Before/after crops:
+https://claude.ai/artifact/BTcQZH5FUw6urebXZKqD29 . Scores: results/crop-edge-base, crop-edge-r5.
+

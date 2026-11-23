@@ -976,16 +976,29 @@ final class AppModel: ObservableObject {
     /// A blank page next to the gutter leaves no white gap to find the split by.
     /// The spreads in `sides` (what an analysis pass just set, with which of
     /// their sides it found blank) whose split lies far from the book's usual
-    /// one beside a blank page get the usual split instead; they must then be
+    /// one beside a blank page (or one holding only edge clutter) get the usual split instead; they must then be
     /// analysed again there (each half's angle and text depend on it). A book's
     /// gutter can genuinely move from spread to spread, so only those.
     private func splitMoves(_ sides: [BookPage.ID: AnalysisClaim]) -> [(id: BookPage.ID, index: Int, split: Double)] {
         let spreads = pages.indices.filter { pages[$0].classification == .spread }
         guard spreads.count >= 3 else { return [] }
         let usualSplit = spreads.map { pages[$0].splitX }.sorted()[spreads.count / 2]
+        // A side whose "print" fills nearly its whole half, from the scan's top
+        // to its foot, is no text block, only the clutter of a blank page's edges
+        // (Oesterle 1955, scan 35): blank too. A plate has margins, and stays.
+        func cluttered(_ text: CropRect?, _ half: Double) -> Bool {
+            guard let t = text?.normalized(), half > 0 else { return false }
+            return t.width >= 0.9 * half && t.minY <= 0.005 && t.maxY >= 0.995
+        }
         return spreads.compactMap { i in
-            guard let found = sides[pages[i].id], abs(pages[i].splitX - usualSplit) > 0.06,
-                  found.leftBlank || found.rightBlank else { return nil }
+            guard let found = sides[pages[i].id], abs(pages[i].splitX - usualSplit) > 0.06 else { return nil }
+            let split = pages[i].splitX
+            let left = found.leftSheet.map { $0.text } ?? pages[i].leftCrop
+            let right = found.rightSheet.map { $0.text } ?? pages[i].rightCrop
+            // A cluttered side only grows: a split moving into it would cut what
+            // the "clutter" may be after all (a picture).
+            let grows = usualSplit > split ? cluttered(left, split) : cluttered(right, 1 - split)
+            guard found.leftBlank || found.rightBlank || grows else { return nil }
             return (pages[i].id, pages[i].sourceIndex, usualSplit)
         }
     }
@@ -1593,8 +1606,8 @@ final class AppModel: ObservableObject {
             let vertical = H.map { axis(plan, size: $0, vertical: true) }
             for side in plan.sides where only?.contains(side.member.id) ?? true {
                 guard let i = pages.firstIndex(where: { $0.id == side.member.id }), var crop = side.found else { continue }
-                // The box, whole wherever the scan holds it, even past the paper
-                // (one size on every page, John 2026-10-26), and the text block,
+                // The box, whole wherever the scan holds the sheet (one size on
+                // every page, John 2026-10-26, cut at the sheet's edge, 2026-11-23), and the text block,
                 // so print is never cut. All of it inside the page's half: the
                 // text was found before analysis may have moved the split (see
                 // evenOutNearlyEmptyPages).
@@ -1607,7 +1620,18 @@ final class AppModel: ObservableObject {
                     a = max(a, region.0); b = min(b, region.1)
                     return (a, max(a, b))
                 }
-                let region = (side.member.limits.minX, side.member.limits.maxX)
+                // Never past the sheet's own trusted outer edges (John, 2026-11-23):
+                // a scan showing less of the sheet gives that page a narrower box
+                // rather than a strip of scanner bed. On a spread only the outer
+                // edge counts: the fold's shadow is page. Never inside the text.
+                // A size typed in is the user's: every box takes it.
+                let sheet = pageSizeOverride?.width == nil ? side.sheet : nil
+                // The crop analysis found is the sheet where its edge meets the bed.
+                let found = pageSizeOverride?.width == nil ? side.found?.normalized() : nil
+                var lo = max(side.member.limits.minX, side.member.side != .right ? max(sheet?.minX ?? 0, found?.minX ?? 0) : 0)
+                var hi = min(side.member.limits.maxX, side.member.side != .left ? min(sheet?.maxX ?? 1, found?.maxX ?? 1) : 1)
+                if let t = side.text { lo = max(side.member.limits.minX, min(lo, t.minX)); hi = min(side.member.limits.maxX, max(hi, t.maxX)) }
+                let region = lo < hi ? (lo, hi) : (side.member.limits.minX, side.member.limits.maxX)
                 if let horizontal, let W, let x = horizontal(side) {
                     let w = side.inches.width
                     let s = span((x / w, (x + W) / w), side.text.map { ($0.minX, $0.maxX) }, within: region)

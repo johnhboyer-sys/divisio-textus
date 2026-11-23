@@ -31,6 +31,8 @@ struct PageSizeTests {
         var oddLast = false
         /// How much lower than the left sheet the right one lies on the scan, in points.
         var rightDrop = 0.0
+        /// One spread whose right sheet shows narrower than the rest by `by` points, bed beyond it.
+        var narrowRight: (index: Int, by: Double)? = nil
 
         func fold(_ i: Int) -> Double { oddLast && i == count - 1 ? 604 : 504 + Self.shifts[i % Self.shifts.count].0 }
         /// The sheet's top, from the top of the scan.
@@ -49,12 +51,13 @@ struct PageSizeTests {
             }
             fill(0.04, 0, 0, Self.media.width, H)                       // the bed
             let f = fold(i), t = top(i), w = Self.sheetW, h = Self.sheetH
+            let rw = narrowRight.map { $0.index == i ? w - $0.by : w } ?? w
             if strips {
                 // Three leaves beyond each outer edge, a little lower than the sheet.
                 for k in 0..<3 {
                     let x = f - w - 15 + Double(k) * 5
                     fill(0.8, x, t + 2, 5, h); fill(0.25, x, t + 2, 1, h)
-                    let xr = f + w + Double(k) * 5
+                    let xr = f + rw + Double(k) * 5
                     fill(0.8, xr, t + 2, 5, h); fill(0.25, xr + 4, t + 2, 1, h)
                 }
             }
@@ -62,7 +65,7 @@ struct PageSizeTests {
             // them) the paper runs past the scan's top and bottom: no edge there,
             // so the box must be placed from the text.
             if [Self.opening, Self.short, 8].contains(i) { fill(1, f - w, 0, 2 * w, H) }
-            else { fill(1, f - w, t, w, h); fill(1, f, t + rightDrop, w, h) }
+            else { fill(1, f - w, t, w, h); fill(1, f, t + rightDrop, rw, h) }
             fill(0.04, f - 2, t, 4, h)                                  // the fold
             // Text: 0.75 in from the outer edge, 0.6 in from the fold, 0.75 in
             // from the top, 0.85 in from the bottom.
@@ -140,6 +143,25 @@ struct PageSizeTests {
                 if side == "left" { #expect(c.x0 >= f - Book.sheetW - 3, "spread \(i) left: \(c.x0), sheet at \(f - Book.sheetW)") }
                 else { #expect(c.x1 <= f + Book.sheetW + 3, "spread \(i) right: \(c.x1), sheet ends \(f + Book.sheetW)") }
             }
+        }
+    }
+
+    @Test("A page whose sheet shows narrower ends at its sheet's edge; the others keep the book's size (John, 2026-11-23)")
+    func narrowerPage() async throws {
+        let book = Book(count: 12, strips: true, narrowRight: (index: 4, by: 30))
+        let (m, _, _) = await load(book)
+        let w = try #require(m.pageSize?.width)
+        #expect(abs(w - 6) < 0.06, "measured \(w) in")
+        for (i, p) in m.pages.enumerated() {
+            let r = points(p.rightCrop), f = book.fold(i)
+            if i == 4 {
+                #expect(r.x1 <= f + Book.sheetW - 30 + 3, "spread 4 right ends at \(r.x1), sheet ends \(f + Book.sheetW - 30)")
+                #expect(r.x1 >= f + Book.sheetW - 30 - 4, "spread 4 right ends at \(r.x1), short of its sheet")
+            } else {
+                #expect(abs(r.x1 - r.x0 - Book.sheetW) < 4.4, "spread \(i) right: \(r.x1 - r.x0) pt")
+            }
+            let l = points(p.leftCrop)
+            #expect(abs(l.x1 - l.x0 - Book.sheetW) < 4.4, "spread \(i) left: \(l.x1 - l.x0) pt")
         }
     }
 
