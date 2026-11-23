@@ -224,3 +224,33 @@ scorecard counted were creases, fold speckle, comb teeth and page edges.
   Limits: Freudenthal 1, 2, 94, 215, 237, 240–244 stay gray in B&W (a dark board reads as a
   plate); a few clumps of dither stay; 17 Oesterle pages in Color/Gray with Remove shadows keep
   thin edge strips; a 1-px rule at 600 DPI shorter than about 0.09 in in the dither fringe goes.
+
+## Next: crop to the page's edge (diagnosed 2026-11-23, not started)
+
+John: "the lack of trimming". His target (a): trim to the page's own edge, cutting off scanner
+bed and comb strip and keeping the book's margins (not tight to the text). All 8 books open in
+Whole page mode. Pages whose crop keeps more than 2% of page width of bed or comb (main 1fd9b9b):
+Wallace 53/106 (every left page, 24–28%), Oesterle 218/250 (comb, typically 6%, up to 12%; 3 bed),
+Freudenthal 55/248 (2–8%), Riezler 10/134 (3–4.5%); Cherniss, Smith, Simon ×2: 0.
+Causes (PageAnalyzer.swift unless marked):
+- Wallace: detection miss. The black bed band sits inside a thin white scan frame (about 2%);
+  `brokenByPaper` (:725–726) counts any light run over 1.5% as a break, so the paper finder
+  (:577) and text finder (:790) read the frame as a picture's margins; the band counts as text
+  and `paper.union(text)` (:44) keeps it. `findBook` (:633) misses it the same way.
+- Oesterle: the fold-side-runs-to-the-split rule (:38–43), and the text finder counts the
+  teeth as print. Scan 35 also has a wrong split (0.395, at the blank left page's edge).
+- Freudenthal: Whole page keeps one box size even past the paper (AppModel.swift:1596–1609,
+  :1695); the flagged pages' paper is about 2.5% of scan width narrower.
+- Riezler: text finder runs over a 2% black strip at the right scan edge (likely the same test).
+Proposed fix (tests first: bed inside a 2% frame; comb with a "1." 0.15 in past the teeth; a
+stack with one narrower page; real-book gate = this count to 0 for those four books, the other
+four unchanged, plus the print-cut gates):
+1. Light runs of 3% or less at a line's ends don't count as breaks in `brokenByPaper`.
+2. `placeSheets` cuts the box at a trusted outer paper edge, never inside text (overturns
+   "one size on every page, even past the paper", 2026-10-26).
+3. On comb/spiral spreads (`ShadowRemoval.teeth` near the fold), the fold-side edge goes just
+   past the teeth (overturns "runs to the split" for those bindings only).
+Open for John: cut at the teeth or 0.12 in past (loops showing through holes)? Fix Oesterle
+scan 35's split too? Pages of slightly different export size OK? Replaces his 2026-11-20 note
+that bed is the user's to trim? Crops and the per-page table:
+~/Developer/divisio-hillclimb/results/crop-edge/.
