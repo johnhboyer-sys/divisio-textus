@@ -290,3 +290,16 @@ now: Wallace 53 → 0, Freudenthal 49 → 5 (covers, 34, 56, 107), Riezler 8 →
 printCut 5 = main; 548 tests. Accepted: a whole-height picture at a page's outer edge,
 under 12% of the page wide, may lose its outer strip. Score: results/crop-edge-r11.
 
+## Erase tool (2026-11-23, merged)
+
+Inspector > Erase: drag boxes over stamps or marks; they come out blank in the export,
+filled with the paper's colour (median of a 3 px ring; white on black and white, a colour
+kept). Boxes live on the page (`BookPage.erasures: [Erasure]`, each with the skew and split
+it was drawn on) and follow the print through later straightening: points of the box, and
+of the split through it, carried raw and forward by the renderer's own halves. Painted on
+the straightened page before flatten, black and white, the layered text layer and OCR.
+Grok built it; Codex reviewed four rounds (flatten order, drift on skew/split, pixel
+rounding, black-and-white fill, undo selection, grid start, turned and split-spanning
+boxes, colour rings), all fixed with tests; the last fix not re-reviewed. 571 tests.
+Not yet tried in the app.
+
