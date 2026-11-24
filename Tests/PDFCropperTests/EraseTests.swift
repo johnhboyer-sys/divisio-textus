@@ -731,4 +731,45 @@ struct EraseTests {
         let i = (20 * w + 30) * 4
         #expect(px[i] > 200 && px[i + 1] < 60 && px[i + 2] < 60, "fill \(px[i]),\(px[i + 1]),\(px[i + 2])")
     }
+
+    // Codex review, round 3: every point of the drawn box, carried as the renderer
+    // turns it (each pixel by the half its column is in), lands inside the box.
+    private func covers(_ page: BookPage, drawn r: CropRect, w: Int, h: Int, from old: (split: Double, l: Double, r: Double)) -> String? {
+        let got = page.erasureRects(width: w, height: h)[0]
+        let W = Double(w), H = Double(h)
+        func cut(_ split: Double) -> Double { Double(max(1, min(w - 1, Int(split * W)))) }
+        func pivot(_ split: Double, _ left: Bool) -> Double { let s = cut(split); return left ? s / 2 / W : (s + (W - s) / 2) / W }
+        for i in 0...60 { for j in 0...60 {
+            let x = r.minX + r.width * Double(i) / 60, y = r.minY + r.height * Double(j) / 60
+            let fromLeft = x * W < cut(old.split)
+            let raw = spin(x, y, -(fromLeft ? old.l : old.r), pivot(old.split, fromLeft), 0.5, W, H)
+            let toLeft = raw.0 * W < cut(page.splitX)
+            let now = spin(raw.0, raw.1, toLeft ? page.leftSkew : page.rightSkew, pivot(page.splitX, toLeft), 0.5, W, H)
+            let tol = 1.0 / W
+            if now.0 < got.minX - tol || now.0 > got.maxX + tol || now.1 < got.minY - 1.0 / H || now.1 > got.maxY + 1.0 / H {
+                return "point \(x),\(y) goes to \(now.0 * W),\(now.1 * H) px, box \(got.minX * W)…\(got.maxX * W), \(got.minY * H)…\(got.maxY * H)"
+            }
+        } }
+        return nil
+    }
+
+    @Test("A box across the split, turned two ways, still covers every point of its mark")
+    func splitSpanningBoxCovers() {
+        var page = BookPage(sourceIndex: 0, classification: .spread, splitX: 0.5, analyzed: true)
+        let r = CropRect(x: 0.4, y: 0.2, width: 0.2, height: 0.6)
+        page.erasures = [page.erasure(for: r)]
+        page.leftSkew = 5; page.rightSkew = -5
+        let miss = covers(page, drawn: r, w: 1000, h: 1000, from: (0.5, 0, 0))
+        #expect(miss == nil, "\(miss ?? "")")
+    }
+
+    @Test("A box just past a split that falls between pixels follows the half the renderer puts it in")
+    func boxByFractionalSplitCovers() {
+        var page = BookPage(sourceIndex: 0, classification: .spread, splitX: 0.5005, analyzed: true)
+        let r = CropRect(x: 0.50025, y: 0.7, width: 0.02, height: 0.1)
+        page.erasures = [page.erasure(for: r)]
+        page.leftSkew = 5
+        let miss = covers(page, drawn: r, w: 1000, h: 1000, from: (0.5005, 0, 0))
+        #expect(miss == nil, "\(miss ?? "")")
+    }
 }
