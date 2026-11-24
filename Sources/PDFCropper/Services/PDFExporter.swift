@@ -327,12 +327,6 @@ enum PDFExporter {
                         }
                     }
                 }
-                // Blank stamps and marks before OCR, so they leave the text layer too.
-                let crops = plan.page.outputCrops(direction: settings.direction)
-                for k in done.indices where crops.indices.contains(k) {
-                    let crop = crops[k]
-                    done[k] = done[k].map { erased($0, page: plan.page, crop: crop) }
-                }
                 images += done.compactMap { $0 }
                 dpis += doneDPI
             }
@@ -408,15 +402,18 @@ enum PDFExporter {
     }
 
     /// One source page's output pages, in reading order, from its render: each half
-    /// straightened (as the preview composite, so the crop boxes line up), in color
-    /// or gray, flattened if the settings ask, cut to its crop. The Export view draws
-    /// these too, from a small render. Nil when a crop fails.
+    /// straightened (as the preview composite, so the crop boxes line up), stamps
+    /// blanked on that straight page — before black and white or flattening move
+    /// the print out from under the boxes — then in color or gray, flattened if
+    /// the settings ask, cut to its crop. The Export view draws these too, from a
+    /// small render. Nil when a crop fails.
     static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings) -> [CGImage]? {
         let composite = ImageTransform.deskewedComposite(
             rendered, splitX: page.splitX,
             leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
             isSpread: page.isSpread)
-        let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+        let blanked = erased(composite, page: page)
+        let enhanced = ImageEnhancer.apply(blanked, mode: settings.enhanceMode)
         let flat = settings.flattenPages ? flattened(enhanced, page: page, direction: settings.direction) : nil
         var images: [CGImage] = []
         for (k, crop) in page.outputCrops(direction: settings.direction).enumerated() {
@@ -458,32 +455,47 @@ enum PDFExporter {
         settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
     }
 
-    /// Blank each of `page.erasures` that meets `crop`. `image` is that crop of the
-    /// straightened page (its pixels are the crop, scaled to the image's size). The
-    /// fill is the median colour of a ring 3 px wide just outside the box — the
-    /// paper — or white when that ring is empty. A gray image stays gray. No
-    /// erasures, or none on this crop: the same image.
-    static func erased(_ image: CGImage, page: BookPage, crop: CropRect) -> CGImage {
-        guard let boxes = page.erasures, !boxes.isEmpty else { return image }
+    /// Blank the page's boxes on this straightened image. The boxes share its
+    /// frame. The fill is the median colour of a ring 3 px wide just outside the
+    /// box — the paper — or white when that ring is empty. A ring that is only
+    /// black and white fills white, so the page can still be stored as 1 bit.
+    /// A gray image stays gray. No boxes: the same image.
+    static func erased(_ image: CGImage, page: BookPage) -> CGImage {
+        guard page.erasures?.isEmpty == false else { return image }
         let w = image.width, h = image.height
         guard w > 0, h > 0 else { return image }
-        let hits = boxes.compactMap { erasurePixels($0, crop: crop, width: w, height: h) }
-        guard !hits.isEmpty else { return image }
-        return paintErasures(image, rects: hits)
+        let rects = page.erasureRects(width: w, height: h).map { $0.pixelRect(in: CGSize(width: w, height: h)) }
+        guard !rects.isEmpty else { return image }
+        return paintErasures(image, rects: rects)
     }
 
-    /// The erasure's overlap with `crop`, in `image`'s pixels (top-left origin).
-    private static func erasurePixels(_ erasure: CropRect, crop: CropRect, width: Int, height: Int) -> CGRect? {
-        guard crop.width > 1e-9, crop.height > 1e-9 else { return nil }
-        let x0 = max(erasure.minX, crop.minX), y0 = max(erasure.minY, crop.minY)
-        let x1 = min(erasure.maxX, crop.maxX), y1 = min(erasure.maxY, crop.maxY)
-        guard x1 > x0, y1 > y0 else { return nil }
-        let px0 = (x0 - crop.x) / crop.width * Double(width)
-        let py0 = (y0 - crop.y) / crop.height * Double(height)
-        let px1 = (x1 - crop.x) / crop.width * Double(width)
-        let py1 = (y1 - crop.y) / crop.height * Double(height)
-        guard px1 > px0, py1 > py0 else { return nil }
-        return CGRect(x: px0, y: py0, width: px1 - px0, height: py1 - py0)
+    /// `erased(_:page:)` for an 8-bit gray buffer in top-left rows, as a text layer is held.
+    static func erased(_ pixels: [UInt8], page: BookPage, width: Int, height: Int) -> [UInt8] {
+        guard pixels.count == width * height, page.erasures?.isEmpty == false else { return pixels }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8,
+                                  bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGBitmapInfo(rawValue: 0), provider: provider,
+                                  decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return pixels }
+        return grayPixels(erased(image, page: page)) ?? pixels
+    }
+
+    /// `image` as 8-bit gray, top-left rows.
+    private static func grayPixels(_ image: CGImage) -> [UInt8]? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let data = ctx.data else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let stride = ctx.bytesPerRow
+        let src = data.bindMemory(to: UInt8.self, capacity: stride * h)
+        var out = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w { out[y * w + x] = src[y * stride + x] }
+        }
+        return out
     }
 
     /// Draw `image` and fill `rects` (pixel space, top-left) with the paper colour.
@@ -501,10 +513,12 @@ enum PDFExporter {
         let stride = ctx.bytesPerRow
         let px = data.bindMemory(to: UInt8.self, capacity: stride * h)
         for rect in rects {
-            let x0 = max(0, min(w, Int(floor(rect.minX))))
-            let y0 = max(0, min(h, Int(floor(rect.minY))))
-            let x1 = max(0, min(w, Int(ceil(rect.maxX))))
-            let y1 = max(0, min(h, Int(ceil(rect.maxY))))
+            // One pixel past the box on every side. A crop is cut on whole pixels,
+            // so a box that ends on a fraction can otherwise leave a sliver of the mark.
+            let x0 = max(0, min(w, Int(floor(rect.minX)) - 1))
+            let y0 = max(0, min(h, Int(floor(rect.minY)) - 1))
+            let x1 = max(0, min(w, Int(ceil(rect.maxX)) + 1))
+            let y1 = max(0, min(h, Int(ceil(rect.maxY)) + 1))
             guard x1 > x0, y1 > y0 else { continue }
             let color = ringMedian(px, stride: stride, bpp: bpp, w: w, h: h, x0: x0, y0: y0, x1: x1, y1: y1)
             for y in y0..<y1 {
@@ -542,6 +556,8 @@ enum PDFExporter {
     }
 
     private static func median(_ values: [UInt8]) -> UInt8 {
+        // A gray between black and white would stop the page being stored as 1 bit.
+        if values.allSatisfy({ $0 == 0 || $0 == 255 }) { return 255 }
         let s = values.sorted()
         let n = s.count
         if n % 2 == 1 { return s[n / 2] }

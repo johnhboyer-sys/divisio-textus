@@ -25,6 +25,16 @@ enum PageClassification: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// A box blanked in the export, and the straightening it was drawn on. A later
+/// change of skew or split moves the print; these values let the box follow it.
+struct Erasure: Codable, Equatable {
+    var rect: CropRect
+    var splitX: Double
+    var leftSkew: Double
+    var rightSkew: Double
+    var spread: Bool
+}
+
 /// Model for one page of the SOURCE pdf and how to carve output pages from it.
 struct BookPage: Identifiable, Codable, Equatable {
     let id: UUID
@@ -74,9 +84,10 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// Auto-detect keeps it, a removed one too. Absent in older saves.
     var trimByHand: Bool?
 
-    /// Boxes blanked in the export, in the straightened page's frame. Absent in
-    /// older saves.
-    var erasures: [CropRect]? = nil
+    /// Boxes blanked in the export. Each remembers the straightening it was drawn
+    /// on (see `erasureRects`). Absent in older saves; a save from before that
+    /// stored plain rects, which decode as boxes in this page's own frame.
+    var erasures: [Erasure]? = nil
 
     /// The trim, or the whole page.
     var bounds: CropRect { trim ?? .full }
@@ -107,6 +118,155 @@ struct BookPage: Identifiable, Codable, Equatable {
 
     /// True when this page is a spread that uses two independent skew angles.
     var isSpread: Bool { classification == .spread }
+
+    /// `rect` as a box drawn on the page as it is straightened now.
+    func erasure(for rect: CropRect) -> Erasure {
+        Erasure(rect: rect, splitX: splitX, leftSkew: leftSkew, rightSkew: rightSkew, spread: isSpread)
+    }
+
+    /// The boxes in the page's current straightened frame. `width` and `height`
+    /// are that image in pixels: a turn about a half's centre moves a point by an
+    /// amount that depends on the half's pixel shape, the same way
+    /// `ImageTransform.deskewedComposite` turns it. The box keeps its size; its
+    /// centre is what moves. A box drawn on the current straightening is returned
+    /// unchanged.
+    func erasureRects(width: Int, height: Int) -> [CropRect] {
+        guard let erasures else { return [] }
+        guard width > 0, height > 0 else { return erasures.map(\.rect) }
+        return erasures.map { placed($0, width: width, height: height) }
+    }
+
+    /// The gutter column `deskewedComposite` cuts on.
+    private static func splitPixels(_ splitX: Double, _ width: Int) -> Int {
+        max(1, min(width - 1, Int(splitX * Double(width))))
+    }
+
+    /// Whether `box` was drawn on this page's current straightening, so its rect
+    /// already sits on the print. A turn of 0.01° or less is no turn at all.
+    private func straighteningMatches(_ box: Erasure, width: Int) -> Bool {
+        if box.spread != isSpread { return false }
+        let idle = abs(box.leftSkew) <= 0.01 && abs(leftSkew) <= 0.01
+            && abs(box.rightSkew) <= 0.01 && abs(rightSkew) <= 0.01
+        if idle { return true }
+        if abs(box.leftSkew - leftSkew) > 1e-9 { return false }
+        if isSpread, abs(box.rightSkew - rightSkew) > 1e-9 { return false }
+        if isSpread, Self.splitPixels(box.splitX, width) != Self.splitPixels(splitX, width) { return false }
+        return true
+    }
+
+    /// `box` carried from the straightening it was drawn on to the current one.
+    /// Each half — or the whole page, for a single — turns about its own centre.
+    /// Positive degrees are counter-clockwise, and y grows downward, which is the
+    /// sense of `rotateInPlace`: the centre goes raw, then forward again.
+    private func placed(_ box: Erasure, width: Int, height: Int) -> CropRect {
+        if straighteningMatches(box, width: width) { return box.rect }
+        let w = Double(width), h = Double(height)
+        let cx = box.rect.x + box.rect.width / 2, cy = box.rect.y + box.rect.height / 2
+        let fromLeft = onLeft(cx, box.spread, box.splitX, width)
+        let raw = spin(cx, cy, degrees: -(fromLeft ? box.leftSkew : box.rightSkew),
+                       pivotX: halfPivot(box.spread, box.splitX, fromLeft, width), width: w, height: h)
+        let toLeft = onLeft(raw.0, isSpread, splitX, width)
+        let now = spin(raw.0, raw.1, degrees: toLeft ? leftSkew : rightSkew,
+                       pivotX: halfPivot(isSpread, splitX, toLeft, width), width: w, height: h)
+        return CropRect(x: now.0 - box.rect.width / 2, y: now.1 - box.rect.height / 2,
+                        width: box.rect.width, height: box.rect.height)
+    }
+
+    private func onLeft(_ nx: Double, _ spread: Bool, _ splitX: Double, _ width: Int) -> Bool {
+        guard spread else { return true }
+        return nx * Double(width) < Double(Self.splitPixels(splitX, width))
+    }
+
+    /// The centre of the half `left`, or of the whole page, in normalized x.
+    private func halfPivot(_ spread: Bool, _ splitX: Double, _ left: Bool, _ width: Int) -> Double {
+        guard spread else { return 0.5 }
+        let split = Double(Self.splitPixels(splitX, width)), w = Double(width)
+        return left ? (split / 2) / w : (split + (w - split) / 2) / w
+    }
+
+    /// Turn `(nx, ny)` about `(pivotX, 0.5)` by `degrees`. A turn of 0.01° or less
+    /// is left as it is, matching `rotateInPlace`.
+    private func spin(_ nx: Double, _ ny: Double, degrees: Double, pivotX: Double,
+                      width: Double, height: Double) -> (Double, Double) {
+        guard abs(degrees) > 0.01 else { return (nx, ny) }
+        let t = degrees * .pi / 180, c = cos(t), s = sin(t)
+        let ox = (nx - pivotX) * width, oy = (ny - 0.5) * height
+        return (pivotX + (ox * c + oy * s) / width, 0.5 + (-ox * s + oy * c) / height)
+    }
+
+    /// A rect stored by an older save, which had no straightening of its own.
+    private struct StoredErasure: Decodable {
+        var rect: CropRect?
+        var splitX: Double?
+        var leftSkew: Double?
+        var rightSkew: Double?
+        var spread: Bool?
+        var x: Double?
+        var y: Double?
+        var width: Double?
+        var height: Double?
+
+        func erasure(splitX pageSplit: Double, leftSkew pageLeft: Double, rightSkew pageRight: Double, spread: Bool) -> Erasure? {
+            if let rect {
+                return Erasure(rect: rect, splitX: splitX ?? pageSplit, leftSkew: leftSkew ?? pageLeft,
+                               rightSkew: rightSkew ?? pageRight, spread: self.spread ?? spread)
+            }
+            guard let x, let y, let width, let height else { return nil }
+            return Erasure(rect: CropRect(x: x, y: y, width: width, height: height),
+                           splitX: pageSplit, leftSkew: pageLeft, rightSkew: pageRight, spread: spread)
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, sourceIndex, classification, splitX, leftCrop, rightCrop
+        case leftSkew, rightSkew, analyzed, typeBeforeSkip, omittedSide
+        case handOffSplit, trim, trimByHand, erasures
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        sourceIndex = try c.decode(Int.self, forKey: .sourceIndex)
+        classification = try c.decode(PageClassification.self, forKey: .classification)
+        splitX = try c.decode(Double.self, forKey: .splitX)
+        leftCrop = try c.decode(CropRect.self, forKey: .leftCrop)
+        rightCrop = try c.decode(CropRect.self, forKey: .rightCrop)
+        leftSkew = try c.decode(Double.self, forKey: .leftSkew)
+        rightSkew = try c.decode(Double.self, forKey: .rightSkew)
+        analyzed = try c.decode(Bool.self, forKey: .analyzed)
+        typeBeforeSkip = try c.decodeIfPresent(PageClassification.self, forKey: .typeBeforeSkip)
+        omittedSide = try c.decodeIfPresent(Side.self, forKey: .omittedSide)
+        handOffSplit = try c.decodeIfPresent(Set<Side>.self, forKey: .handOffSplit)
+        trim = try c.decodeIfPresent(CropRect.self, forKey: .trim)
+        trimByHand = try c.decodeIfPresent(Bool.self, forKey: .trimByHand)
+        // A plain rect is a box drawn in this page's own frame.
+        if let raw = try c.decodeIfPresent([StoredErasure].self, forKey: .erasures) {
+            erasures = raw.compactMap {
+                $0.erasure(splitX: splitX, leftSkew: leftSkew, rightSkew: rightSkew, spread: classification == .spread)
+            }
+        } else {
+            erasures = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(sourceIndex, forKey: .sourceIndex)
+        try c.encode(classification, forKey: .classification)
+        try c.encode(splitX, forKey: .splitX)
+        try c.encode(leftCrop, forKey: .leftCrop)
+        try c.encode(rightCrop, forKey: .rightCrop)
+        try c.encode(leftSkew, forKey: .leftSkew)
+        try c.encode(rightSkew, forKey: .rightSkew)
+        try c.encode(analyzed, forKey: .analyzed)
+        try c.encodeIfPresent(typeBeforeSkip, forKey: .typeBeforeSkip)
+        try c.encodeIfPresent(omittedSide, forKey: .omittedSide)
+        try c.encodeIfPresent(handOffSplit, forKey: .handOffSplit)
+        try c.encodeIfPresent(trim, forKey: .trim)
+        try c.encodeIfPresent(trimByHand, forKey: .trimByHand)
+        try c.encodeIfPresent(erasures, forKey: .erasures)
+    }
 
     /// The crops that will actually be emitted, in reading order, given a direction.
     func outputCrops(direction: ReadingDirection) -> [CropRect] {

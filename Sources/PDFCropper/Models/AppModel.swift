@@ -158,6 +158,10 @@ final class AppModel: ObservableObject {
     private var trimTargets: Set<BookPage.ID> = []
     private var trimReturnsToGrid = false
 
+    /// Erase started from the grid: Done goes back there. The boxes themselves
+    /// live on the page (`BookPage.erasures`).
+    private var eraseReturnsToGrid = false
+
     /// Erase: the page whose stamps and marks are being boxed out. The boxes
     /// themselves live on the page (`BookPage.erasures`).
     @Published private(set) var erasingPage: BookPage.ID?
@@ -399,6 +403,7 @@ final class AppModel: ObservableObject {
         // record. Keep Working leaves this PDF open, before any of that changes.
         if !saveEdits(pages, direction, wait: true), confirmFailedSave() { return }
         trimmingPage = nil                                      // a trim being drawn was for the old PDF
+        eraseReturnsToGrid = false                              // opening a PDF is not Done
         finishErase()                                           // and an erase being drawn
         showsExport = false
         clearImageCaches()
@@ -640,11 +645,6 @@ final class AppModel: ObservableObject {
         } else {
             images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
         }
-        // The same blanking the export applies, on the pages just finished.
-        let crops = page.outputCrops(direction: direction)
-        if images.count == crops.count {
-            images = zip(images, crops).map { PDFExporter.erased($0, page: page, crop: $1) }
-        }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
                                                      removeShadows: removeShadows,
                                                      flatten: flattenPages ? flattenKey : nil, images: images)
@@ -735,14 +735,19 @@ final class AppModel: ObservableObject {
             rendered = crops.indices.filter { marked[$0] }
             if rendered.count < crops.count {
                 let dpi = LayeredScan.textDPI(layers)
-                guard let text = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                guard let drawn = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
                     LayeredScan.drawText(layers, of: pdfPage, in: ctx, scale: scale) }) else { return nil }
+                // The export blanks the straight page before it measures the warp.
+                let text = (pixels: PDFExporter.erased(drawn.pixels, page: page, width: drawn.width, height: drawn.height),
+                            width: drawn.width, height: drawn.height)
                 var both: [UInt8]?
                 if settings.bothLayers {
                     let decoded = layers.patches.compactMap { p in LayeredScan.patchImage(p).map { (p, $0) } }
-                    both = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
+                    if let drawnBoth = LayeredScan.straightened(page, pdfPage, dpi: dpi, { ctx, scale in
                         LayeredScan.drawPatches(decoded, of: pdfPage, in: ctx, scale: scale)
-                        LayeredScan.drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) })?.pixels
+                        LayeredScan.drawText(layers, of: pdfPage, in: ctx, scale: scale, over: true) }) {
+                        both = PDFExporter.erased(drawnBoth.pixels, page: page, width: drawnBoth.width, height: drawnBoth.height)
+                    }
                 }
                 for k in crops.indices where !marked[k] {
                     guard let r = LayeredScan.pixelRect(crops[k], width: text.width, height: text.height) else { return nil }
@@ -760,7 +765,8 @@ final class AppModel: ObservableObject {
         guard let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return nil }
         let composite = ImageTransform.deskewedComposite(cg, splitX: page.splitX, leftDegrees: page.leftSkew,
                                                          rightDegrees: page.rightSkew, isSpread: page.isSpread)
-        let enhanced = ImageEnhancer.apply(composite, mode: settings.enhanceMode)
+        let blanked = PDFExporter.erased(composite, page: page)
+        let enhanced = ImageEnhancer.apply(blanked, mode: settings.enhanceMode)
         let size = CGSize(width: enhanced.width, height: enhanced.height)
         let found = Flatten.models(enhanced, regions: rendered.map {
             (crops[$0].normalized().pixelRect(in: size).integral, Flatten.gutterOnRight(crops[$0], of: page))
@@ -1329,6 +1335,7 @@ final class AppModel: ObservableObject {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                 }
                 model.setByAnalysis = claims
+                model.selectedErasure = nil
                 model.undoManager?.registerUndo(withTarget: model) { model in
                     MainActor.assumeIsolated { model.redetectAllPages() }   // redo
                 }
@@ -1364,6 +1371,7 @@ final class AppModel: ObservableObject {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                 }
                 model.setByAnalysis = claims
+                model.selectedErasure = nil
                 model.undoManager?.registerUndo(withTarget: model) { model in
                     MainActor.assumeIsolated { model.switchCropTarget(to: target) }   // redo
                 }
@@ -1509,6 +1517,7 @@ final class AppModel: ObservableObject {
                 for p in saved {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                 }
+                model.selectedErasure = nil
                 model.registerPageSizeUndo(restoring: current, size: currentSize)   // redo
             }
         }
@@ -1849,16 +1858,33 @@ final class AppModel: ObservableObject {
     func beginErase() {
         guard let p = selectedPage, p.classification != .skip, !isBusy else { return }
         if trimmingPage != nil { cancelTrim() }
+        // After a trim that was itself going back to the grid, and before the
+        // page is shown: Done returns there.
+        let fromGrid = viewMode == .grid
         showsExport = false
         showsStack = false
+        eraseReturnsToGrid = fromGrid
         selectedErasure = nil
         erasingPage = p.id
     }
 
-    /// Leave erase mode. The boxes already drawn stay.
+    /// Leave erase mode. The boxes already drawn stay. Back to the grid when
+    /// Erase was started there.
     func finishErase() {
         erasingPage = nil
         selectedErasure = nil
+        let back = eraseReturnsToGrid
+        eraseReturnsToGrid = false
+        if back { viewMode = .grid }
+    }
+
+    /// The page's boxes in its current straightened frame. Painting uses the real
+    /// image; the editor has only the page's shape, so it uses that at a large width.
+    func erasureRects(on page: BookPage) -> [CropRect] {
+        let aspect = displaySize(of: page).map { $0.width > 0 ? $0.height / $0.width : 1 } ?? 1
+        let width = 100_000
+        let height = max(1, Int((Double(width) * aspect).rounded()))
+        return page.erasureRects(width: width, height: height)
     }
 
     /// Add one box, in the straightened page's frame. A box under 0.3% of the
@@ -1869,7 +1895,7 @@ final class AppModel: ObservableObject {
         guard box.width >= 0.003, box.height >= 0.003 else { return }
         perform("Erase") {
             var list = pages[i].erasures ?? []
-            list.append(box)
+            list.append(pages[i].erasure(for: box))
             pages[i].erasures = list
         }
         selectedErasure = (pages[i].erasures?.count ?? 1) - 1
@@ -1880,7 +1906,7 @@ final class AppModel: ObservableObject {
     func setErasure(_ rect: CropRect, at index: Int) {
         guard let i = selectedIndex, pages[i].id == erasingPage,
               var list = pages[i].erasures, list.indices.contains(index) else { return }
-        list[index] = clampedToPage(rect)
+        list[index] = pages[i].erasure(for: clampedToPage(rect))
         pages[i].erasures = list
     }
 
@@ -2293,6 +2319,7 @@ final class AppModel: ObservableObject {
                     if let i = model.pages.firstIndex(where: { $0.id == p.id }) { model.pages[i] = p }
                     model.setByAnalysis[p.id] = claims[p.id]
                 }
+                model.selectedErasure = nil
                 model.registerUndo(restoring: current, claims: currentClaims, actionName: actionName)  // redo
                 // Undoing an edit made to a page still waiting for analysis brings
                 // it back unanalysed; start a fresh pass for it.

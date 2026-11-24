@@ -230,9 +230,11 @@ enum LayeredScan {
         let crops = page.outputCrops(direction: direction)
         let marked = holdsPicture(page, pdfPage, layers: layers, crops: crops)
         guard crops.indices.contains(where: { !marked[$0] }) else { return crops.map { _ in nil } }
-        guard let canvas = straightened(page, pdfPage, dpi: previewDPI ?? textDPI(layers), { ctx, scale in
+        guard var canvas = straightened(page, pdfPage, dpi: previewDPI ?? textDPI(layers), { ctx, scale in
             drawText(layers, of: pdfPage, in: ctx, scale: scale)
         }) else { return nil }
+        // Before flatten and the black-and-white cut, so a box still sits on its mark.
+        canvas.pixels = PDFExporter.erased(canvas.pixels, page: page, width: canvas.width, height: canvas.height)
         var out: [CGImage?] = []
         for (k, crop) in crops.enumerated() {
             guard let r = pixelRect(crop, width: canvas.width, height: canvas.height) else { return nil }
@@ -313,7 +315,12 @@ enum LayeredScan {
                   let both = straightened(page, size: size, dpi: dpi, { ctx, scale in
                       drawPatches(decoded, at: transform, in: ctx, scale: scale)
                       drawText(layers, at: transform, in: ctx, scale: scale, over: true) }) else { return nil }
-            return (text, both)
+            // Blank both drawings before flatten and black and white, on the straight page.
+            let blank = { (buf: (pixels: [UInt8], width: Int, height: Int)) in
+                (pixels: PDFExporter.erased(buf.pixels, page: page, width: buf.width, height: buf.height),
+                 width: buf.width, height: buf.height)
+            }
+            return (blank(text), blank(both))
         }
         var out: [(() -> CGImage?)?] = []
         for (k, crop) in crops.enumerated() {

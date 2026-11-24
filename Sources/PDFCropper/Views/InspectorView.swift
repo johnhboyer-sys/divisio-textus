@@ -541,7 +541,9 @@ private struct EraseSection: View {
 
     /// The box Remove acts on, when that index still exists.
     private var selectedBox: CropRect? {
-        guard let i = model.selectedErasure, let boxes = model.selectedPage?.erasures, boxes.indices.contains(i) else { return nil }
+        guard let page = model.selectedPage, let i = model.selectedErasure else { return nil }
+        let boxes = model.erasureRects(on: page)
+        guard boxes.indices.contains(i) else { return nil }
         return boxes[i]
     }
 

@@ -143,7 +143,7 @@ struct PageEditorView: View {
     @ViewBuilder
     private func eraseOverlay(for idx: Int, frame: CGRect, area: CropRect, canvas: CGSize) -> some View {
         let page = model.pages[idx]
-        let boxes = page.erasures ?? []
+        let boxes = model.erasureRects(on: page)
         let erasing = model.erasingPage == page.id
         // One canvas-sized layer, so positions match the crop boxes' frame.
         ZStack(alignment: .topLeading) {
@@ -190,7 +190,7 @@ struct PageEditorView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .named("pageCanvas"))
             .onChanged { value in
                 let start = pagePoint(value.startLocation, frame: frame, area: area)
-                let boxes = model.pages.indices.contains(idx) ? (model.pages[idx].erasures ?? []) : []
+                let boxes = model.pages.indices.contains(idx) ? model.erasureRects(on: model.pages[idx]) : []
                 // A drag that starts on a box selects it (the tap) rather than drawing another.
                 if eraseDraft == nil, boxes.contains(where: { covers($0, start) }) { return }
                 eraseDraft = span(start, pagePoint(value.location, frame: frame, area: area))
@@ -204,7 +204,7 @@ struct PageEditorView: View {
 
     private func erasureBinding(_ idx: Int, _ box: Int, _ area: CropRect) -> Binding<CropRect> {
         Binding(get: {
-            let boxes = model.pages[idx].erasures ?? []
+            let boxes = model.erasureRects(on: model.pages[idx])
             let r = boxes.indices.contains(box) ? boxes[box] : .full
             return r.relative(to: area)
         }, set: { model.setErasure($0.absolute(in: area), at: box) })
