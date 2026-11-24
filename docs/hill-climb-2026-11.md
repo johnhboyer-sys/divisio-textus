@@ -279,3 +279,14 @@ its MediaBox: render it with `pdftoppm -cropbox` (a MediaBox render put its spli
 wrong place and showed bed the app never sees). Merged and installed (main 03d681f). Crops:
 https://claude.ai/artifact/BTcQZH5FUw6urebXZKqD29 . Scores: results/crop-edge-base, crop-edge-r5.
 
+**Round 2 (2026-11-23, merged):** John: the edges of the leaves below a page (Freudenthal
+scan 80) and Riezler's right-edge strip (tilted by straightening, read as print) must go
+too. `outerBand`: beyond a page's outer edge, a band 1–12% of the page wide, inked in 90%
+of the scan's height and running off its top or foot, then a clear gap, then print, is no
+print; the page and text stop at its inner end. Guards (Codex, four rounds): a rule turning
+in from its inner edge is a frame's side (synth-2-0); its innermost ink must not keep to the
+text's lines (line numbers). Scans with >2% bed at an outer edge, main before round 1 →
+now: Wallace 53 → 0, Freudenthal 49 → 5 (covers, 34, 56, 107), Riezler 8 → 0. Synthetic
+printCut 5 = main; 548 tests. Accepted: a whole-height picture at a page's outer edge,
+under 12% of the page wide, may lose its outer strip. Score: results/crop-edge-r11.
+

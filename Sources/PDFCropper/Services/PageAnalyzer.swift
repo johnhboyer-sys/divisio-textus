@@ -36,8 +36,12 @@ enum PageAnalyzer {
         // Never less than the text block: on a tight scan turned a long way, the
         // corners left empty can reach into the printed text, and text beats a
         // clean corner.
-        func page(_ side: Range<Double>, _ turned: Double, _ text: CropRect, _ blank: Bool) -> CropRect {
-            let (found, seen) = paperBox(g, xRange: side, turned: turned)
+        func page(_ side: Range<Double>, _ turned: Double, _ text: CropRect, _ blank: Bool,
+                  edges: (left: Double?, right: Double?) = (nil, nil)) -> CropRect {
+            var (found, seen) = paperBox(g, xRange: side, turned: turned)
+            // Past a band beyond the page's edge (see `outerBand`), nothing is page.
+            if let e = edges.left, e > found.minX { found.width = max(0, found.maxX - e); found.x = e }
+            if let e = edges.right, e < found.maxX { found.width = max(0, e - found.minX) }
             var paper = found
             // A spread's page runs to the split, its fold (John, 2026-11-20): the
             // fold's shadow is part of the page, so the page keeps its true size.
@@ -59,16 +63,120 @@ enum PageAnalyzer {
         // measured to the percent.
         let fine = GrayBuffer(cgImage: cgImage, maxDim: 1600) ?? g
         let lo = region.minX, hi = region.maxX
+        // A band beyond a page's outer edge is no print: the text stops at the edge.
+        func trimmed(_ text: CropRect, _ blank: Bool, left: Bool, right: Bool, width: Double) -> (CropRect, (left: Double?, right: Double?)) {
+            guard !blank else { return (text, (nil, nil)) }
+            var t = text
+            let l = left ? outerBand(g, text: t, fromLeft: true, pageWidth: width) : nil
+            if let l { t.width -= l - t.x; t.x = l }
+            let r = right ? outerBand(g, text: t, fromLeft: false, pageWidth: width) : nil
+            if let r { t.width = r - t.x }
+            return (t, (l, r))
+        }
         if r.classification == .spread {
-            r.leftSheet = sheet(fine, xRange: lo..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
-            r.rightSheet = sheet(fine, xRange: r.splitX..<hi, turned: turns.right, text: r.rightBlank ? nil : r.rightCrop)
-            r.leftCrop = page(lo..<r.splitX, turns.left, r.leftCrop, r.leftBlank)
-            r.rightCrop = page(r.splitX..<hi, turns.right, r.rightCrop, r.rightBlank)
+            let (lt, le) = trimmed(r.leftCrop, r.leftBlank, left: true, right: false, width: r.splitX - lo)
+            let (rt, re) = trimmed(r.rightCrop, r.rightBlank, left: false, right: true, width: hi - r.splitX)
+            r.leftSheet = sheet(fine, xRange: lo..<r.splitX, turned: turns.left, text: r.leftBlank ? nil : lt)
+            r.rightSheet = sheet(fine, xRange: r.splitX..<hi, turned: turns.right, text: r.rightBlank ? nil : rt)
+            r.leftCrop = page(lo..<r.splitX, turns.left, lt, r.leftBlank, edges: le)
+            r.rightCrop = page(r.splitX..<hi, turns.right, rt, r.rightBlank, edges: re)
         } else {
-            r.leftSheet = sheet(fine, xRange: lo..<hi, turned: turns.left, text: r.leftBlank ? nil : r.leftCrop)
-            r.leftCrop = page(lo..<hi, turns.left, r.leftCrop, r.leftBlank)
+            let (t, e) = trimmed(r.leftCrop, r.leftBlank, left: true, right: true, width: hi - lo)
+            r.leftSheet = sheet(fine, xRange: lo..<hi, turned: turns.left, text: r.leftBlank ? nil : t)
+            r.leftCrop = page(lo..<hi, turns.left, t, r.leftBlank, edges: e)
         }
         return r
+    }
+
+    /// Beyond a page's outer edge, a band the page's height that the text block took
+    /// in: the edges of the leaves below it (Freudenthal 1999, scan 80) or a strip of
+    /// bed tilted by straightening (Riezler 1940). Walking in from the block's outer
+    /// side (`fromLeft`, else its right): ink within the padding, then columns of it,
+    /// together inked in 90% of the scan's whole height (text leaves the space between
+    /// its lines white; a picture, a table or a rule has margins above and below), 1%
+    /// to 12% of the page (`pageWidth`, a share of the scan) wide (a thick book's leaves), then a gap with no
+    /// more than specks of ink (1% of the rows; a corner of bed in the scan's top or foot 5% aside), then print. Returns where the page begins (the gap's
+    /// outer end, normalized), or nil (Codex review, 2026-11-23). A band whose inner
+    /// edge has a rule turning in from it is a frame's side, and print; so is one that
+    /// runs off neither the scan's top nor its foot, or whose innermost ink keeps to
+    /// the text's lines (line numbers beside it).
+    static func outerBand(_ g: GrayBuffer, text: CropRect, fromLeft: Bool, pageWidth: Double) -> Double? {
+        let W = g.width, H = g.height
+        let y0 = max(0, Int(text.minY * Double(H))), y1 = min(H, Int((text.maxY * Double(H)).rounded(.up)))
+        let x0 = max(0, Int(text.minX * Double(W))), x1 = min(W, Int((text.maxX * Double(W)).rounded(.up)))
+        guard y1 - y0 > 20, x1 - x0 > 20 else { return nil }
+        let ink = g.paperLevel(columns: x0..<x1) * 0.75
+        func inked(_ x: Int, _ y: Int) -> Bool { Double(g.value(x, y)) < ink }
+        // Columns are judged inside the scan's top and foot 5%, where a corner of bed may reach in.
+        let middle = (H / 20)..<(H - H / 20)
+        func rows(_ x: Int) -> Int { middle.filter { inked(x, $0) }.count }
+        let step = fromLeft ? 1 : -1, start = fromLeft ? x0 : x1 - 1
+        func inside(_ x: Int) -> Bool { x >= x0 && x < x1 }
+        let pad = Int((textPad * Double(W)).rounded(.up)) + 2, clear = max(1, H / 100)
+        let page = pageWidth * Double(W)
+        let widest = Int(page * 0.12), narrowest = max(2, Int(page * 0.01)), gapWidth = max(3, W / 200)
+        var x = start
+        while inside(x), abs(x - start) <= pad, rows(x) <= clear { x += step }
+        guard inside(x), abs(x - start) <= pad else { return nil }
+        let first = x
+        var last = x, gap = 0
+        var covered = [Bool](repeating: false, count: H)
+        while inside(x), abs(x - first) <= widest + gapWidth {
+            if rows(x) > clear {
+                last = x; gap = 0
+                for y in 0..<H where inked(x, y) { covered[y] = true }
+            } else {
+                gap += 1
+                if gap >= gapWidth { break }
+            }
+            x += step
+        }
+        let width = abs(last - first) + 1
+        guard gap >= gapWidth, width >= narrowest, width <= widest,
+              10 * covered.filter({ $0 }).count >= 9 * covered.count else { return nil }
+        // It runs off the scan's top or foot (within 2%), as leaves' edges and bed
+        // do; a picture or a rule has its margins (Codex review, round 3).
+        let edgeRows = max(1, H / 50)
+        guard covered[..<edgeRows].contains(true) || covered[(H - edgeRows)...].contains(true) else { return nil }
+        // Its innermost ink (back to the first white column, at most a quarter of
+        // it) is no column of line numbers: those keep to the text's lines and leave
+        // the white between them white; the fading edges of leaves fleck it too
+        // (Codex review, rounds 3 and 4). Judged from 4 rows up; specks that happen
+        // to sit on the lines only leave a strip of bed in.
+        var inner = [Bool](repeating: false, count: H)
+        var c = last
+        while abs(c - last) < max(1, width / 4), rows(c) > clear {
+            for y in middle where inked(c, y) { inner[y] = true }
+            c -= step
+        }
+        var lines = [Bool](repeating: false, count: H)
+        var p = x
+        while inside(p), rows(p) <= clear { p += step }
+        for c in stride(from: p, to: p + step * max(4, W / 50), by: step) where inside(c) {
+            for y in middle where inked(c, y) { lines[y] = true }
+        }
+        let innerRows = middle.filter { inner[$0] }
+        if innerRows.count >= 4 {
+            let between = innerRows.filter { y in !(max(0, y - 1)...min(H - 1, y + 1)).contains { lines[$0] } }.count
+            guard 10 * between >= innerRows.count else { return nil }
+        }
+        // A frame's side, not a band: a rule turns in from the band's inner edge
+        // and runs on across the gap (the score's synth-2-0: a frame beside a soft
+        // shadow). Leaves' edges and bed stop at the gap.
+        let reach = gapWidth + max(4, W / 50)
+        for y in 0..<H {
+            var k = last, run = 0, miss = 0
+            while inside(k), miss <= 1, run < reach {
+                if inked(k, y) { run += miss + 1; miss = 0 } else { miss += 1 }
+                k += step
+            }
+            if run >= reach { return nil }
+        }
+        // Print beyond the gap: the band is not the whole block.
+        var k = x
+        while inside(k), rows(k) <= clear { k += step }
+        guard inside(k) else { return nil }
+        return Double(fromLeft ? last + 1 : last) / Double(W)
     }
 
     private static func analyzeText(cgImage: CGImage, as forced: PageClassification?, split: Double?,

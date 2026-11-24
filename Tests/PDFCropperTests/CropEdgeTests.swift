@@ -171,3 +171,126 @@ struct CropEdgePlateSplitTests {
         #expect(p.leftCrop.minX <= 0.023 && p.leftCrop.maxX >= 0.557, "plate side \(p.leftCrop)")
     }
 }
+
+/// John, 2026-11-23: beyond a page's outer edge, a band the page's height (the edges
+/// of the leaves below it, Freudenthal scan 80; a strip of bed, tilted by
+/// straightening, Riezler's right pages) is no print: the page stops at its edge.
+@Suite("Crop to the page's edge: bands beyond the edge")
+struct CropEdgeBandTests {
+    static let w = AnalysisTests.width, h = AnalysisTests.height
+
+    /// The real pages, as the app analyses them (HILLCLIMB_DIR).
+    @Test("Leaf edges (Freudenthal 80) and a tilted bed strip (Riezler 45, 52) are left out",
+          .enabled(if: ProcessInfo.processInfo.environment["HILLCLIMB_DIR"] != nil),
+          arguments: [("Freudenthal", 80, true, 0.045), ("Riezler", 52, false, 0.978), ("Riezler", 45, false, 0.978)])
+    func realBands(book: String, page: Int, left: Bool, edge: Double) throws {
+        let url = try #require(HillClimb.bookURLs().first { $0.lastPathComponent.hasPrefix(book) })
+        let doc = try #require(PDFDocument(url: url))
+        let pdfPage = try #require(doc.page(at: page))
+        let cg = try #require(PDFRenderer.renderCGImage(page: pdfPage, dpi: 110))
+        let r = AppModel.analyzePage(cg, deskew: true, target: .page, findTrim: true).result
+        if left { #expect(r.leftCrop.minX >= edge, "\(book) \(page): left page from \(r.leftCrop.minX)") }
+        else { #expect(r.rightCrop.maxX <= edge, "\(book) \(page): right page to \(r.rightCrop.maxX)") }
+    }
+
+    /// Codex review: a narrow illustration (60 px, 6% of its page) as tall as the
+    /// text beside it, a 10 px gap from the text, margins above and below it. It
+    /// does not run the scan's height, so it is print.
+    @Test("A narrow illustration as tall as the text, with margins above and below, stays")
+    func narrowIllustrationStays() {
+        let img = Fixtures.image(Self.w, Self.h) { c in
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            c.fill(CGRect(x: 100, y: 100, width: 60, height: Self.h - 240))
+            AnalysisTests.text(c, 170, 900)
+            AnalysisTests.text(c, 1100, 1800)
+        }
+        let r = PageAnalyzer.analyze(cgImage: img, as: .spread, split: 0.5, target: .page)
+        #expect(r.leftCrop.minX * Double(Self.w) <= 100, "left page from \(r.leftCrop.minX * Double(Self.w)) px")
+    }
+
+    /// The score's synth-2-0: a soft shadow at the page's left edge, bed bands, a
+    /// tilt of 0.75°, and the left side of a printed frame round the text just
+    /// inside the shadow. The frame is print, and stays.
+    @Test("A frame's side beside a soft edge shadow stays (synth-2-0)")
+    func frameBesideShadow() throws {
+        let s = try #require(HCSynth.book(2, pages: 1).specs.first)
+        let scan = try #require(HCSynth.render(s, .scan))
+        let a = AppModel.analyzePage(scan, deskew: true, target: .page, findTrim: true)
+        let crop = a.result.leftCrop.normalized().pixelRect(in: CGSize(width: s.W, height: s.H)).integral.insetBy(dx: -1, dy: -1)
+        var cut = 0
+        for (k, leaf) in s.leaves.enumerated() where !leaf.items.isEmpty {
+            let mask = try #require(HCSynth.render(s, .print(k)))
+            let comp = ImageTransform.deskewedComposite(mask, splitX: a.result.splitX, leftDegrees: a.leftSkew,
+                                                        rightDegrees: a.rightSkew, isSpread: a.result.classification == .spread)
+            let g = HillClimb.gray(comp)
+            for y in 0..<s.H { for x in 0..<s.W where g[y * s.W + x] < 100 && !crop.contains(CGPoint(x: x, y: y)) { cut += 1 } }
+        }
+        #expect(cut == 0, "\(cut) print pixels outside the crop \(a.result.leftCrop)")
+    }
+
+    /// Codex review, round 3: a dark illustration 60 px wide with margins of 50 px
+    /// (3.8%) above and below, a 10 px gap, then text. It covers over 90% of the
+    /// scan's height but runs off neither its top nor its foot: print.
+    @Test("An illustration with thin margins above and below is no band")
+    func illustrationWithThinMargins() {
+        let img = Fixtures.image(Self.w, Self.h) { c in
+            c.setFillColor(CGColor(gray: 0.2, alpha: 1))
+            c.fill(CGRect(x: 100, y: 50, width: 60, height: Self.h - 100))
+            AnalysisTests.text(c, 170, 900)
+        }
+        let g = GrayBuffer(cgImage: img)!
+        let e = PageAnalyzer.outerBand(g, text: CropRect(x: 0.04, y: 0, width: 0.42, height: 1), fromLeft: true, pageWidth: 0.5)
+        #expect(e == nil, "page edge put at \(String(describing: e.map { $0 * Double(Self.w) })) px")
+    }
+
+    /// Codex review, round 3: leaves' edges x 0 to 50, the whole height, then 6 px
+    /// on, line numbers beside the text's lines (x 56 to 76), a gap, the text from
+    /// 110. The numbers are print: the band must not take them in.
+    @Test("Line numbers just past a band of leaves' edges stay")
+    func lineNumbersBesideLeafEdges() {
+        let img = Fixtures.image(Self.w, Self.h) { c in
+            for x in stride(from: 0, to: 50, by: 5) {
+                c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+                c.fill(CGRect(x: x, y: 0, width: 3, height: Self.h))
+            }
+            AnalysisTests.text(c, 56, 76)
+            AnalysisTests.text(c, 110, 900)
+        }
+        let g = GrayBuffer(cgImage: img)!
+        let e = PageAnalyzer.outerBand(g, text: CropRect(x: 0, y: 0, width: 0.46, height: 1), fromLeft: true, pageWidth: 0.5)
+        #expect(e.map { $0 * Double(Self.w) <= 56 } ?? true, "page edge put at \(String(describing: e.map { $0 * Double(Self.w) })) px")
+    }
+
+    /// Codex review, round 4: a solid band of leaves' edges (x 0 to 80), 5 px of
+    /// white, then line numbers (x 85 to 95), first on every line and then on only
+    /// two lines, a gap, the text from 120. The numbers are print either way.
+    @Test("Line numbers close against a solid band stay, many or few", arguments: [0..<34, 10..<12])
+    func lineNumbersAgainstBand(numbered: Range<Int>) {
+        let img = Fixtures.image(Self.w, Self.h) { c in
+            c.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            c.fill(CGRect(x: 0, y: 0, width: 80, height: Self.h))
+            AnalysisTests.text(c, 85, 95, rows: numbered)
+            AnalysisTests.text(c, 120, 900)
+        }
+        let g = GrayBuffer(cgImage: img)!
+        let e = PageAnalyzer.outerBand(g, text: CropRect(x: 0, y: 0, width: 0.46, height: 1), fromLeft: true, pageWidth: 0.5)
+        #expect(e.map { $0 * Double(Self.w) <= 85 } ?? true, "page edge put at \(String(describing: e.map { $0 * Double(Self.w) })) px")
+    }
+
+    @Test("A picture by the page's outer edge, wider than a band, stays")
+    func pictureByEdgeStays() {
+        // A grey-toned picture x 40 to 280 (12%), y 100 to 1200, a gap, then text.
+        let img = Fixtures.image(Self.w, Self.h) { c in
+            for y in stride(from: 100, to: Self.h - 100, by: 6) {
+                c.setFillColor(CGColor(gray: (y / 6) % 2 == 0 ? 0.2 : 0.5, alpha: 1))
+                c.fill(CGRect(x: 40, y: y, width: 240, height: 6))
+            }
+            AnalysisTests.text(c, 300, 900)
+            AnalysisTests.text(c, 1100, 1800)
+        }
+        for target in [CropTarget.text, .page] {
+            let r = PageAnalyzer.analyze(cgImage: img, as: .spread, split: 0.5, target: target)
+            #expect(r.leftCrop.minX * Double(Self.w) <= 41, "\(target): left page from \(r.leftCrop.minX * Double(Self.w)) px")
+        }
+    }
+}
