@@ -224,6 +224,49 @@ struct ExportTests {
         #expect(abs(try turnedBlackAndWhiteDPI(ppi: 72, "fine72") - 150) < 1)
     }
 
+    /// Bits per component of the first image the exported page draws.
+    private func imageBits(_ url: URL) throws -> Int {
+        let doc = try #require(CGPDFDocument(url as CFURL))
+        let page = try #require(doc.page(at: 1)?.dictionary)
+        var res: CGPDFDictionaryRef?, xobjects: CGPDFDictionaryRef?
+        #expect(CGPDFDictionaryGetDictionary(page, "Resources", &res))
+        #expect(CGPDFDictionaryGetDictionary(try #require(res), "XObject", &xobjects))
+        var bits = -1
+        CGPDFDictionaryApplyBlock(try #require(xobjects), { _, object, _ in
+            var stream: CGPDFStreamRef?
+            guard bits < 0, CGPDFObjectGetValue(object, .stream, &stream), let stream,
+                  let dict = CGPDFStreamGetDictionary(stream) else { return true }
+            var n: CGPDFInteger = 0
+            if CGPDFDictionaryGetInteger(dict, "BitsPerComponent", &n) { bits = n }
+            return true
+        }, nil)
+        return bits
+    }
+
+    /// A turned letter page in `mode`, its scan black bars on white, with a gray patch if `toned`.
+    private func turnedExportBits(_ mode: EnhanceMode, toned: Bool, _ name: String) throws -> Int {
+        let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let scan = Fixtures.image(2550, 3300, gray: true) { c in
+            c.draw(Fixtures.scan(2550, 3300), in: CGRect(x: 0, y: 0, width: 2550, height: 3300))
+            if toned { c.setFillColor(CGColor(gray: 0.5, alpha: 1)); c.fill(CGRect(x: 600, y: 600, width: 900, height: 600)) }
+        }
+        let url = Fixtures.writePDF(name + "-src.pdf", media: letter, pages: [{ $0.draw(scan, in: letter) }])
+        let doc = try #require(PDFDocument(url: url))
+        let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+        var s = noOCR
+        s.enhanceMode = mode
+        let out = Fixtures.url(name + "-out.pdf")
+        _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
+        return try imageBits(out)
+    }
+
+    @Test("A black and white scan stays 1 bit in Color and Gray when straightened; a toned one keeps its grays")
+    func bitonalScanStaysBitonal() throws {
+        #expect(try turnedExportBits(.color, toned: false, "bitonal-color") == 1)
+        #expect(try turnedExportBits(.grayscale, toned: false, "bitonal-gray") == 1)
+        #expect(try turnedExportBits(.color, toned: true, "toned-color") == 8)
+    }
+
     @Test("Batches stop at the byte budget but keep small pages together")
     func batchPlanner() {
         let big = 12_000 * 12_000 * 4          // one 600 DPI scan: about 576 MB

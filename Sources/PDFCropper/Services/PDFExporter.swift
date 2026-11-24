@@ -410,8 +410,12 @@ enum PDFExporter {
     /// blanked on that straight page — before black and white or flattening move
     /// the print out from under the boxes — then in color or gray, flattened if
     /// the settings ask, cut to its crop. The Export view draws these too, from a
-    /// small render. Nil when a crop fails.
+    /// small render. Nil when a crop fails. In Color or Gray, a page whose render is
+    /// pure black and white (a bitonal scan) is made black and white again after
+    /// straightening: the turn's grays are only its blur, and they would store the page
+    /// at 8 bits, several times the size (Simon 1940: 42 times its scan).
     static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings) -> [CGImage]? {
+        let bitonal = settings.enhanceMode != .blackAndWhite && isBitonal(rendered)
         let composite = ImageTransform.deskewedComposite(
             rendered, splitX: page.splitX,
             leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
@@ -424,9 +428,42 @@ enum PDFExporter {
             // A crop that flattening left as it is comes from the page as it was.
             let source = flat.map { $0.changed[k] ? $0.image : enhanced } ?? enhanced
             guard let sub = PDFRenderer.crop(source, to: crop) else { return nil }
-            images.append(sub)
+            images.append(bitonal ? thresholded(sub) ?? sub : sub)
         }
         return images
+    }
+
+    /// Whether every pixel of an RGB(X) or gray 8-bit image is pure black or pure white.
+    static func isBitonal(_ image: CGImage) -> Bool {
+        guard image.bitsPerComponent == 8, image.bitsPerPixel == 8 || image.bitsPerPixel == 32,
+              let data = image.dataProvider?.data, let base = CFDataGetBytePtr(data) else { return false }
+        let w = image.width, h = image.height, stride = image.bytesPerRow, bpp = image.bitsPerPixel / 8
+        guard CFDataGetLength(data) >= stride * h else { return false }
+        let skipFirst = [CGImageAlphaInfo.noneSkipFirst, .premultipliedFirst, .first].contains(image.alphaInfo)
+        let first = bpp == 4 && skipFirst ? 1 : 0
+        for y in 0..<h {
+            let row = base + y * stride
+            for x in 0..<w {
+                let p = row + x * bpp + first
+                let v = p[0]
+                guard v == 0 || v == 255 else { return false }
+                if bpp == 4, p[1] != v || p[2] != v { return false }
+            }
+        }
+        return true
+    }
+
+    /// `image` as 8-bit gray, each pixel black under 128, else white.
+    static func thresholded(_ image: CGImage) -> CGImage? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let data = ctx.data else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let px = data.bindMemory(to: UInt8.self, capacity: w * h)
+        for i in 0..<(w * h) { px[i] = px[i] < 128 ? 0 : 255 }
+        return ctx.makeImage()
     }
 
     /// The straightened page with the print in each of its crops flattened (see Flatten),
