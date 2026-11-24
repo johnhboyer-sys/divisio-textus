@@ -687,4 +687,48 @@ struct EraseTests {
         #expect(box.rect == CropRect(x: 0.1, y: 0.2, width: 0.3, height: 0.15))
         #expect(box.splitX == 0.42 && box.leftSkew == 1.5 && box.rightSkew == -2 && box.spread)
     }
+
+    // Codex review, round 2.
+
+    @Test("A tall box carried through a 5° turn still covers its whole mark")
+    func turnedBoxCoversItsMark() {
+        var page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
+        let r = CropRect(x: 0.5, y: 0.3, width: 0.02, height: 0.1)
+        page.erasures = [page.erasure(for: r)]
+        page.leftSkew = 5
+        let got = page.erasureRects(width: 1000, height: 1000)[0]
+        for (x, y) in [(r.minX, r.minY), (r.maxX, r.minY), (r.minX, r.maxY), (r.maxX, r.maxY)] {
+            let p = spin(x, y, 5, 0.5, 0.5, 1000, 1000)
+            #expect(p.0 >= got.minX - 1e-9 && p.0 <= got.maxX + 1e-9 && p.1 >= got.minY - 1e-9 && p.1 <= got.maxY + 1e-9,
+                    "corner \(x),\(y) turns to \(p), outside \(got)")
+        }
+    }
+
+    @Test("A box by the split lands in the same place in the editor and the export")
+    func editorAndExportAgreeBySplit() {
+        var page = BookPage(sourceIndex: 0, classification: .spread, splitX: 0.5005, analyzed: true)
+        page.leftSkew = 5; page.rightSkew = -5
+        page.erasures = [page.erasure(for: CropRect(x: 0.49025, y: 0.7, width: 0.02, height: 0.1))]
+        page.leftSkew = 0; page.rightSkew = 0
+        let export = page.erasureRects(width: 1000, height: 600)[0], editor = page.erasureRects(width: 100_000, height: 60_000)[0]
+        let dx = (export.minX + export.maxX - editor.minX - editor.maxX) / 2, dy = (export.minY + export.maxY - editor.minY - editor.maxY) / 2
+        #expect(abs(dx) < 0.002 && abs(dy) < 0.002, "export \(export), editor \(editor)")
+    }
+
+    @Test("A box on solid red paper is filled red, not white")
+    func saturatedRingKeepsItsColour() {
+        let w = 60, h = 40
+        let img = Fixtures.image(w, h) { c in
+            // Exactly 255, 0, 0 in the context's own space.
+            c.setFillColor(CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [1, 0, 0, 1])!)
+            c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            c.setFillColor(CGColor(gray: 0, alpha: 1)); c.fill(CGRect(x: 25, y: 15, width: 10, height: 10))
+        }
+        var page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, analyzed: true)
+        page.erasures = [page.erasure(for: CropRect(x: 20.0 / 60, y: 10.0 / 40, width: 20.0 / 60, height: 20.0 / 40))]
+        let out = PDFExporter.erased(img, page: page)
+        let px = HillClimb.rgbx(out)
+        let i = (20 * w + 30) * 4
+        #expect(px[i] > 200 && px[i + 1] < 60 && px[i + 2] < 60, "fill \(px[i]),\(px[i + 1]),\(px[i + 2])")
+    }
 }

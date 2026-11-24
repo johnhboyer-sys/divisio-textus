@@ -157,24 +157,30 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// `box` carried from the straightening it was drawn on to the current one.
     /// Each half — or the whole page, for a single — turns about its own centre.
     /// Positive degrees are counter-clockwise, and y grows downward, which is the
-    /// sense of `rotateInPlace`: the centre goes raw, then forward again.
+    /// sense of `rotateInPlace`. Each corner goes raw, then forward again, each by
+    /// the half it lies in; the box is the upright one round them, so a turned mark
+    /// stays covered (Codex review, round 2).
     private func placed(_ box: Erasure, width: Int, height: Int) -> CropRect {
         if straighteningMatches(box, width: width) { return box.rect }
-        let w = Double(width), h = Double(height)
-        let cx = box.rect.x + box.rect.width / 2, cy = box.rect.y + box.rect.height / 2
-        let fromLeft = onLeft(cx, box.spread, box.splitX, width)
-        let raw = spin(cx, cy, degrees: -(fromLeft ? box.leftSkew : box.rightSkew),
-                       pivotX: halfPivot(box.spread, box.splitX, fromLeft, width), width: w, height: h)
-        let toLeft = onLeft(raw.0, isSpread, splitX, width)
-        let now = spin(raw.0, raw.1, degrees: toLeft ? leftSkew : rightSkew,
-                       pivotX: halfPivot(isSpread, splitX, toLeft, width), width: w, height: h)
-        return CropRect(x: now.0 - box.rect.width / 2, y: now.1 - box.rect.height / 2,
-                        width: box.rect.width, height: box.rect.height)
+        let w = Double(width), h = Double(height), r = box.rect
+        let corners = [(r.minX, r.minY), (r.maxX, r.minY), (r.minX, r.maxY), (r.maxX, r.maxY)].map { p -> (Double, Double) in
+            let fromLeft = onLeft(p.0, box.spread, box.splitX)
+            let raw = spin(p.0, p.1, degrees: -(fromLeft ? box.leftSkew : box.rightSkew),
+                           pivotX: halfPivot(box.spread, box.splitX, fromLeft, width), width: w, height: h)
+            let toLeft = onLeft(raw.0, isSpread, splitX)
+            return spin(raw.0, raw.1, degrees: toLeft ? leftSkew : rightSkew,
+                        pivotX: halfPivot(isSpread, splitX, toLeft, width), width: w, height: h)
+        }
+        let x0 = corners.map(\.0).min()!, x1 = corners.map(\.0).max()!
+        let y0 = corners.map(\.1).min()!, y1 = corners.map(\.1).max()!
+        return CropRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
     }
 
-    private func onLeft(_ nx: Double, _ spread: Bool, _ splitX: Double, _ width: Int) -> Bool {
+    /// Which half a point lies in, by the split itself, so the editor (no pixels)
+    /// and the export (whole pixels) agree near the split.
+    private func onLeft(_ nx: Double, _ spread: Bool, _ splitX: Double) -> Bool {
         guard spread else { return true }
-        return nx * Double(width) < Double(Self.splitPixels(splitX, width))
+        return nx < splitX
     }
 
     /// The centre of the half `left`, or of the whole page, in normalized x.

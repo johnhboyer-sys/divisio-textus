@@ -544,20 +544,23 @@ enum PDFExporter {
         let right = min(w, x1 + ring), bottom = min(h, y1 + ring)
         let channels = bpp == 1 ? 1 : 3
         var samples = (0..<channels).map { _ in [UInt8]() }
+        var bitonal = true      // every ring pixel black or white (all channels alike)
         for y in top..<bottom {
             for x in left..<right {
                 if x >= x0, x < x1, y >= y0, y < y1 { continue }
                 let i = y * stride + x * bpp
+                let v = px[i]
+                if v != 0 && v != 255 || (channels == 3 && (px[i + 1] != v || px[i + 2] != v)) { bitonal = false }
                 for c in 0..<channels { samples[c].append(px[i + c]) }
             }
         }
-        guard !samples[0].isEmpty else { return Array(repeating: 255, count: channels) }
+        // A black-and-white page: white, as a gray between would stop it being stored
+        // as 1 bit. A saturated colour (pure red) is no black and white (Codex review).
+        guard !samples[0].isEmpty, !bitonal else { return Array(repeating: 255, count: channels) }
         return samples.map(median)
     }
 
     private static func median(_ values: [UInt8]) -> UInt8 {
-        // A gray between black and white would stop the page being stored as 1 bit.
-        if values.allSatisfy({ $0 == 0 || $0 == 255 }) { return 255 }
         let s = values.sorted()
         let n = s.count
         if n % 2 == 1 { return s[n / 2] }
