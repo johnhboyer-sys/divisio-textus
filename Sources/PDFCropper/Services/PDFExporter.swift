@@ -181,7 +181,10 @@ enum PDFExporter {
             // Black and white of a straightened page at a low scan resolution
             // would turn the straightening's half pixels into steps that lean
             // upright strokes; it is made from a render twice as fine (a page
-            // holding a picture is made as below).
+            // holding a picture is made as below). Not when the render already holds
+            // two pixels to each of the scan's: a scan claiming under 75 ppi
+            // (Cherniss's claims 72) is drawn at 150 DPI, and a finer render only
+            // enlarges the same pixels, at four times the time and memory.
             // Only the render needs PDFKit: straightening and cutting it (once, by the
             // first of the page's crops to need it) is part of each crop's work, and a
             // crop failing there fails the work (see step 1).
@@ -189,6 +192,7 @@ enum PDFExporter {
             let fineDPI = min(600, 2 * dpi)
             if fine, settings.enhanceMode == .blackAndWhite, dpi < 250,
                abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
+               PDFRenderer.scanDPI(of: pdfPage).map({ dpi < 2 * $0 }) ?? true,
                let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI) {
                 let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
                 // nil when it holds a picture: then none is made at this size.

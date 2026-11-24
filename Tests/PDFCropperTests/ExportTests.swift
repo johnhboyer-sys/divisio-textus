@@ -202,6 +202,28 @@ struct ExportTests {
         #expect(PDFExporter.blackAndWhiteBits(red) == nil)
     }
 
+    /// A turned page in black and white, its scan claiming `ppi`: the DPI its export was made at.
+    private func turnedBlackAndWhiteDPI(ppi: Double, _ name: String) throws -> Double {
+        let media = CGRect(x: 0, y: 0, width: 600 * 72 / ppi, height: 800 * 72 / ppi)
+        let url = Fixtures.writePDF(name + "-src.pdf", media: media, pages: [{ $0.draw(Fixtures.scan(600, 800), in: media) }])
+        let doc = try #require(PDFDocument(url: url))
+        let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+        var s = noOCR
+        s.enhanceMode = .blackAndWhite
+        let out = Fixtures.url(name + "-out.pdf")
+        _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
+        let made = try #require(PDFDocument(url: out)?.page(at: 0))
+        return try #require(PDFRenderer.scanDPI(of: made))
+    }
+
+    @Test("A turned page's black and white is made twice as fine, but not past two pixels to the scan's one")
+    func fineRenderStopsAtTwiceTheScan() throws {
+        // 150 ppi: the render holds the scan's own pixels, so it is made at 300.
+        #expect(abs(try turnedBlackAndWhiteDPI(ppi: 150, "fine150") - 300) < 1)
+        // 72 ppi (Cherniss claims this): the 150 DPI render already holds two pixels to one.
+        #expect(abs(try turnedBlackAndWhiteDPI(ppi: 72, "fine72") - 150) < 1)
+    }
+
     @Test("Batches stop at the byte budget but keep small pages together")
     func batchPlanner() {
         let big = 12_000 * 12_000 * 4          // one 600 DPI scan: about 576 MB
