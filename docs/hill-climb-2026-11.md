@@ -303,3 +303,16 @@ rounding, black-and-white fill, undo selection, grid start, turned and split-spa
 boxes, colour rings), all fixed with tests; the last fix not re-reviewed. 571 tests.
 Not yet tried in the app.
 
+
+## Cherniss black and white speed (merged 2026-11-24, main b5b576f)
+
+Cause: Cherniss's PDF claims 72 ppi (pages measure about 36 inches), so pages render at the
+150 DPI floor, already two pixels to each scan pixel; B&W of a turned page then rendered twice
+as fine again (300 DPI, about 660 MB a page) and an 8 GB Mac swapped (peak 11.6 GB on 20
+pages). Fix: no finer render when the render already holds two pixels to the scan's one.
+Whole book B&W about 17 min to 2.7 min a mode; 20 pages 65 s to 13 s, peak 4.4 GB; file
+half the size. Only Cherniss takes the new clause in the corpus. Text the same by eye; Remove
+shadows print-loss gate no worse (letters 2800 to 2512, other classes down too, Color same).
+Grok review: no findings. Open: whole-book peak memory still 8.7 GB; B&W file 136 MB from a
+20 MB scan (pages still drawn at twice the scan's pixels). John 2026-11-24: work on keeping
+export sizes reasonable.
