@@ -74,6 +74,10 @@ struct BookPage: Identifiable, Codable, Equatable {
     /// Auto-detect keeps it, a removed one too. Absent in older saves.
     var trimByHand: Bool?
 
+    /// Boxes blanked in the export, in the straightened page's frame. Absent in
+    /// older saves.
+    var erasures: [CropRect]? = nil
+
     /// The trim, or the whole page.
     var bounds: CropRect { trim ?? .full }
 

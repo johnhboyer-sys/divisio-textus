@@ -11,7 +11,10 @@ final class AppModel: ObservableObject {
     @Published var sourceURL: URL?
     @Published var pages: [BookPage] = []
     @Published var selectedPageID: BookPage.ID? {
-        didSet { if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil } }   // a trim drawn is that page's
+        didSet {
+            if trimmingPage != nil, trimmingPage != selectedPageID { trimmingPage = nil }   // a trim drawn is that page's
+            if erasingPage != nil, erasingPage != selectedPageID { finishErase() }
+        }
     }
     /// Grid, Page or Stack view. A book opens in Page view.
     enum ViewMode: Hashable { case grid, page, stack }
@@ -154,6 +157,12 @@ final class AppModel: ObservableObject {
     /// Trim from the grid: the pages Done trims, and the way back to the grid after.
     private var trimTargets: Set<BookPage.ID> = []
     private var trimReturnsToGrid = false
+
+    /// Erase: the page whose stamps and marks are being boxed out. The boxes
+    /// themselves live on the page (`BookPage.erasures`).
+    @Published private(set) var erasingPage: BookPage.ID?
+    /// The erase box the Delete key and Remove act on, while erasing.
+    @Published var selectedErasure: Int?
 
     /// A click in the side panel, as on a Mac: one page, a run from the last page
     /// clicked (Shift), or one page more or less (⌘).
@@ -390,6 +399,7 @@ final class AppModel: ObservableObject {
         // record. Keep Working leaves this PDF open, before any of that changes.
         if !saveEdits(pages, direction, wait: true), confirmFailedSave() { return }
         trimmingPage = nil                                      // a trim being drawn was for the old PDF
+        finishErase()                                           // and an erase being drawn
         showsExport = false
         clearImageCaches()
         undoManager?.removeAllActions()
@@ -629,6 +639,11 @@ final class AppModel: ObservableObject {
             }
         } else {
             images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
+        }
+        // The same blanking the export applies, on the pages just finished.
+        let crops = page.outputCrops(direction: direction)
+        if images.count == crops.count {
+            images = zip(images, crops).map { PDFExporter.erased($0, page: page, crop: $1) }
         }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
                                                      removeShadows: removeShadows,
@@ -1827,12 +1842,84 @@ final class AppModel: ObservableObject {
         pages[index] = p
     }
 
+    // MARK: - Erase
+
+    /// Erase on the selected page: draw boxes over stamps and marks. Not for a
+    /// skipped page, which isn't exported. Leaves the page on show.
+    func beginErase() {
+        guard let p = selectedPage, p.classification != .skip, !isBusy else { return }
+        if trimmingPage != nil { cancelTrim() }
+        showsExport = false
+        showsStack = false
+        selectedErasure = nil
+        erasingPage = p.id
+    }
+
+    /// Leave erase mode. The boxes already drawn stay.
+    func finishErase() {
+        erasingPage = nil
+        selectedErasure = nil
+    }
+
+    /// Add one box, in the straightened page's frame. A box under 0.3% of the
+    /// page in either direction is a slip and is dropped. One undo step.
+    func addErasure(_ r: CropRect) {
+        guard let i = selectedIndex, pages[i].id == erasingPage else { return }
+        let box = clampedToPage(r)
+        guard box.width >= 0.003, box.height >= 0.003 else { return }
+        perform("Erase") {
+            var list = pages[i].erasures ?? []
+            list.append(box)
+            pages[i].erasures = list
+        }
+        selectedErasure = (pages[i].erasures?.count ?? 1) - 1
+    }
+
+    /// Move or resize one box. A drag calls beginEdit and endEdit around this,
+    /// so the whole gesture is one undo step.
+    func setErasure(_ rect: CropRect, at index: Int) {
+        guard let i = selectedIndex, pages[i].id == erasingPage,
+              var list = pages[i].erasures, list.indices.contains(index) else { return }
+        list[index] = clampedToPage(rect)
+        pages[i].erasures = list
+    }
+
+    /// Remove the selected box. One undo step.
+    func removeSelectedErasure() {
+        guard let i = selectedIndex, let sel = selectedErasure,
+              let list = pages[i].erasures, list.indices.contains(sel) else { return }
+        perform("Remove Erasure") {
+            var list = pages[i].erasures ?? []
+            guard list.indices.contains(sel) else { return }
+            list.remove(at: sel)
+            pages[i].erasures = list.isEmpty ? nil : list
+        }
+        selectedErasure = nil
+    }
+
+    /// Remove every box on the selected page. One undo step.
+    func clearErasures() {
+        guard let i = selectedIndex, pages[i].erasures?.isEmpty == false else { return }
+        perform("Clear Erasures") {
+            pages[i].erasures = nil
+        }
+        selectedErasure = nil
+    }
+
+    /// The part of `r` that lies on the page.
+    private func clampedToPage(_ r: CropRect) -> CropRect {
+        let x0 = min(max(r.minX, 0), 1), y0 = min(max(r.minY, 0), 1)
+        let x1 = min(max(r.maxX, 0), 1), y1 = min(max(r.maxY, 0), 1)
+        return CropRect(x: x0, y: y0, width: max(0, x1 - x0), height: max(0, y1 - y0))
+    }
+
     // MARK: - Trim
 
     /// Trim This Page, or (`allPages`) Trim All Pages: show the selected page whole,
     /// its trim to draw.
     func beginTrim(allPages: Bool = false) {
         guard let p = selectedPage, allPages || p.classification != .skip, !isBusy else { return }
+        finishErase()
         trimTargets = []
         trimReturnsToGrid = false
         trimDraft = p.trim ?? .full

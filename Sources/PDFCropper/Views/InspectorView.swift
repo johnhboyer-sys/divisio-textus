@@ -95,6 +95,7 @@ private struct PageSections: View {
 
             if page.classification != .skip {
                 TrimSection(allPages: false)
+                EraseSection()
 
                 Section("Straighten") {
                     if page.classification == .spread {
@@ -282,6 +283,7 @@ private struct SelectionSections: View {
                         .disabled(!chosen.contains { $0.trim != nil } || model.isBusy)
                 }
             }
+            EraseSection()
 
             Section("Straighten") {
                 if spreads.isEmpty {
@@ -529,6 +531,36 @@ private struct StackSections: View {
             }
         } header: {
             Text("Pages in this stack")
+        }
+    }
+}
+
+/// Erase: draw boxes over stamps or marks on the selected page. Done leaves the mode.
+private struct EraseSection: View {
+    @EnvironmentObject var model: AppModel
+
+    /// The box Remove acts on, when that index still exists.
+    private var selectedBox: CropRect? {
+        guard let i = model.selectedErasure, let boxes = model.selectedPage?.erasures, boxes.indices.contains(i) else { return nil }
+        return boxes[i]
+    }
+
+    var body: some View {
+        let erasing = model.erasingPage != nil
+        Section("Erase") {
+            Button {
+                if erasing { model.finishErase() } else { model.beginErase() }
+            } label: {
+                Label(erasing ? "Done" : "Erase", systemImage: "eraser").frame(maxWidth: .infinity)
+            }
+            .disabled(!erasing && (model.isBusy || model.selectedPage?.classification == .skip))
+            .help("Draw boxes over stamps or marks; they come out blank in the export")
+            HStack {
+                Button { model.removeSelectedErasure() } label: { Text("Remove").frame(maxWidth: .infinity) }
+                    .disabled(selectedBox == nil)
+                Button { model.clearErasures() } label: { Text("Clear All").frame(maxWidth: .infinity) }
+                    .disabled(model.selectedPage?.erasures?.isEmpty != false)
+            }
         }
     }
 }

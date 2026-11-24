@@ -17,6 +17,14 @@ struct PageEditorView: View {
     /// Live pinch amount, applied on top of model.zoom until the gesture ends.
     @GestureState private var pinch: CGFloat = 1
 
+    /// The erase box being drawn, in the straightened page's frame. State rather
+    /// than @State: Command Line Tools can't compile the @State macro (see CropBoxView).
+    private let eraseDraftState = State<CropRect?>(initialValue: nil)
+    private var eraseDraft: CropRect? {
+        get { eraseDraftState.wrappedValue }
+        nonmutating set { eraseDraftState.wrappedValue = newValue }
+    }
+
     @ViewBuilder
     private func editor(for idx: Int) -> some View {
         let page = model.pages[idx]
@@ -65,11 +73,23 @@ struct PageEditorView: View {
                             trimOverlay(frame: frame)
                         } else if page.classification == .skip {
                             skipOverlay(frame: frame)
-                        } else if frame.width > 0 {
+                        } else if frame.width > 0, model.erasingPage != page.id {
                             overlays(for: idx, frame: frame, area: area)
+                        }
+                        // Erase boxes stay visible so the blanked area is obvious.
+                        // While erasing, the crop boxes above are gone: they would
+                        // take the drag that draws a new box.
+                        if !trimming, frame.width > 0,
+                           model.erasingPage == page.id || page.erasures?.isEmpty == false {
+                            eraseOverlay(for: idx, frame: frame, area: area, canvas: canvas)
                         }
                     }
                     .frame(width: canvas.width, height: canvas.height)
+                    .coordinateSpace(name: "pageCanvas")
+                    .focusable(model.erasingPage == page.id)
+                    .onDeleteCommand {
+                        if model.erasingPage == page.id { model.removeSelectedErasure() }
+                    }
                 }
                 .scrollDisabled(zoom <= 1)
                 .simultaneousGesture(
@@ -115,6 +135,105 @@ struct PageEditorView: View {
             .allowsHitTesting(false)
         CropBoxView(crop: Binding(get: { model.trimDraft }, set: { model.trimDraft = $0 }),
                     imageFrame: frame, color: .pink, label: "Trim", tracksPageEdits: false)
+    }
+
+    /// Each erase box, white so the page shows what will go blank, with a red
+    /// edge. While erasing, a drag on empty page draws a new one and the selected
+    /// box can be moved.
+    @ViewBuilder
+    private func eraseOverlay(for idx: Int, frame: CGRect, area: CropRect, canvas: CGSize) -> some View {
+        let page = model.pages[idx]
+        let boxes = page.erasures ?? []
+        let erasing = model.erasingPage == page.id
+        // One canvas-sized layer, so positions match the crop boxes' frame.
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: canvas.width, height: canvas.height).allowsHitTesting(false)
+            if erasing {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: frame.width, height: frame.height)
+                    .position(x: frame.midX, y: frame.midY)
+                    .highPriorityGesture(eraseDrawGesture(idx: idx, frame: frame, area: area))
+            }
+            ForEach(Array(boxes.indices), id: \.self) { i in
+                if let r = placed(boxes[i], frame: frame, area: area) {
+                    eraseMark(r, tap: erasing && model.selectedErasure != i ? i : nil)
+                }
+            }
+            if erasing, let i = model.selectedErasure, boxes.indices.contains(i) {
+                CropBoxView(crop: erasureBinding(idx, i, area), imageFrame: frame,
+                            color: .red, label: "Erase", tracksPageEdits: true)
+            }
+            if erasing, let draft = eraseDraft, let r = placed(draft, frame: frame, area: area) {
+                eraseMark(r, tap: nil)
+            }
+        }
+        .frame(width: canvas.width, height: canvas.height, alignment: .topLeading)
+    }
+
+    /// White at 85% with a thin red edge. `tap` selects that box; nil lets hits through.
+    @ViewBuilder
+    private func eraseMark(_ r: CGRect, tap: Int?) -> some View {
+        let mark = Rectangle()
+            .fill(Color.white.opacity(0.85))
+            .overlay(Rectangle().stroke(Color.red, lineWidth: 1))
+            .frame(width: max(r.width, 1), height: max(r.height, 1))
+            .position(x: r.midX, y: r.midY)
+        if let tap {
+            mark.onTapGesture { model.selectedErasure = tap }
+        } else {
+            mark.allowsHitTesting(false)
+        }
+    }
+
+    private func eraseDrawGesture(idx: Int, frame: CGRect, area: CropRect) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("pageCanvas"))
+            .onChanged { value in
+                let start = pagePoint(value.startLocation, frame: frame, area: area)
+                let boxes = model.pages.indices.contains(idx) ? (model.pages[idx].erasures ?? []) : []
+                // A drag that starts on a box selects it (the tap) rather than drawing another.
+                if eraseDraft == nil, boxes.contains(where: { covers($0, start) }) { return }
+                eraseDraft = span(start, pagePoint(value.location, frame: frame, area: area))
+            }
+            .onEnded { _ in
+                let drawn = eraseDraft
+                eraseDraft = nil
+                if let drawn { model.addErasure(drawn) }
+            }
+    }
+
+    private func erasureBinding(_ idx: Int, _ box: Int, _ area: CropRect) -> Binding<CropRect> {
+        Binding(get: {
+            let boxes = model.pages[idx].erasures ?? []
+            let r = boxes.indices.contains(box) ? boxes[box] : .full
+            return r.relative(to: area)
+        }, set: { model.setErasure($0.absolute(in: area), at: box) })
+    }
+
+    /// `box` in the canvas, clipped to the part of the page on show (`area`).
+    private func placed(_ box: CropRect, frame: CGRect, area: CropRect) -> CGRect? {
+        let x0 = max(box.minX, area.minX), y0 = max(box.minY, area.minY)
+        let x1 = min(box.maxX, area.maxX), y1 = min(box.maxY, area.maxY)
+        guard x1 > x0, y1 > y0, area.width > 0, area.height > 0, frame.width > 0 else { return nil }
+        let rx = (x0 - area.x) / area.width, ry = (y0 - area.y) / area.height
+        return CGRect(x: frame.minX + rx * frame.width,
+                      y: frame.minY + ry * frame.height,
+                      width: (x1 - x0) / area.width * frame.width,
+                      height: (y1 - y0) / area.height * frame.height)
+    }
+
+    private func pagePoint(_ p: CGPoint, frame: CGRect, area: CropRect) -> (x: Double, y: Double) {
+        let rx = (Double(p.x) - frame.minX) / Double(frame.width)
+        let ry = (Double(p.y) - frame.minY) / Double(frame.height)
+        return (area.x + rx * area.width, area.y + ry * area.height)
+    }
+
+    private func span(_ a: (x: Double, y: Double), _ b: (x: Double, y: Double)) -> CropRect {
+        CropRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    private func covers(_ box: CropRect, _ p: (x: Double, y: Double)) -> Bool {
+        p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY
     }
 
     @ViewBuilder

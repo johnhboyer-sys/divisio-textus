@@ -327,6 +327,12 @@ enum PDFExporter {
                         }
                     }
                 }
+                // Blank stamps and marks before OCR, so they leave the text layer too.
+                let crops = plan.page.outputCrops(direction: settings.direction)
+                for k in done.indices where crops.indices.contains(k) {
+                    let crop = crops[k]
+                    done[k] = done[k].map { erased($0, page: plan.page, crop: crop) }
+                }
                 images += done.compactMap { $0 }
                 dpis += doneDPI
             }
@@ -450,6 +456,96 @@ enum PDFExporter {
     /// if the settings ask. The export and the Export view both make it here.
     static func pictureFinished(_ image: CGImage, dpi: Double, settings: Settings) -> CGImage {
         settings.removeShadows ? ShadowRemoval.page(image, dpi: dpi) ?? image : image
+    }
+
+    /// Blank each of `page.erasures` that meets `crop`. `image` is that crop of the
+    /// straightened page (its pixels are the crop, scaled to the image's size). The
+    /// fill is the median colour of a ring 3 px wide just outside the box — the
+    /// paper — or white when that ring is empty. A gray image stays gray. No
+    /// erasures, or none on this crop: the same image.
+    static func erased(_ image: CGImage, page: BookPage, crop: CropRect) -> CGImage {
+        guard let boxes = page.erasures, !boxes.isEmpty else { return image }
+        let w = image.width, h = image.height
+        guard w > 0, h > 0 else { return image }
+        let hits = boxes.compactMap { erasurePixels($0, crop: crop, width: w, height: h) }
+        guard !hits.isEmpty else { return image }
+        return paintErasures(image, rects: hits)
+    }
+
+    /// The erasure's overlap with `crop`, in `image`'s pixels (top-left origin).
+    private static func erasurePixels(_ erasure: CropRect, crop: CropRect, width: Int, height: Int) -> CGRect? {
+        guard crop.width > 1e-9, crop.height > 1e-9 else { return nil }
+        let x0 = max(erasure.minX, crop.minX), y0 = max(erasure.minY, crop.minY)
+        let x1 = min(erasure.maxX, crop.maxX), y1 = min(erasure.maxY, crop.maxY)
+        guard x1 > x0, y1 > y0 else { return nil }
+        let px0 = (x0 - crop.x) / crop.width * Double(width)
+        let py0 = (y0 - crop.y) / crop.height * Double(height)
+        let px1 = (x1 - crop.x) / crop.width * Double(width)
+        let py1 = (y1 - crop.y) / crop.height * Double(height)
+        guard px1 > px0, py1 > py0 else { return nil }
+        return CGRect(x: px0, y: py0, width: px1 - px0, height: py1 - py0)
+    }
+
+    /// Draw `image` and fill `rects` (pixel space, top-left) with the paper colour.
+    private static func paintErasures(_ image: CGImage, rects: [CGRect]) -> CGImage {
+        let w = image.width, h = image.height
+        let gray = image.colorSpace?.model == .monochrome
+        let space = gray ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB()
+        let bpp = gray ? 1 : 4
+        let info = gray ? CGImageAlphaInfo.none.rawValue : CGImageAlphaInfo.noneSkipLast.rawValue
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * bpp, space: space, bitmapInfo: info),
+              let data = ctx.data else { return image }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let stride = ctx.bytesPerRow
+        let px = data.bindMemory(to: UInt8.self, capacity: stride * h)
+        for rect in rects {
+            let x0 = max(0, min(w, Int(floor(rect.minX))))
+            let y0 = max(0, min(h, Int(floor(rect.minY))))
+            let x1 = max(0, min(w, Int(ceil(rect.maxX))))
+            let y1 = max(0, min(h, Int(ceil(rect.maxY))))
+            guard x1 > x0, y1 > y0 else { continue }
+            let color = ringMedian(px, stride: stride, bpp: bpp, w: w, h: h, x0: x0, y0: y0, x1: x1, y1: y1)
+            for y in y0..<y1 {
+                for x in x0..<x1 {
+                    let i = y * stride + x * bpp
+                    px[i] = color[0]
+                    if bpp == 4 {
+                        px[i + 1] = color[1]
+                        px[i + 2] = color[2]
+                        px[i + 3] = 255
+                    }
+                }
+            }
+        }
+        return ctx.makeImage() ?? image
+    }
+
+    /// Median of each channel in the 3 px ring just outside the box, or white.
+    private static func ringMedian(_ px: UnsafeMutablePointer<UInt8>, stride: Int, bpp: Int,
+                                   w: Int, h: Int, x0: Int, y0: Int, x1: Int, y1: Int) -> [UInt8] {
+        let ring = 3
+        let left = max(0, x0 - ring), top = max(0, y0 - ring)
+        let right = min(w, x1 + ring), bottom = min(h, y1 + ring)
+        let channels = bpp == 1 ? 1 : 3
+        var samples = (0..<channels).map { _ in [UInt8]() }
+        for y in top..<bottom {
+            for x in left..<right {
+                if x >= x0, x < x1, y >= y0, y < y1 { continue }
+                let i = y * stride + x * bpp
+                for c in 0..<channels { samples[c].append(px[i + c]) }
+            }
+        }
+        guard !samples[0].isEmpty else { return Array(repeating: 255, count: channels) }
+        return samples.map(median)
+    }
+
+    private static func median(_ values: [UInt8]) -> UInt8 {
+        let s = values.sorted()
+        let n = s.count
+        if n % 2 == 1 { return s[n / 2] }
+        return UInt8((Int(s[n / 2 - 1]) + Int(s[n / 2])) / 2)
     }
 
     /// The page image to embed, in whichever form makes the smaller file. Pages
