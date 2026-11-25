@@ -224,6 +224,30 @@ struct ExportTests {
         #expect(abs(try turnedBlackAndWhiteDPI(ppi: 72, "fine72") - 150) < 1)
     }
 
+    @Test("A turned 1-bit scan's black and white is made at the scan's DPI, not twice as fine")
+    func bitonalScanNotMadeFine() throws {
+        let w = 1000, h = 1400, rowBytes = (w + 7) / 8       // 5 x 7 inches at 200 ppi
+        var bits = [UInt8](repeating: 0xFF, count: rowBytes * h)
+        for y in stride(from: 100, to: 1300, by: 30) { for x in 100..<900 where (x / 7) % 3 != 0 { bits[y * rowBytes + x / 8] &= ~(0x80 >> UInt8(x % 8)) } }
+        let provider = try #require(CGDataProvider(data: Data(bits) as CFData))
+        let scan = try #require(CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let media = CGRect(x: 0, y: 0, width: Double(w) * 72 / 200, height: Double(h) * 72 / 200)
+        let url = Fixtures.writePDF("bitonal200-src.pdf", media: media, pages: [{ $0.draw(scan, in: media) }])
+        let doc = try #require(PDFDocument(url: url))
+        let pdfPage = try #require(doc.page(at: 0))
+        #expect(PDFRenderer.isBitonalScan(pdfPage))
+        let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+        var s = noOCR
+        s.enhanceMode = .blackAndWhite
+        #expect(PDFExporter.fineDPI(page, pdfPage, dpi: 200, settings: s) == nil)
+        let out = Fixtures.url("bitonal200-out.pdf")
+        _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
+        let made = try #require(PDFDocument(url: out)?.page(at: 0))
+        #expect(abs(try #require(PDFRenderer.scanDPI(of: made)) - 200) < 1)
+    }
+
     /// Bits per component of the first image the exported page draws.
     private func imageBits(_ url: URL) throws -> Int {
         let doc = try #require(CGPDFDocument(url as CFURL))

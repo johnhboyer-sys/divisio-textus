@@ -43,10 +43,11 @@ enum PDFExporter {
     /// strokes. Not when the render already holds two pixels to each of the scan's (a scan
     /// claiming under 75 ppi is drawn at 150 DPI), nor for a page claiming 20 inches or more:
     /// there a finer render only enlarges the same pixels, at four times the time and memory.
+    /// Nor for a 1-bit scan (`isBitonalScan`): it has no grays to step, and is made at its own DPI.
     static func fineDPI(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double, settings: Settings) -> Double? {
         guard settings.enhanceMode == .blackAndWhite, dpi < 250,
               abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
-              !claimsOversize(pdfPage),
+              !claimsOversize(pdfPage), !PDFRenderer.isBitonalScan(pdfPage),
               PDFRenderer.scanDPI(of: pdfPage).map({ dpi < 2 * $0 }) ?? true else { return nil }
         return min(600, 2 * dpi)
     }
