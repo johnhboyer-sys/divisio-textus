@@ -316,3 +316,25 @@ shadows print-loss gate no worse (letters 2800 to 2512, other classes down too, 
 Grok review: no findings. Open: whole-book peak memory still 8.7 GB; B&W file 136 MB from a
 20 MB scan (pages still drawn at twice the scan's pixels). John 2026-11-24: work on keeping
 export sizes reasonable.
+
+## Export sizes (merged 2026-11-24, main f372c73)
+
+John: "we need to work on keeping export sizes reasonable." Three changes:
+- Color and Gray: a black and white scan (`PDFRenderer.isBitonalScan`: only 1-bit gray images
+  drawing pure black and white, or stencils inked exactly black, nothing under an ExtGState, no
+  annotations; or a render already pure black and white) is thresholded back to black and white
+  after straightening, so it is stored at 1 bit.
+- 1-bit images are recoded as CCITT Group 4 after the PDF is written (PDFCCITT, CCITTG4 after
+  libtiff), only when smaller; a file not as Quartz writes it is left alone. 891 output pages of
+  all 8 books in Color, Gray and B&W render pixel-identical with and without it; no added time.
+- A page claiming 20 inches or more renders at the scan's own pixels (no 150 floor, no finer
+  B&W). The render and fine-render rules are shared (`renderDPI(of:settings:)`, `fineDPI`), so
+  the Export view's Flatten preview and the harnesses follow the export.
+First 20 pages, MB (scan / Color before → now / B&W before → now): Cherniss 1.9 / 49 → 1.5 /
+10.1 → 1.9; Simon 1940 0.4 / 18 → 1.9 / 4.9 → 1.9; Riezler 5.3 / 21 → 2.2 / 4.5 → 1.9;
+Freudenthal 2.9 / 14 → 4.4 / 5.3 → 3.7; Wallace 1.4 / 5.6 → 1.1 / 3.3 → 1.9; Oesterle Color
+unchanged (color scan). Cherniss 20 pages 15 s to 4 s. Remove shadows print-loss check on
+Cherniss no worse. Grok stalled 13 h on the Group 4 brief and wrote nothing; Claude wrote it;
+Codex two rounds, all findings fixed; 587 tests. Trade-off: a real foldout of 20+ inches scanned
+at low resolution exports at that resolution. Before/after:
+https://claude.ai/artifact/2sJGWMidkGmsgLKgqkz1tb
