@@ -32,9 +32,7 @@ struct HillClimbFlattenTests {
 
     /// The DPI the exporter renders a page at.
     static func exportDPI(_ page: PDFPage, _ settings: PDFExporter.Settings) -> Double {
-        settings.matchScanResolution
-            ? PDFRenderer.scanDPI(of: page).map { min(600, max(150, $0)) } ?? settings.dpi
-            : settings.dpi
+        PDFExporter.renderDPI(of: page, settings: settings)
     }
 
     struct Side {

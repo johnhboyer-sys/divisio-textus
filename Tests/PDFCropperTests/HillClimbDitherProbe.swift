@@ -132,8 +132,7 @@ struct HillClimbDitherProbe {
             for page in m.pages {
                 autoreleasepool {
                     guard let pdfPage = doc.page(at: page.sourceIndex) else { return }
-                    let dpi = settings.matchScanResolution
-                        ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi : settings.dpi
+                    let dpi = PDFExporter.renderDPI(of: pdfPage, settings: settings)
                     guard let r = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi),
                           let images = PDFExporter.outputImages(of: page, rendered: r, settings: settings) else { return }
                     for (k, image) in images.enumerated() {
