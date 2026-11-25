@@ -121,8 +121,10 @@ Import → auto-classify → gutter split → deskew → crop → OCR → reorde
    fixed DPI for pages without a scan), at its own size (never padded or scaled;
    the page keeps its physical size), adds an invisible OCR text layer, and
    writes pages in reading order. Each page is stored as JPEG or losslessly,
-   whichever is smaller (gray when the scan has no color). Pages are processed a
-   few at a time, so memory stays flat however long the book is; ⌘. cancels.
+   whichever is smaller (gray when the scan has no color; a black and white page
+   as lossless JBIG2 or Group 4, never JBIG2 symbol matching, which can swap
+   letters). Pages are processed a few at a time, so memory stays flat however
+   long the book is; ⌘. cancels.
    Any text the PDF already had is replaced, since each page is a new image;
    when a PDF you open has text, the app says so.
 

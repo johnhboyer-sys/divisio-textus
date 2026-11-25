@@ -2,17 +2,17 @@ import Foundation
 import Compression
 import CoreGraphics
 
-/// Stores an exported PDF's 1-bit page images as CCITT Group 4 instead of Flate (Quartz
-/// writes only Flate or JPEG): about half the size, every pixel the same. Works on the PDF
-/// as Quartz writes it — one classic xref table, plain objects — and leaves any file it
+/// Stores an exported PDF's 1-bit page images as CCITT Group 4 or lossless JBIG2 instead of
+/// Flate (Quartz writes only Flate or JPEG), whichever is smallest: every pixel the same.
+/// Works on the PDF as Quartz writes it — one classic xref table, plain objects — and leaves any file it
 /// doesn't fully understand exactly as it was.
 enum PDFCCITT {
 
     /// Rewrite the file at `url`; true when it changed.
     @discardableResult
-    static func recompress(at url: URL) -> Bool {
+    static func recompress(at url: URL, jbig2: Bool = PDFExporter.storesJBIG2) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .alwaysMapped),
-              let plan = plan(data) , !plan.replacements.isEmpty else { return false }
+              let plan = plan(data, jbig2: jbig2) , !plan.replacements.isEmpty else { return false }
         let tmp = url.deletingLastPathComponent()
             .appendingPathComponent(".ccitt-\(UUID().uuidString)-" + url.lastPathComponent)
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -32,9 +32,10 @@ enum PDFCCITT {
         var xrefOffset: Int
         var trailer: Data               // from "trailer" up to "startxref"
         var replacements: [Int: Data]   // object number → the whole new object
+        var jbig2 = false               // some image is now JBIG2, a PDF 1.4 filter
     }
 
-    private static func plan(_ d: Data) -> Plan? {
+    private static func plan(_ d: Data, jbig2: Bool) -> Plan? {
         let bytes = [UInt8](d.suffix(64))
         guard let tail = String(bytes: bytes, encoding: .isoLatin1),
               let r = tail.range(of: "startxref", options: .backwards) else { return nil }
@@ -76,15 +77,19 @@ enum PDFCCITT {
         var made = [Data?](repeating: nil, count: objects.count)
         made.withUnsafeMutableBufferPointer { out in
             DispatchQueue.concurrentPerform(iterations: objects.count) { i in
-                autoreleasepool { out[i] = recoded(d, objects[i], byNumber) }
+                autoreleasepool { out[i] = recoded(d, objects[i], byNumber, jbig2: jbig2) }
             }
         }
-        for (i, o) in objects.enumerated() { if let new = made[i] { plan.replacements[o.number] = new } }
+        for (i, o) in objects.enumerated() {
+            guard let new = made[i] else { continue }
+            plan.replacements[o.number] = new
+            if new.prefix(1024).range(of: Data("/JBIG2Decode".utf8)) != nil { plan.jbig2 = true }
+        }
         return plan
     }
 
-    /// The object as CCITT G4, when it is a 1-bit Flate image that comes out smaller.
-    private static func recoded(_ d: Data, _ o: Object, _ objects: [Int: Object]) -> Data? {
+    /// The object as CCITT G4 or JBIG2, when it is a 1-bit Flate image that comes out smaller.
+    private static func recoded(_ d: Data, _ o: Object, _ objects: [Int: Object], jbig2: Bool) -> Data? {
         // Header and dictionary: up to the stream keyword.
         let scan = min(o.end, o.offset + 2048)
         guard let start = text(d, o.offset, scan), start.contains("/Image"),
@@ -130,15 +135,24 @@ enum PDFCCITT {
             return compression_decode_buffer(&raw, raw.count, p, length - 2, nil, COMPRESSION_ZLIB)
         }
         guard got == expected else { return nil }
+        // The smallest of the stream as it is, Group 4 and JBIG2.
+        var best: (bytes: Data, filter: String)?
         let g4 = raw.withUnsafeBytes { CCITTG4.encode($0, width: w, height: h, rowBytes: rowBytes) }
-        guard !g4.isEmpty, g4.count < length else { return nil }
+        if !g4.isEmpty, g4.count < length {
+            best = (g4, "/Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns \(w) /Rows \(h) /BlackIs1 false >>")
+        }
+        if jbig2 {
+            // JBIG2 1 is black, read through DeviceGray as 0: no /Decode needed.
+            let jb = raw.withUnsafeBytes { JBIG2Generic.encode($0, width: w, height: h, rowBytes: rowBytes) }
+            if !jb.isEmpty, jb.count < (best?.bytes.count ?? length) { best = (jb, "/Filter /JBIG2Decode") }
+        }
+        guard let best else { return nil }
         // The dictionary as written, its filter and length replaced.
         var kept = dict
         for key in ["Filter", "Length"] { kept = removing(kept, key) }
-        let newDict = kept.trimmingCharacters(in: .whitespacesAndNewlines)
-            + " /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns \(w) /Rows \(h) /BlackIs1 false >> /Length \(g4.count)"
+        let newDict = kept.trimmingCharacters(in: .whitespacesAndNewlines) + " \(best.filter) /Length \(best.bytes.count)"
         var out = Data("\(o.number) 0 obj\n<< \(newDict) >>\nstream\n".utf8)
-        out.append(g4)
+        out.append(best.bytes)
         out.append(Data("\nendstream\nendobj\n".utf8))
         return out
     }
@@ -199,7 +213,11 @@ enum PDFCCITT {
         func put(_ chunk: Data) throws { try out.write(contentsOf: chunk); written += chunk.count }
         do {
             let first = plan.objects.first?.offset ?? plan.xrefOffset
-            try put(d.subdata(in: d.startIndex ..< d.startIndex + first))
+            var head = d.subdata(in: d.startIndex ..< d.startIndex + first)
+            // Quartz writes 1.3; JBIG2 needs 1.4, the same length.
+            let v13 = Data("%PDF-1.3".utf8)
+            if plan.jbig2, head.starts(with: v13) { head.replaceSubrange(0..<v13.count, with: Data("%PDF-1.4".utf8)) }
+            try put(head)
             for o in plan.objects {
                 offsets[o.number] = written
                 if let new = plan.replacements[o.number] {

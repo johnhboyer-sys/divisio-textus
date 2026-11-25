@@ -75,7 +75,7 @@ struct CCITTTests {
         try? FileManager.default.removeItem(at: copy)
         try FileManager.default.copyItem(at: src, to: copy)
         let before = try Data(contentsOf: copy)
-        let changed = PDFCCITT.recompress(at: copy)
+        let changed = PDFCCITT.recompress(at: copy, jbig2: false)
         if changed {
             #expect(Self.filter(copy) == "CCITTFaxDecode", "\(name)")
             #expect(try Data(contentsOf: copy).count < before.count, "\(name)")
@@ -217,8 +217,8 @@ struct CCITTTests {
         #expect(PDFCCITT.offsetField(10_000_000_000) == nil)
     }
 
-    @Test("An export of a black and white scan stores its page as Group 4")
-    func exportUsesGroup4() throws {
+    @Test("An export of a black and white scan stores its page as JBIG2")
+    func exportUsesJBIG2() throws {
         let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
         let url = Fixtures.writePDF("g4-export-src.pdf", media: letter, pages: [{ $0.draw(Fixtures.scan(2550, 3300), in: letter) }])
         let doc = try #require(PDFDocument(url: url))
@@ -227,7 +227,7 @@ struct CCITTTests {
         s.ocr = false
         let out = Fixtures.url("g4-export-out.pdf")
         _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
-        #expect(Self.filter(out) == "CCITTFaxDecode")
+        #expect(Self.filter(out) == "JBIG2Decode")
         #expect(PDFDocument(url: out)?.pageCount == 1)
     }
 }

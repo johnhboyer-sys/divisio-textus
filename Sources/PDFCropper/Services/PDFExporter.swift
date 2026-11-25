@@ -75,6 +75,8 @@ enum PDFExporter {
 
     /// Off only in tests that compare an export with and without Group 4.
     nonisolated(unsafe) static var storesGroup4 = true
+    /// Off only in tests that compare an export with and without JBIG2 (needs Group 4 on).
+    nonisolated(unsafe) static var storesJBIG2 = true
 
     /// Lets tests read installed packs without changing the user's pack folder.
     static var tessdataOverride: URL?
