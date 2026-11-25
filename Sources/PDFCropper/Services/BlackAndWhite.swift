@@ -1229,14 +1229,29 @@ enum BlackAndWhite {
         pictureCells(paper, gray, w, h, dpi: dpi).area > LayeredScan.pictureLimit
     }
 
-    /// Where a picture is (see `holdsPicture`), pixel by pixel, grown by 0.1 inch.
+    /// Where a picture is (see `holdsPicture`), pixel by pixel, grown by 0.1 inch: its
+    /// groups with their thin places, those holding a solid place. Thin places alone are
+    /// none (the page stack's thin dark edge down a side, which the paper map follows).
     static func pictureMap(_ paper: [UInt8], _ gray: [UInt8], _ w: Int, _ h: Int, dpi: Double) -> [Bool] {
         let cells = pictureCells(paper, gray, w, h, dpi: dpi, solid: false)
         var out = [Bool](repeating: false, count: w * h)
         guard cells.mark.contains(true) else { return out }
+        let solid = pictureCells(paper, gray, w, h, dpi: dpi).mark
+        var mark = cells.mark.indices.map { cells.mark[$0] && solid[$0] }
+        guard mark.contains(true) else { return out }
+        let cw = cells.width, ch = cells.mark.count / cw
+        var stack = mark.indices.filter { mark[$0] }
+        while let k = stack.popLast() {
+            let x = k % cw, y = k / cw
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < cw, ny < ch, cells.mark[ny * cw + nx], !mark[ny * cw + nx] else { continue }
+                mark[ny * cw + nx] = true
+                stack.append(ny * cw + nx)
+            }
+        }
         let grow = max(1, Int((0.1 * dpi / Double(cells.step)).rounded()))
-        let grown = LayeredScan.minFilter(cells.mark.map { $0 ? 0 : 255 }, cells.width, cells.mark.count / cells.width,
-                                          radius: grow)
+        let grown = LayeredScan.minFilter(mark.map { $0 ? 0 : 255 }, cw, ch, radius: grow)
         for y in 0..<h {
             for x in 0..<w where grown[(y / cells.step) * cells.width + x / cells.step] == 0 { out[y * w + x] = true }
         }
