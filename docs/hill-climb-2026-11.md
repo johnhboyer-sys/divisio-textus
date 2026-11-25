@@ -338,3 +338,22 @@ Cherniss no worse. Grok stalled 13 h on the Group 4 brief and wrote nothing; Cla
 Codex two rounds, all findings fixed; 587 tests. Trade-off: a real foldout of 20+ inches scanned
 at low resolution exports at that resolution. Before/after:
 https://claude.ai/artifact/2sJGWMidkGmsgLKgqkz1tb
+
+## Second look at the open items (2026-11-25, main 52d1c7c)
+
+Measured on main before changing anything; three of the five open items were already done.
+- Smith export size: 40 source pages 55 MB (11-20) → 2.9 MB, below the scan (73 KB a page against
+  100 KB). Fixed by the text-layer and Group 4 work.
+- Memory: whole Cherniss export peaks at 1.6–1.7 GB (was 8.7 GB); Oesterle, the biggest book, 1.9 GB.
+- Test time: all tests pass in about 70 s in release; the 60–96 min was debug.
+- Black and white of a 1-bit scan is no longer made at twice the DPI (John: 200 DPI looks fine).
+  Wallace B&W, 40 pages: 15.6 → 3.7 s, 4.3 → 2.4 MB. Cherniss B&W stays 1.5× Color: its picture
+  pages stay gray on purpose and its cleanup runs only in B&W; left as is. Codex review: a form
+  nested too deep, or one that can't be read to its end, now counts as painting something else
+  (no book has forms).
+- 1-bit pages are stored as lossless JBIG2 (generic region, no symbol matching) when smaller than
+  Group 4. First 40 pages, MB: Simon 1940 2.69 → 1.85 (scan 0.62: its JBIG2 uses symbol matching,
+  ruled out), Wallace B&W 4.31 → 2.73, Freudenthal Color 7.91 → 6.12, Riezler 4.93 → 3.71,
+  Cherniss Color 3.40 → 2.57; no book larger; time within 4%. Pages pixel-identical on and off in
+  Quartz and poppler (1,578 pages) and Ghostscript/jbig2dec (374). Opus built it; Codex found no
+  fault against T.88 or PDF §7.4.7, two input checks fixed. Not checked: pdf.js, Chrome, Acrobat.
