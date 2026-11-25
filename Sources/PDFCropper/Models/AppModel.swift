@@ -933,31 +933,46 @@ final class AppModel: ObservableObject {
         let deskew = autoDeskewEnabled, target = cropTarget
         let password = documentPassword
         Task.detached { [previewDPI] in
-            // A separate PDFDocument: PDFKit can't draw one document from two threads,
-            // and the main thread keeps rendering previews from `document` meanwhile.
+            // Pages are analysed on several cores, each worker taking the next page in
+            // order. Each worker has its own PDFDocument: PDFKit can't draw one document
+            // from two threads, and the main thread keeps rendering previews from
+            // `document` meanwhile. Each page's analysis stands alone, so the order they
+            // finish in changes nothing. `doc`, opened first as before, is kept for the
+            // second phase below.
             let doc = Self.reopen(url, password: password)
-            for (n, index) in todo.enumerated() {
-                // Drain PDFKit's autoreleased drawing objects after every page.
-                let analysis = autoreleasepool { () -> Analysis? in
-                    guard let pdfPage = doc?.page(at: index),
-                          let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return nil }
-                    return Self.analyzePage(cg, deskew: deskew, target: target,
-                                            trim: handTrims[index] ?? nil, findTrim: handTrims[index] == nil)
-                }
-                let stillCurrent = await MainActor.run { () -> Bool in
-                    // A different PDF was opened, or a newer pass started: stand down.
-                    guard self.document === current, self.analysisRun == run else { return false }
-                    // Skip pages the user already edited by hand.
-                    if let analysis, let i = self.pages.firstIndex(where: { $0.sourceIndex == index }),
-                       !self.pages[i].analyzed {
-                        self.apply(analysis, to: i)
-                        self.setByAnalysis[self.pages[i].id] = AnalysisClaim(analysis.result)
+            let queue = AnalysisQueue(todo)
+            let workers = max(1, min(todo.count, 4, ProcessInfo.processInfo.activeProcessorCount - 1))
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<workers {
+                    group.addTask {
+                        // A worker that can't open the file leaves the pages to the others.
+                        guard let doc = Self.reopen(url, password: password) else { return }
+                        while let index = queue.next() {
+                            // Drain PDFKit's autoreleased drawing objects after every page.
+                            let analysis = autoreleasepool { () -> Analysis? in
+                                guard let pdfPage = doc.page(at: index),
+                                      let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: previewDPI) else { return nil }
+                                return Self.analyzePage(cg, deskew: deskew, target: target,
+                                                        trim: handTrims[index] ?? nil, findTrim: handTrims[index] == nil)
+                            }
+                            let stillCurrent = await MainActor.run { () -> Bool in
+                                // A different PDF was opened, or a newer pass started: stand down.
+                                guard self.document === current, self.analysisRun == run else { return false }
+                                // Skip pages the user already edited by hand.
+                                if let analysis, let i = self.pages.firstIndex(where: { $0.sourceIndex == index }),
+                                   !self.pages[i].analyzed {
+                                    self.apply(analysis, to: i)
+                                    self.setByAnalysis[self.pages[i].id] = AnalysisClaim(analysis.result)
+                                }
+                                self.statusText = "Analyzing page \(queue.finishOne()) of \(todo.count)…"
+                                return true
+                            }
+                            if !stillCurrent { queue.stop(); return }
+                        }
                     }
-                    self.statusText = "Analyzing page \(n + 1) of \(todo.count)…"
-                    return true
                 }
-                if !stillCurrent { return }
             }
+            if queue.stopped { return }
             // Spreads whose split must move (see splitMoves) are
             // analysed again at the new split: each half's angle and text depend
             // on where the halves meet.
@@ -2533,4 +2548,26 @@ struct AnalysisClaim: Codable {
         leftSheet = result.leftSheet
         rightSheet = result.rightSheet
     }
+}
+
+/// The pages an analysis pass has left, handed out in order to its workers.
+private final class AnalysisQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var todo: ArraySlice<Int>
+    private var finished = 0
+    private var isStopped = false
+    init(_ todo: [Int]) { self.todo = todo[...] }
+    /// The next page to analyse, or nil when none is left or the pass stood down.
+    func next() -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return isStopped ? nil : todo.popFirst()
+    }
+    /// Count one more page done; returns the count.
+    func finishOne() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        finished += 1
+        return finished
+    }
+    func stop() { lock.lock(); isStopped = true; lock.unlock() }
+    var stopped: Bool { lock.lock(); defer { lock.unlock() }; return isStopped }
 }

@@ -362,3 +362,10 @@ Measured on main before changing anything; three of the five open items were alr
 - Export options (Color, Remove shadows, Flatten, OCR, Keep page resolution, DPI) are kept
   between launches; tests and screenshot runs keep none. Stack sidebar thumbnails are cut from
   the straightened page, as the crops are drawn (a tilted page's thumbnail showed the wrong strip).
+- Auto-detect on opening a book ran on one core. It now runs four pages at a time, each
+  worker with its own copy of the PDF; the second phase is unchanged. Seconds, first open
+  (one core → four): Cherniss 145 → 42, Oesterle 114 → 40, Smith 42 → 11, Freudenthal 34 → 10,
+  Riezler 22 → about 5, Wallace 9 → about 2. Peak memory: Cherniss 0.5 → 1.4 GB (seven
+  workers: 33 s, 2.5 GB, so four on an 8 GB Mac), others little changed. Page results
+  byte-identical to one core in all 8 books (880 scans). The main thread is never held
+  over 0.07 s while a book opens. Codex: two findings for a file that can't be reopened, fixed.
