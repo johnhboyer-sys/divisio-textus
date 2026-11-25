@@ -296,7 +296,8 @@ enum PDFRenderer {
                 s.depth += 1
                 let formContent = CGPDFContentStreamCreateWithStream(stream, formResources ?? dict, content)
                 let formScanner = CGPDFScannerCreate(formContent, table, info)
-                CGPDFScannerScan(formScanner)
+                // A form that can't be read to its end may paint anything.
+                if !CGPDFScannerScan(formScanner) { s.paintsOther = true }
                 CGPDFScannerRelease(formScanner)
                 CGPDFContentStreamRelease(formContent)
                 s.depth -= 1

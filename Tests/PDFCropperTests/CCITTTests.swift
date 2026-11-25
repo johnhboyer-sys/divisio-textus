@@ -177,6 +177,12 @@ struct CCITTTests {
 
     @Test("A page with forms nested too deep to read is not taken for black and white (Codex review)")
     func bitonalScanNeedsAllFormsRead() {
+        #expect(Self.bitonal(Self.formPDF("deep-forms.pdf", form: "/F1 Do")) == false)
+        // A form that draws nothing keeps the page black and white.
+        #expect(Self.bitonal(Self.formPDF("empty-form.pdf", form: "q Q")) == true)
+    }
+
+    static func formPDF(_ name: String, form: String) -> URL {
         // The page draws a 1-bit image and a form that draws itself: past the depth read,
         // it could paint anything.
         let objects = [
@@ -184,7 +190,7 @@ struct CCITTTests {
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R /F1 6 0 R >> >> >>",
         ]
-        let page = "q 200 0 0 200 0 0 cm /Im1 Do Q /F1 Do", form = "/F1 Do"
+        let page = "q 200 0 0 200 0 0 cm /Im1 Do Q /F1 Do"
         var out = Data("%PDF-1.4\n".utf8)
         var offsets: [Int] = []
         for (i, body) in objects.enumerated() { offsets.append(out.count); out.append(Data("\(i + 1) 0 obj \(body) endobj\n".utf8)) }
@@ -199,9 +205,9 @@ struct CCITTTests {
         var table = "xref\n0 7\n0000000000 65535 f \n"
         for o in offsets { table += String(repeating: "0", count: 10 - String(o).count) + String(o) + " 00000 n \n" }
         out.append(Data((table + "trailer << /Size 7 /Root 1 0 R >>\nstartxref\n\(xref)\n%%EOF\n").utf8))
-        let url = Fixtures.url("deep-forms.pdf")
+        let url = Fixtures.url(name)
         try? out.write(to: url)
-        #expect(Self.bitonal(url) == false)
+        return url
     }
 
     @Test("Offsets past 2 GB are written in full in the xref table (Codex review)")
