@@ -287,6 +287,32 @@ struct ExportTests {
         #expect(try imageBits(out) == 1)
     }
 
+    @Test("A page claiming 20 inches or more is drawn at the scan's own pixels, in Color and in black and white")
+    func oversizeClaimKeepsScanPixels() throws {
+        // Cherniss: 72 ppi claimed, 36 inches tall. Its real resolution is about four times that.
+        let w = 1800, h = 2600, rowBytes = (w + 7) / 8
+        var bits = [UInt8](repeating: 0xFF, count: rowBytes * h)
+        for y in stride(from: 200, to: 2400, by: 40) { for x in 200..<1600 where (x / 9) % 4 != 0 { bits[y * rowBytes + x / 8] &= ~(0x80 >> UInt8(x % 8)) } }
+        let provider = try #require(CGDataProvider(data: Data(bits) as CFData))
+        let scan = try #require(CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let media = CGRect(x: 0, y: 0, width: w, height: h)
+        let url = Fixtures.writePDF("oversize-src.pdf", media: media, pages: [{ $0.draw(scan, in: media) }])
+        let doc = try #require(PDFDocument(url: url))
+        let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+        for mode in [EnhanceMode.color, .blackAndWhite] {
+            var s = noOCR
+            s.enhanceMode = mode
+            let out = Fixtures.url("oversize-\(mode)-out.pdf")
+            _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
+            let made = try #require(PDFDocument(url: out)?.page(at: 0))
+            #expect(abs(try #require(PDFRenderer.scanDPI(of: made)) - 72) < 1, "\(mode)")
+        }
+        // A page of ordinary size at 72 ppi keeps the 150 DPI floor.
+        #expect(abs(try turnedBlackAndWhiteDPI(ppi: 72, "floor72") - 150) < 1)
+    }
+
     @Test("Batches stop at the byte budget but keep small pages together")
     func batchPlanner() {
         let big = 12_000 * 12_000 * 4          // one 600 DPI scan: about 576 MB

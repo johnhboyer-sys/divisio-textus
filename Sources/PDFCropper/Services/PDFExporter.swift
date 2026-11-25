@@ -21,6 +21,36 @@ enum PDFExporter {
         return scanDPI.map { min(600, max(150, $0)) } ?? unknownScanDPI
     }
 
+    /// The DPI a page renders at for export: as `renderDPI(scanDPI:settings:)`, but a page
+    /// claiming 20 inches or more (no book's page is) holds several times the pixels to the
+    /// real inch that it says — Cherniss's scans claim 72 ppi and measure 36 inches — so with
+    /// "Keep page resolution" on it is drawn at the scan's own pixels, without the 150 floor.
+    static func renderDPI(of page: PDFPage, settings: Settings) -> Double {
+        let scan = PDFRenderer.scanDPI(of: page)
+        if settings.matchScanResolution, let scan, claimsOversize(page) { return min(600, scan) }
+        return renderDPI(scanDPI: scan, settings: settings)
+    }
+
+    /// Whether the page claims to be 20 inches or more along its longer side.
+    static func claimsOversize(_ page: PDFPage) -> Bool {
+        let size = PDFRenderer.displaySize(of: page)
+        return max(size.width, size.height) >= 20 * 72
+    }
+
+    /// The DPI black and white of a page not stored in layers is made at when finer than
+    /// its render at `dpi`; nil when made at `dpi`. A straightened page under 250 DPI is made
+    /// twice as fine, as its half pixels would otherwise turn into steps that lean upright
+    /// strokes. Not when the render already holds two pixels to each of the scan's (a scan
+    /// claiming under 75 ppi is drawn at 150 DPI), nor for a page claiming 20 inches or more:
+    /// there a finer render only enlarges the same pixels, at four times the time and memory.
+    static func fineDPI(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double, settings: Settings) -> Double? {
+        guard settings.enhanceMode == .blackAndWhite, dpi < 250,
+              abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
+              !claimsOversize(pdfPage),
+              PDFRenderer.scanDPI(of: pdfPage).map({ dpi < 2 * $0 }) ?? true else { return nil }
+        return min(600, 2 * dpi)
+    }
+
     struct Settings {
         var dpi: Double = 300            // export resolution when not matching the scan
         var matchScanResolution = true   // use each page's own scan resolution instead
@@ -181,21 +211,14 @@ enum PDFExporter {
         }
         /// A page not stored in layers, or one whose layers failed: made from its render.
         func plainPlan(_ page: BookPage, _ pdfPage: PDFPage, dpi: Double, fine: Bool) throws -> PagePlan {
-            // Black and white of a straightened page at a low scan resolution
-            // would turn the straightening's half pixels into steps that lean
-            // upright strokes; it is made from a render twice as fine (a page
-            // holding a picture is made as below). Not when the render already holds
-            // two pixels to each of the scan's: a scan claiming under 75 ppi
-            // (Cherniss's claims 72) is drawn at 150 DPI, and a finer render only
-            // enlarges the same pixels, at four times the time and memory.
+            // Black and white of a straightened page at a low scan resolution is
+            // made from a finer render (`fineDPI`; a page holding a picture is made
+            // as below).
             // Only the render needs PDFKit: straightening and cutting it (once, by the
             // first of the page's crops to need it) is part of each crop's work, and a
             // crop failing there fails the work (see step 1).
             let crops = page.outputCrops(direction: settings.direction).count
-            let fineDPI = min(600, 2 * dpi)
-            if fine, settings.enhanceMode == .blackAndWhite, dpi < 250,
-               abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01),
-               PDFRenderer.scanDPI(of: pdfPage).map({ dpi < 2 * $0 }) ?? true,
+            if fine, let fineDPI = fineDPI(page, pdfPage, dpi: dpi, settings: settings),
                let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: fineDPI) {
                 let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
                 // nil when it holds a picture: then none is made at this size.
@@ -227,7 +250,7 @@ enum PDFExporter {
             // Render at the scan's own resolution when there is one: higher
             // would invent pixels, lower would throw detail away. Kept within
             // 150–600 DPI so OCR has enough to read and memory stays sane.
-            let dpi = renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
+            let dpi = renderDPI(of: pdfPage, settings: settings)
             // A scan stored in layers gives its text layer alone, in black and
             // white at its own resolution, but for pages whose color layer
             // holds a picture: those keep the color export.
@@ -280,7 +303,7 @@ enum PDFExporter {
         // Each page's render at export DPI, 4 bytes a pixel, sizes the batches.
         let renderBytes = todo.map { page -> Int in
             guard let pdfPage = document.page(at: page.sourceIndex) else { return 0 }
-            let dpi = renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
+            let dpi = renderDPI(of: pdfPage, settings: settings)
             let box = pdfPage.bounds(for: .mediaBox)
             return Int(box.width * dpi / 72) * Int(box.height * dpi / 72) * 4
         }

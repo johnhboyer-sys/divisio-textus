@@ -892,8 +892,7 @@ struct HillClimbShadowTests {
     }
 
     static func drawn(_ page: BookPage, _ pdfPage: PDFPage, settings: PDFExporter.Settings) -> Drawn {
-        let dpi = settings.matchScanResolution
-            ? PDFRenderer.scanDPI(of: pdfPage).map { min(600, max(150, $0)) } ?? settings.dpi : settings.dpi
+        let dpi = PDFExporter.renderDPI(of: pdfPage, settings: settings)
         var color = settings; color.enhanceMode = .color
         func rendered(_ d: Double) -> [CGImage]? {
             guard let r = PDFRenderer.renderCGImage(page: pdfPage, dpi: d) else { return nil }
@@ -919,10 +918,9 @@ struct HillClimbShadowTests {
             return Drawn(made: out)
         }
         guard let images = rendered(dpi) else { return Drawn() }
-        let turned = abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01)
-        let fineDPI = min(600, 2 * dpi)
-        let doubled = PDFRenderer.scanDPI(of: pdfPage).map { dpi >= 2 * $0 } ?? false
-        return Drawn(images: images, dpi: dpi, fine: dpi < 250 && turned && !doubled ? rendered(fineDPI) : nil, fineDPI: fineDPI)
+        var bw = settings; bw.enhanceMode = .blackAndWhite
+        let fineDPI = PDFExporter.fineDPI(page, pdfPage, dpi: dpi, settings: bw)
+        return Drawn(images: images, dpi: dpi, fine: fineDPI.flatMap(rendered), fineDPI: fineDPI ?? dpi)
     }
 
     /// `drawn`'s pairs; safe to run on several pages at once.
@@ -930,8 +928,7 @@ struct HillClimbShadowTests {
         var out = d.made
         let images = d.images, dpi = d.dpi, fineDPI = d.fineDPI
         let prepared = images.map { BlackAndWhite.prepare($0, dpi: dpi) }
-        // Black and white of a turned page under 250 DPI is made twice as fine, unless a page holds a picture
-        // or its render already holds two pixels to each of the scan's.
+        // Black and white of a turned page may be made finer (PDFExporter.fineDPI), unless a page holds a picture.
         var fine: [BlackAndWhite.Prepared]?
         if let f = d.fine {
             let p = f.map { BlackAndWhite.prepare($0, dpi: fineDPI) }

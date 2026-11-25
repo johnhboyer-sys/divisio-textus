@@ -757,12 +757,9 @@ final class AppModel: ObservableObject {
             }
         }
         guard !rendered.isEmpty else { return models }
-        var dpi = PDFExporter.renderDPI(scanDPI: PDFRenderer.scanDPI(of: pdfPage), settings: settings)
-        // Black and white of a skewed page at a low resolution is made from a render twice as fine.
-        if settings.enhanceMode == .blackAndWhite, dpi < 250,
-           abs(page.leftSkew) >= 0.01 || (page.isSpread && abs(page.rightSkew) >= 0.01) {
-            dpi = min(600, 2 * dpi)
-        }
+        var dpi = PDFExporter.renderDPI(of: pdfPage, settings: settings)
+        // Black and white of a skewed page at a low resolution may be made from a finer render.
+        if let fine = PDFExporter.fineDPI(page, pdfPage, dpi: dpi, settings: settings) { dpi = fine }
         guard let cg = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else { return nil }
         let composite = ImageTransform.deskewedComposite(cg, splitX: page.splitX, leftDegrees: page.leftSkew,
                                                          rightDegrees: page.rightSkew, isSpread: page.isSpread)
