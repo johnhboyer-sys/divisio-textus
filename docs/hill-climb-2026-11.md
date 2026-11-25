@@ -369,3 +369,13 @@ Measured on main before changing anything; three of the five open items were alr
   workers: 33 s, 2.5 GB, so four on an 8 GB Mac), others little changed. Page results
   byte-identical to one core in all 8 books (880 scans). The main thread is never held
   over 0.07 s while a book opens. Codex: two findings for a file that can't be reopened, fixed.
+- Remove shadows (Color, Gray) left the page stack's thin dark edge down a side as scanned: the
+  picture map took it for a picture. The map now keeps only groups holding a solid place; it can
+  only shrink. Oesterle pages with a side 20+ levels darker than paper: 15 → 2 (a library stamp,
+  kept, and a faint foot line). Cherniss and Freudenthal lose some fold bands too. Remove shadows
+  off: byte-identical in all 8 books. Grok found no fault.
+- In B&W, a 1-bit scan's page judged a picture came out 8-bit gray. It now comes out as Color
+  makes it, the scan's own 1-bit (same test as Color: 1-bit scan or 1-bit render). Freudenthal:
+  8-bit pages 1, 2, 94, 215, 240, 244 → 1, 2; 13.99 → 12.24 MB. Cherniss: 19 pages, 20.5 → 15.1 MB.
+  Every changed page checked by eye. Color and Gray byte-identical in all 8 books. The Export
+  view still shows these pages gray: its 40 DPI render is not 1-bit (as in Color before).

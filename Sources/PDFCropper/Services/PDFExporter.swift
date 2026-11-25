@@ -371,6 +371,8 @@ enum PDFExporter {
                 images += done.compactMap { $0 }
                 dpis += doneDPI
             }
+            // The plans hold renders (a slot never asked for keeps its page's): free them before OCR.
+            plans = []
 
             // 2. OCR the batch in parallel. nil = the reader failed on the whole page;
             //    incomplete = it failed on part of it.
