@@ -142,6 +142,8 @@ enum PDFRenderer {
         let placement: CGAffineTransform  // the unit square it fills → page space
         let isMask: Bool     // a 1-bit stencil painted in the fill color
         let inkIsBlack: Bool // the fill color is black or near it (for a stencil)
+        let inkIsPure: Bool  // the fill color is exactly black
+        let underGState: Bool // drawn under an ExtGState (`gs`), which may fade or blend it
         let stream: CGPDFStreamRef
     }
 
@@ -171,7 +173,10 @@ enum PDFRenderer {
     /// other than images: paths, shadings, inline images or visible text.
     /// nil if the content couldn't be read.
     static func drawnContent(_ page: CGPDFPage) -> (images: [DrawnImage], names: Set<String>, paintsOther: Bool)? {
-        struct Graphics { var ctm = CGAffineTransform.identity; var inkIsBlack = true; var textMode = 0 }
+        struct Graphics {
+            var ctm = CGAffineTransform.identity; var inkIsBlack = true; var inkIsPure = true
+            var textMode = 0; var gstate = false
+        }
         final class State {
             var g = Graphics()
             var ctm: CGAffineTransform { get { g.ctm } set { g.ctm = newValue } }
@@ -222,6 +227,8 @@ enum PDFRenderer {
                 var v: [CGPDFReal] = []
                 var x: CGPDFReal = 0
                 while v.count < 4, CGPDFScannerPopNumber(scanner, &x) { v.insert(x, at: 0) }
+                s.g.inkIsPure = v.count == 1 && v[0] == 0 || v.count == 3 && v.allSatisfy { $0 == 0 }
+                    || v.count == 4 && v[0...2].allSatisfy { $0 == 0 } && v[3] == 1
                 switch v.count {
                 case 1: s.g.inkIsBlack = v[0] <= 0.25
                 case 3: s.g.inkIsBlack = v.max()! <= 0.3
@@ -229,6 +236,10 @@ enum PDFRenderer {
                 default: s.g.inkIsBlack = false
                 }
             }
+        }
+        CGPDFOperatorTableSetCallback(table, "gs") { _, info in
+            guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
+            s.g.gstate = true
         }
         CGPDFOperatorTableSetCallback(table, "cm") { scanner, info in
             guard let s = info.map({ Unmanaged<State>.fromOpaque($0).takeUnretainedValue() }) else { return }
@@ -260,7 +271,8 @@ enum PDFRenderer {
                     pixelWidth: w, pixelHeight: h,
                     size: CGSize(width: hypot(s.ctm.a, s.ctm.b), height: hypot(s.ctm.c, s.ctm.d)),
                     bounds: CGRect(x: 0, y: 0, width: 1, height: 1).applying(s.ctm),
-                    placement: s.ctm, isMask: isMask != 0, inkIsBlack: s.g.inkIsBlack, stream: stream))
+                    placement: s.ctm, isMask: isMask != 0, inkIsBlack: s.g.inkIsBlack,
+                    inkIsPure: s.g.inkIsPure, underGState: s.g.gstate, stream: stream))
             case "Form":
                 guard s.depth < 4, let table = s.table else { return }
                 // Draw the form's own content under its /Matrix.
@@ -300,17 +312,29 @@ enum PDFRenderer {
         return (images: state.images, names: state.names, paintsOther: state.paintsOther)
     }
 
-    /// Whether the page is a black and white scan: it draws only images, each 1 bit
-    /// to the pixel in gray (or a stencil inked black), and carries no annotations.
-    /// Such a page has no grays of its own, only those its drawing and straightening blur in.
+    /// Whether the page is a black and white scan: it draws only images, each 1 bit to the
+    /// pixel in gray drawing pure black and white (no /Decode but [0 1] or [1 0], no mask),
+    /// or a stencil inked exactly black; none under an ExtGState, which may fade it; and it
+    /// carries no annotations. Such a page has no grays of its own, only those its drawing
+    /// and straightening blur in.
     static func isBitonalScan(_ page: PDFPage) -> Bool {
         guard page.annotations.isEmpty, let cgPage = page.pageRef,
               let content = drawnContent(cgPage), !content.paintsOther, !content.images.isEmpty else { return false }
         return content.images.allSatisfy { image in
-            if image.isMask { return image.inkIsBlack }
+            guard !image.underGState else { return false }
+            if image.isMask { return image.inkIsPure }
             guard let dict = CGPDFStreamGetDictionary(image.stream) else { return false }
             var bits: CGPDFInteger = 0
             guard CGPDFDictionaryGetInteger(dict, "BitsPerComponent", &bits), bits == 1 else { return false }
+            var other: CGPDFObjectRef?
+            guard !CGPDFDictionaryGetObject(dict, "SMask", &other), !CGPDFDictionaryGetObject(dict, "Mask", &other)
+            else { return false }
+            var decode: CGPDFArrayRef?
+            if CGPDFDictionaryGetArray(dict, "Decode", &decode), let decode {
+                var a: CGPDFReal = -1, b: CGPDFReal = -1
+                guard CGPDFArrayGetCount(decode) == 2, CGPDFArrayGetNumber(decode, 0, &a), CGPDFArrayGetNumber(decode, 1, &b),
+                      a == 0 && b == 1 || a == 1 && b == 0 else { return false }
+            }
             var object: CGPDFObjectRef?
             guard CGPDFDictionaryGetObject(dict, "ColorSpace", &object), let object else { return false }
             return isGraySpace(object)

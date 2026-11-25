@@ -136,6 +136,52 @@ struct CCITTTests {
         }
     }
 
+    /// A one-page PDF written by hand: `image` is the image dictionary's extra keys, `content`
+    /// the page's drawing, the image 40 x 40, 1 bit, all black.
+    static func handPDF(_ name: String, image: String, content: String, resources extra: String = "") -> URL {
+        let data = Data(repeating: 0, count: 5 * 40)
+        var out = Data("%PDF-1.4\n".utf8)
+        var offsets: [Int] = []
+        func obj(_ body: Data) { offsets.append(out.count); out.append(body) }
+        obj(Data("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n".utf8))
+        obj(Data("2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n".utf8))
+        obj(Data("3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> \(extra) >> >> endobj\n".utf8))
+        obj(Data("4 0 obj << /Length \(content.utf8.count) >> stream\n\(content)\nendstream endobj\n".utf8))
+        var im = Data("5 0 obj << /Type /XObject /Subtype /Image /Width 40 /Height 40 /BitsPerComponent 1 \(image) /Length \(data.count) >> stream\n".utf8)
+        im.append(data); im.append(Data("\nendstream endobj\n".utf8))
+        obj(im)
+        let xref = out.count
+        var table = "xref\n0 6\n0000000000 65535 f \n"
+        for o in offsets { table += String(repeating: "0", count: 10 - String(o).count) + String(o) + " 00000 n \n" }
+        out.append(Data((table + "trailer << /Size 6 /Root 1 0 R >>\nstartxref\n\(xref)\n%%EOF\n").utf8))
+        let url = Fixtures.url(name)
+        try? out.write(to: url)
+        return url
+    }
+
+    static func bitonal(_ url: URL) -> Bool? { PDFDocument(url: url)?.page(at: 0).map(PDFRenderer.isBitonalScan) }
+
+    @Test("A 1-bit gray image counts as black and white only if it draws pure black and white (Codex review)")
+    func bitonalScanNeedsPureInk() {
+        let draw = "q 200 0 0 200 0 0 cm /Im1 Do Q"
+        #expect(Self.bitonal(Self.handPDF("plain1.pdf", image: "/ColorSpace /DeviceGray", content: draw)) == true)
+        #expect(Self.bitonal(Self.handPDF("inverted1.pdf", image: "/ColorSpace /DeviceGray /Decode [1 0]", content: draw)) == true)
+        // Black drawn as light gray.
+        #expect(Self.bitonal(Self.handPDF("pale1.pdf", image: "/ColorSpace /DeviceGray /Decode [0.8 1]", content: draw)) == false)
+        // A stencil in dark red, or under a graphics state that may make it see-through.
+        #expect(Self.bitonal(Self.handPDF("red-stencil.pdf", image: "/ImageMask true", content: "0.3 0 0 rg " + draw)) == false)
+        #expect(Self.bitonal(Self.handPDF("black-stencil.pdf", image: "/ImageMask true", content: "0 g " + draw)) == true)
+        #expect(Self.bitonal(Self.handPDF("faded1.pdf", image: "/ColorSpace /DeviceGray",
+                                          content: "/GS1 gs " + draw, resources: "/ExtGState << /GS1 << /ca 0.3 /CA 0.3 >> >>")) == false)
+    }
+
+    @Test("Offsets past 2 GB are written in full in the xref table (Codex review)")
+    func largeOffsets() {
+        #expect(PDFCCITT.offsetField(3_000_000_000) == "3000000000")
+        #expect(PDFCCITT.offsetField(146) == "0000000146")
+        #expect(PDFCCITT.offsetField(10_000_000_000) == nil)
+    }
+
     @Test("An export of a black and white scan stores its page as Group 4")
     func exportUsesGroup4() throws {
         let letter = CGRect(x: 0, y: 0, width: 612, height: 792)

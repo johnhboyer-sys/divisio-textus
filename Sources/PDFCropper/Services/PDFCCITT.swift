@@ -183,6 +183,13 @@ enum PDFCCITT {
 
     // MARK: Writing
 
+    /// A byte offset as the xref table's ten digits; nil past what ten digits hold.
+    static func offsetField(_ offset: Int) -> String? {
+        let digits = String(offset)
+        guard offset >= 0, digits.count <= 10 else { return nil }
+        return String(repeating: "0", count: 10 - digits.count) + digits
+    }
+
     private static func write(_ d: Data, _ plan: Plan, to url: URL) -> Bool {
         guard FileManager.default.createFile(atPath: url.path, contents: nil),
               let out = try? FileHandle(forWritingTo: url) else { return false }
@@ -204,7 +211,10 @@ enum PDFCCITT {
             let xref = written
             var table = "xref\n0 \(plan.entries.count)\n"
             for (k, e) in plan.entries.enumerated() {
-                if offsets[k] >= 0 { table += String(format: "%010d", offsets[k]) + e.dropFirst(10) + " \n" }
+                if offsets[k] >= 0 {
+                    guard let field = offsetField(offsets[k]) else { return false }
+                    table += field + e.dropFirst(10) + " \n"
+                }
                 else { table += e + " \n" }
             }
             try put(Data(table.utf8))
