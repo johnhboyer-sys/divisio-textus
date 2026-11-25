@@ -269,4 +269,33 @@ struct BWFoldTests {
         #expect(share(out, s.text) > 0.99)
         #expect(out.filter { $0 == 0 }.count <= s.text.count)
     }
+
+    /// Oesterle-1955 p249 (Color): the page stack's thin dark edge down the crop's left
+    /// side and round its foot corner was taken for a picture (0.4 inch each way, not
+    /// dark 0.1 inch in from the side) and left as it was.
+    @Test("Color: the page stack's thin edge down a side goes; a plate stays")
+    func colorStackEdge() throws {
+        var g = [UInt8](repeating: 245, count: Self.w * Self.h)
+        var text: [Int] = []
+        for line in 0..<20 { for x in stride(from: 150, to: 660, by: 45) { text += Self.pair(x, 100 + line * 50) } }
+        for i in text { g[i] = 30 }
+        // The edge: 0.07 inch at 130, fading to the paper over 0.03 inch, the full height
+        // and 0.6 inch along the foot.
+        var edge: [Int] = []
+        for d in 0..<30 {
+            let v = UInt8(d < 20 ? 130 : 130 + (245 - 130) * (d - 19) / 11)
+            let side = Self.box(d, 0, 1, Self.h - d) + Self.box(d, Self.h - 1 - d, 180 - d, 1)
+            for i in side { g[i] = v }
+            if d < 20 { edge += side }
+        }
+        // A plate: a gray square 0.5 inch across beside the text.
+        let plate = Self.box(710, 600, 150, 150)
+        for i in plate { g[i] = 120 }
+        let image = try #require(BlackAndWhite.image(g, width: Self.w, height: Self.h))
+        let out = BlackAndWhite.grayPixels(try #require(ShadowRemoval.page(image, dpi: Self.dpi)))
+        let mean = edge.reduce(0) { $0 + Int(out[$1]) } / edge.count
+        #expect(mean >= 235, "edge mean \(mean)")
+        #expect(text.allSatisfy { out[$0] < 80 })
+        #expect(plate.allSatisfy { abs(Int(out[$0]) - 120) <= 2 }, "the plate is left as it is")
+    }
 }
