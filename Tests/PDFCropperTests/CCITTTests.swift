@@ -175,6 +175,35 @@ struct CCITTTests {
                                           content: "/GS1 gs " + draw, resources: "/ExtGState << /GS1 << /ca 0.3 /CA 0.3 >> >>")) == false)
     }
 
+    @Test("A page with forms nested too deep to read is not taken for black and white (Codex review)")
+    func bitonalScanNeedsAllFormsRead() {
+        // The page draws a 1-bit image and a form that draws itself: past the depth read,
+        // it could paint anything.
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R /F1 6 0 R >> >> >>",
+        ]
+        let page = "q 200 0 0 200 0 0 cm /Im1 Do Q /F1 Do", form = "/F1 Do"
+        var out = Data("%PDF-1.4\n".utf8)
+        var offsets: [Int] = []
+        for (i, body) in objects.enumerated() { offsets.append(out.count); out.append(Data("\(i + 1) 0 obj \(body) endobj\n".utf8)) }
+        offsets.append(out.count)
+        out.append(Data("4 0 obj << /Length \(page.utf8.count) >> stream\n\(page)\nendstream endobj\n".utf8))
+        offsets.append(out.count)
+        out.append(Data("5 0 obj << /Type /XObject /Subtype /Image /Width 40 /Height 40 /BitsPerComponent 1 /ColorSpace /DeviceGray /Length 200 >> stream\n".utf8))
+        out.append(Data(repeating: 0, count: 200)); out.append(Data("\nendstream endobj\n".utf8))
+        offsets.append(out.count)
+        out.append(Data("6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /XObject << /F1 6 0 R >> >> /Length \(form.utf8.count) >> stream\n\(form)\nendstream endobj\n".utf8))
+        let xref = out.count
+        var table = "xref\n0 7\n0000000000 65535 f \n"
+        for o in offsets { table += String(repeating: "0", count: 10 - String(o).count) + String(o) + " 00000 n \n" }
+        out.append(Data((table + "trailer << /Size 7 /Root 1 0 R >>\nstartxref\n\(xref)\n%%EOF\n").utf8))
+        let url = Fixtures.url("deep-forms.pdf")
+        try? out.write(to: url)
+        #expect(Self.bitonal(url) == false)
+    }
+
     @Test("Offsets past 2 GB are written in full in the xref table (Codex review)")
     func largeOffsets() {
         #expect(PDFCCITT.offsetField(3_000_000_000) == "3000000000")

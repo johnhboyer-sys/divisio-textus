@@ -274,7 +274,10 @@ enum PDFRenderer {
                     placement: s.ctm, isMask: isMask != 0, inkIsBlack: s.g.inkIsBlack,
                     inkIsPure: s.g.inkIsPure, underGState: s.g.gstate, stream: stream))
             case "Form":
-                guard s.depth < 4, let table = s.table else { return }
+                // A form nested too deep to read may paint anything: say so, rather than
+                // judge the page by what was read (Codex review).
+                guard s.depth < 4 else { s.paintsOther = true; return }
+                guard let table = s.table else { return }
                 // Draw the form's own content under its /Matrix.
                 var matrix = CGAffineTransform.identity
                 var array: CGPDFArrayRef?
