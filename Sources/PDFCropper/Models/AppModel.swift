@@ -631,7 +631,8 @@ final class AppModel: ObservableObject {
             guard let models, models.indices.contains(k), let m = models[k], !m.ux.isEmpty else { return image }
             return Flatten.apply(m.scaled(Double(image.width) / Double(m.ux.count), width: image.width), to: image) ?? image
         }
-        var images = (PDFExporter.outputImages(of: page, rendered: cg, settings: settings) ?? [])
+        let bitonal = enhanceMode != .blackAndWhite && PDFRenderer.isBitonalScan(pdfPage)
+        var images = (PDFExporter.outputImages(of: page, rendered: cg, settings: settings, bitonalScan: bitonal) ?? [])
             .enumerated().map { flattened($1, $0) }
         // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
         if let layers {

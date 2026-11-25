@@ -267,6 +267,26 @@ struct ExportTests {
         #expect(try turnedExportBits(.color, toned: true, "toned-color") == 8)
     }
 
+    @Test("A 1-bit scan claiming 72 ppi stays 1 bit in Color though its drawing blurs it")
+    func lowResolutionBitonalScanStaysBitonal() throws {
+        // Drawn at 150 DPI from 72 ppi, the render holds grays; the scan's own image is 1 bit.
+        let w = 600, h = 800, rowBytes = (w + 7) / 8
+        var bits = [UInt8](repeating: 0xFF, count: rowBytes * h)
+        for y in stride(from: 100, to: 700, by: 20) { for x in 60..<540 where (x / 7) % 3 != 0 { bits[y * rowBytes + x / 8] &= ~(0x80 >> UInt8(x % 8)) } }
+        let provider = try #require(CGDataProvider(data: Data(bits) as CFData))
+        let scan = try #require(CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let media = CGRect(x: 0, y: 0, width: w, height: h)      // 72 ppi
+        let url = Fixtures.writePDF("bitonal72-src.pdf", media: media, pages: [{ $0.draw(scan, in: media) }])
+        let doc = try #require(PDFDocument(url: url))
+        #expect(PDFRenderer.isBitonalScan(try #require(doc.page(at: 0))))
+        let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+        let out = Fixtures.url("bitonal72-out.pdf")
+        _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: noOCR)
+        #expect(try imageBits(out) == 1)
+    }
+
     @Test("Batches stop at the byte budget but keep small pages together")
     func batchPlanner() {
         let big = 12_000 * 12_000 * 4          // one 600 DPI scan: about 576 MB

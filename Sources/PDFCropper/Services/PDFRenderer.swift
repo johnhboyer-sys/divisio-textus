@@ -300,6 +300,44 @@ enum PDFRenderer {
         return (images: state.images, names: state.names, paintsOther: state.paintsOther)
     }
 
+    /// Whether the page is a black and white scan: it draws only images, each 1 bit
+    /// to the pixel in gray (or a stencil inked black), and carries no annotations.
+    /// Such a page has no grays of its own, only those its drawing and straightening blur in.
+    static func isBitonalScan(_ page: PDFPage) -> Bool {
+        guard page.annotations.isEmpty, let cgPage = page.pageRef,
+              let content = drawnContent(cgPage), !content.paintsOther, !content.images.isEmpty else { return false }
+        return content.images.allSatisfy { image in
+            if image.isMask { return image.inkIsBlack }
+            guard let dict = CGPDFStreamGetDictionary(image.stream) else { return false }
+            var bits: CGPDFInteger = 0
+            guard CGPDFDictionaryGetInteger(dict, "BitsPerComponent", &bits), bits == 1 else { return false }
+            var object: CGPDFObjectRef?
+            guard CGPDFDictionaryGetObject(dict, "ColorSpace", &object), let object else { return false }
+            return isGraySpace(object)
+        }
+    }
+
+    /// DeviceGray, CalGray, or an ICC profile of one component.
+    private static func isGraySpace(_ object: CGPDFObjectRef) -> Bool {
+        var name: UnsafePointer<CChar>?
+        if CGPDFObjectGetValue(object, .name, &name), let name {
+            return ["DeviceGray", "CalGray", "G"].contains(String(cString: name))
+        }
+        var array: CGPDFArrayRef?
+        guard CGPDFObjectGetValue(object, .array, &array), let array, CGPDFArrayGetCount(array) >= 1,
+              CGPDFArrayGetName(array, 0, &name), let name else { return false }
+        switch String(cString: name) {
+        case "CalGray", "DeviceGray", "G": return true     // [/DeviceGray], as Cherniss writes it
+        case "ICCBased":
+            var stream: CGPDFStreamRef?
+            var n: CGPDFInteger = 0
+            guard CGPDFArrayGetStream(array, 1, &stream), let stream, let dict = CGPDFStreamGetDictionary(stream),
+                  CGPDFDictionaryGetInteger(dict, "N", &n) else { return false }
+            return n == 1
+        default: return false
+        }
+    }
+
     /// Crop a top-left-origin normalized rect out of a CGImage.
     static func crop(_ image: CGImage, to rect: CropRect) -> CGImage? {
         let size = CGSize(width: image.width, height: image.height)

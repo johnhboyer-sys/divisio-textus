@@ -42,6 +42,9 @@ enum PDFExporter {
         var flattenPages = false
     }
 
+    /// Off only in tests that compare an export with and without Group 4.
+    nonisolated(unsafe) static var storesGroup4 = true
+
     /// Lets tests read installed packs without changing the user's pack folder.
     static var tessdataOverride: URL?
 
@@ -210,7 +213,8 @@ enum PDFExporter {
             guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
                 throw ExportError.renderFailed(page.sourceIndex)
             }
-            let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings) }
+            let bitonal = settings.enhanceMode != .blackAndWhite && PDFRenderer.isBitonalScan(pdfPage)
+            let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings, bitonalScan: bitonal) }
             let slots = (0..<crops).map { k in
                 Slot(make: { out.value.map { finished($0[k], dpi: dpi, settings: settings) } }, dpi: dpi)
             }
@@ -391,6 +395,8 @@ enum PDFExporter {
         ctx.closePDF()
         // Cancel pressed during the last batch: don't replace the destination.
         if isCancelled?() == true { throw ExportError.cancelled }
+        // Its 1-bit pages as CCITT Group 4: about half the size, every pixel the same.
+        if storesGroup4 { PDFCCITT.recompress(at: tmpURL) }
         // A file that isn't the PDF we just wrote must not replace the destination.
         guard isComplete(tmpURL, pageCount: report.pageCount) else { throw ExportError.writeFailed }
         do {
@@ -410,12 +416,14 @@ enum PDFExporter {
     /// blanked on that straight page — before black and white or flattening move
     /// the print out from under the boxes — then in color or gray, flattened if
     /// the settings ask, cut to its crop. The Export view draws these too, from a
-    /// small render. Nil when a crop fails. In Color or Gray, a page whose render is
-    /// pure black and white (a bitonal scan) is made black and white again after
-    /// straightening: the turn's grays are only its blur, and they would store the page
-    /// at 8 bits, several times the size (Simon 1940: 42 times its scan).
-    static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings) -> [CGImage]? {
-        let bitonal = settings.enhanceMode != .blackAndWhite && isBitonal(rendered)
+    /// small render. Nil when a crop fails. In Color or Gray, a black and white scan
+    /// (`bitonalScan`: `PDFRenderer.isBitonalScan`, or a render that is pure black and
+    /// white) is made black and white again after straightening: the grays of its drawing
+    /// and turn are only blur, and they would store the page at 8 bits, several times the
+    /// size (Simon 1940: 42 times its scan).
+    static func outputImages(of page: BookPage, rendered: CGImage, settings: Settings,
+                             bitonalScan: Bool = false) -> [CGImage]? {
+        let bitonal = settings.enhanceMode != .blackAndWhite && (bitonalScan || isBitonal(rendered))
         let composite = ImageTransform.deskewedComposite(
             rendered, splitX: page.splitX,
             leftDegrees: page.leftSkew, rightDegrees: page.rightSkew,
