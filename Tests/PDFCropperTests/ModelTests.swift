@@ -294,6 +294,31 @@ struct ModelTests {
         #expect(AppModel().cropTarget == .page)
     }
 
+    @Test("The export options survive a new model; a stored DPI out of range is ignored")
+    func exportOptionsRoundTrip() throws {
+        let name = "ModelTests-\(UUID().uuidString)"
+        let suite = try #require(UserDefaults(suiteName: name))
+        defer { suite.removePersistentDomain(forName: name) }
+        let first = AppModel(defaults: suite)
+        #expect(first.enhanceMode == .color && !first.removeShadows && !first.flattenPages
+                && first.ocrEnabled && first.matchScanResolution && first.exportDPI == 300)
+        first.enhanceMode = .blackAndWhite
+        first.removeShadows = true
+        first.flattenPages = true
+        first.ocrEnabled = false
+        first.matchScanResolution = false
+        first.exportDPI = 450
+        let second = AppModel(defaults: suite)
+        #expect(second.enhanceMode == .blackAndWhite && second.removeShadows && second.flattenPages
+                && !second.ocrEnabled && !second.matchScanResolution && second.exportDPI == 450)
+        suite.set(5000.0, forKey: "exportDPI")
+        #expect(AppModel(defaults: suite).exportDPI == 300)
+        // Without a store, nothing is read or kept.
+        let none = AppModel(defaults: nil)
+        none.enhanceMode = .grayscale
+        #expect(AppModel(defaults: nil).enhanceMode == .color)
+    }
+
     @Test("Auto-detect all pages, undo, redo")
     func redetectAll() async {
         let (m, undo, _) = await loadedSample()

@@ -114,7 +114,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var installedPacks: Set<String> = []
     /// Downloads running or failed, by language code.
     @Published private(set) var packDownloads: [String: PackDownloadState] = [:]
-    private let defaults: UserDefaults
+    /// Where the export options and OCR choices are kept; nil keeps nothing (tests).
+    private let defaults: UserDefaults?
     private var prefsSinks: [AnyCancellable] = []
     /// The open PDF already has a text layer (see PDFExporter.hasText).
     @Published private(set) var sourceHasText = false
@@ -282,14 +283,29 @@ final class AppModel: ObservableObject {
     /// Set while an export runs; cancelExport() trips it.
     private var exportCancel: CancelFlag?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults? = .standard) {
         self.defaults = defaults
-        if let raw = defaults.string(forKey: "ocrReader"), let r = OCRReader(rawValue: raw) { ocrReader = r }
-        ocrPacks = defaults.stringArray(forKey: "ocrPacks") ?? []
-        prefsSinks = [
-            $ocrReader.dropFirst().sink { defaults.set($0.rawValue, forKey: "ocrReader") },
-            $ocrPacks.dropFirst().sink { defaults.set($0, forKey: "ocrPacks") },
-        ]
+        if let defaults {
+            if let raw = defaults.string(forKey: "ocrReader"), let r = OCRReader(rawValue: raw) { ocrReader = r }
+            ocrPacks = defaults.stringArray(forKey: "ocrPacks") ?? []
+            // The export panel's options, as last set.
+            if let raw = defaults.string(forKey: "enhanceMode"), let m = EnhanceMode(rawValue: raw) { enhanceMode = m }
+            if let b = defaults.object(forKey: "removeShadows") as? Bool { removeShadows = b }
+            if let b = defaults.object(forKey: "flattenPages") as? Bool { flattenPages = b }
+            if let b = defaults.object(forKey: "ocrEnabled") as? Bool { ocrEnabled = b }
+            if let b = defaults.object(forKey: "matchScanResolution") as? Bool { matchScanResolution = b }
+            if let d = defaults.object(forKey: "exportDPI") as? Double, (150...600).contains(d) { exportDPI = d }
+            prefsSinks = [
+                $ocrReader.dropFirst().sink { defaults.set($0.rawValue, forKey: "ocrReader") },
+                $ocrPacks.dropFirst().sink { defaults.set($0, forKey: "ocrPacks") },
+                $enhanceMode.dropFirst().sink { defaults.set($0.rawValue, forKey: "enhanceMode") },
+                $removeShadows.dropFirst().sink { defaults.set($0, forKey: "removeShadows") },
+                $flattenPages.dropFirst().sink { defaults.set($0, forKey: "flattenPages") },
+                $ocrEnabled.dropFirst().sink { defaults.set($0, forKey: "ocrEnabled") },
+                $matchScanResolution.dropFirst().sink { defaults.set($0, forKey: "matchScanResolution") },
+                $exportDPI.dropFirst().sink { defaults.set($0, forKey: "exportDPI") },
+            ]
+        }
         // Save a moment after the last change, and immediately on quit.
         autosave = Publishers.CombineLatest4($pages, $direction, $pageSizeOverride, $stackExclusions)
             .dropFirst()

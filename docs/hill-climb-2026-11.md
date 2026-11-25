@@ -356,4 +356,9 @@ Measured on main before changing anything; three of the five open items were alr
   ruled out), Wallace B&W 4.31 → 2.73, Freudenthal Color 7.91 → 6.12, Riezler 4.93 → 3.71,
   Cherniss Color 3.40 → 2.57; no book larger; time within 4%. Pages pixel-identical on and off in
   Quartz and poppler (1,578 pages) and Ghostscript/jbig2dec (374). Opus built it; Codex found no
-  fault against T.88 or PDF §7.4.7, two input checks fixed. Not checked: pdf.js, Chrome, Acrobat.
+  fault against T.88 or PDF §7.4.7, two input checks fixed. The same 374 pages also identical on
+  and off in PDFium 159 (Chrome's) and pdf.js 6.5 (wasm decoder) and 4.10 (JavaScript decoder).
+  Not checked: Acrobat.
+- Export options (Color, Remove shadows, Flatten, OCR, Keep page resolution, DPI) are kept
+  between launches; tests and screenshot runs keep none. Stack sidebar thumbnails are cut from
+  the straightened page, as the crops are drawn (a tilted page's thumbnail showed the wrong strip).

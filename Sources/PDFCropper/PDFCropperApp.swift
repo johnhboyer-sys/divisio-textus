@@ -4,7 +4,9 @@ import AppKit
 @main
 struct PDFCropperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    // A screenshot run (DebugShots) starts from the default options, not the user's.
+    @StateObject private var model = AppModel(
+        defaults: ProcessInfo.processInfo.environment["DIVISIO_SHOTS"] == nil ? .standard : nil)
 
     var body: some Scene {
         WindowGroup("Divisio Textus") {

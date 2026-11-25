@@ -105,11 +105,11 @@ enum Fixtures {
     }
 }
 
-/// A model that saves into the test folder and never opens Finder.
+/// A model that saves into the test folder, keeps no options between models and never opens Finder.
 @MainActor
 func testModel(ocr: Bool = false) -> AppModel {
     _ = Fixtures.directory
-    let m = AppModel()
+    let m = AppModel(defaults: nil)
     m.ocrEnabled = ocr
     m.revealExportInFinder = false
     m.setCropTarget(.text)   // most tests were written for text-block crops

@@ -32,9 +32,16 @@ struct StackThumbList: View {
         }
     }
 
-    /// `image` cut to `crop`, a share of the whole image from its top left.
-    static func cropped(_ image: NSImage, to crop: CropRect) -> NSImage? {
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    /// The member's thumbnail: its page straightened as the editor shows it (crops are
+    /// drawn on the straightened page), cut to its crop.
+    @MainActor
+    static func image(for member: PageStack.Member, in model: AppModel) -> NSImage? {
+        guard let page = model.gridImage(for: member.page) else { return nil }
+        return cropped(page, to: cropRect(for: member))
+    }
+
+    /// `cg` cut to `crop`, a share of the whole image from its top left.
+    static func cropped(_ cg: CGImage, to crop: CropRect) -> NSImage? {
         let w = Double(cg.width), h = Double(cg.height)
         let rect = CGRect(x: crop.x * w, y: crop.y * h, width: crop.width * w, height: crop.height * h)
             .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
@@ -75,8 +82,7 @@ private struct ThumbCell: View {
             VStack(spacing: 2) {
                 ZStack(alignment: .topTrailing) {
                     Group {
-                        if let scan = model.thumbnail(for: member.page),
-                           let img = StackThumbList.cropped(scan, to: StackThumbList.cropRect(for: member)) {
+                        if let img = StackThumbList.image(for: member, in: model) {
                             Image(nsImage: img).resizable().scaledToFit()
                         } else {
                             Rectangle().fill(Color.secondary.opacity(0.15))
