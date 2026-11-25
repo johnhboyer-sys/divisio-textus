@@ -12,8 +12,10 @@ enum JBIG2Generic {
     static func encode(_ rows: UnsafeRawBufferPointer, width: Int, height: Int, rowBytes: Int,
                        typicalPrediction: Bool = true) -> Data {
         guard width > 0, height > 0, width <= Int(Int32.max), height <= Int(Int32.max),
-              rowBytes >= (width + 7) / 8, rows.count >= rowBytes * height else { return Data() }
+              rowBytes >= (width + 7) / 8, rowBytes <= rows.count / height else { return Data() }
         let coded = region(rows, width: width, height: height, rowBytes: rowBytes, tpgd: typicalPrediction)
+        // A segment's length is 32 bits, and 0xFFFFFFFF means "unknown" (T.88 7.2.7).
+        guard coded.count < 0xFFFF_FF00 else { return Data() }
         var out = Data()
         // Page information: size, unknown resolution, eventually lossless, not striped.
         var page = Data()

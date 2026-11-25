@@ -174,6 +174,16 @@ struct JBIG2Tests {
         try t.roundTrip(13, 40, "dirty-padding", poppler: poppler, pad: false) { x, y in (x + y) % 5 == 0 }
     }
 
+    @Test("A row stride too big for the rows gives no data, not a crash (Codex review)")
+    func badStride() {
+        let rows = [UInt8](repeating: 0xFF, count: 4)
+        rows.withUnsafeBytes { buf in
+            #expect(JBIG2Generic.encode(buf, width: 1, height: 2, rowBytes: Int.max).isEmpty)
+            #expect(JBIG2Generic.encode(buf, width: 8, height: 5, rowBytes: 1).isEmpty)
+            #expect(!JBIG2Generic.encode(buf, width: 8, height: 4, rowBytes: 1).isEmpty)
+        }
+    }
+
     @Test("Quartz draws every JBIG2 pixel as coded")
     func quartzDecodes() throws { try Self.cases(poppler: false) }
 
