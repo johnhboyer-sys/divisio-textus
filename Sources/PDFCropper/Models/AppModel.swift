@@ -647,7 +647,8 @@ final class AppModel: ObservableObject {
             guard let models, models.indices.contains(k), let m = models[k], !m.ux.isEmpty else { return image }
             return Flatten.apply(m.scaled(Double(image.width) / Double(m.ux.count), width: image.width), to: image) ?? image
         }
-        let bitonal = enhanceMode != .blackAndWhite && PDFRenderer.isBitonalScan(pdfPage)
+        let bitonalScan = PDFRenderer.isBitonalScan(pdfPage)
+        let bitonal = enhanceMode != .blackAndWhite && bitonalScan
         var images = (PDFExporter.outputImages(of: page, rendered: cg, settings: settings, bitonalScan: bitonal) ?? [])
             .enumerated().map { flattened($1, $0) }
         // A scan stored in layers exports its text layer in black and white (see LayeredScan): show that.
@@ -660,7 +661,17 @@ final class AppModel: ObservableObject {
                     .map { $0 ?? PDFExporter.pictureFinished($1, dpi: outputPreviewDPI, settings: settings) }
             }
         } else {
-            images = images.map { PDFExporter.finished($0, dpi: dpi, settings: settings, preview: true) }
+            // In black and white, a black and white scan's picture pages as Color makes them, as the export does.
+            let scanPages = enhanceMode == .blackAndWhite && (bitonalScan || PDFExporter.isBitonal(cg))
+                ? LayeredScan.Once {
+                    PDFExporter.outputImages(of: page, rendered: cg, settings: PDFExporter.colorOf(settings), bitonalScan: true)?
+                        .enumerated().map { flattened($1, $0) }
+                }
+                : nil
+            images = images.enumerated().map { k, image in
+                PDFExporter.finished(image, dpi: dpi, settings: settings, preview: true,
+                                     bitonalPicture: scanPages.map { s in { s.value?[k] } })
+            }
         }
         outputCache[page.sourceIndex] = CachedOutput(page: page, mode: enhanceMode, direction: direction,
                                                      removeShadows: removeShadows,
