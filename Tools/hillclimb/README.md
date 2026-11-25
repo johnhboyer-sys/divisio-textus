@@ -18,7 +18,9 @@ argument; `current` when run by hand).
 Vision OCR can fail inside a sandbox. If the OCR export line reports failed pages or the
 run records an issue, rerun the command with the sandbox off.
 
-Never run the full `swift test` for this: it takes over an hour. Use `--filter HillClimb`.
+For the scores, use `--filter HillClimb`. The rest of the suite runs in about a minute in
+release (`swift test -c release -Xswiftc -enable-testing`); plain `swift test` (debug) takes
+over an hour.
 
 Quick checks while editing the harness: `HILLCLIMB_ONLY=synthetic` or `=real` runs half
 of the split score; `--filter HillClimbExport` runs only the export score.
