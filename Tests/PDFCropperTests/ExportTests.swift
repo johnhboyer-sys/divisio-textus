@@ -291,6 +291,43 @@ struct ExportTests {
         #expect(try turnedExportBits(.color, toned: true, "toned-color") == 8)
     }
 
+    @Test("In black and white a 1-bit scan's picture page comes out 1 bit; a gray scan's picture stays gray")
+    func bitonalScanPictureStaysBitonal() throws {
+        // Lines of print, and a 2 inch patch of dots (a 50% gray dithered, as a 1-bit scan shades).
+        let w = 1000, h = 1400, rowBytes = (w + 7) / 8       // 5 x 7 inches at 200 ppi
+        var bits = [UInt8](repeating: 0xFF, count: rowBytes * h)
+        func ink(_ x: Int, _ y: Int) { bits[y * rowBytes + x / 8] &= ~(0x80 >> UInt8(x % 8)) }
+        for y in stride(from: 100, to: 1300, by: 30) where !(450..<1000).contains(y) {
+            for x in 100..<900 where (x / 7) % 3 != 0 { ink(x, y) }
+        }
+        for y in 500..<900 { for x in 300..<700 where (x + y) % 2 == 0 { ink(x, y) } }
+        let provider = try #require(CGDataProvider(data: Data(bits) as CFData))
+        let scan = try #require(CGImage(width: w, height: h, bitsPerComponent: 1, bitsPerPixel: 1, bytesPerRow: rowBytes,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let media = CGRect(x: 0, y: 0, width: Double(w) * 72 / 200, height: Double(h) * 72 / 200)
+        // Also with a black bar drawn over it, on whole pixels (Freudenthal draws a rule): no
+        // longer a 1-bit scan to `isBitonalScan`, but its render is still black and white.
+        for drawn in [false, true] {
+            let url = Fixtures.writePDF("bitonal-picture-src.pdf", media: media, pages: [{ c in
+                c.draw(scan, in: media)
+                if drawn { c.setFillColor(gray: 0, alpha: 1); c.fill(CGRect(x: 36, y: 18, width: 72, height: 3.6)) }
+            }])
+            let doc = try #require(PDFDocument(url: url))
+            #expect(PDFRenderer.isBitonalScan(try #require(doc.page(at: 0))) == !drawn)
+            let page = BookPage(sourceIndex: 0, classification: .single, leftCrop: .full, leftSkew: 0.5, analyzed: true)
+            for removeShadows in [false, true] {
+                var s = noOCR
+                s.enhanceMode = .blackAndWhite
+                s.removeShadows = removeShadows
+                let out = Fixtures.url("bitonal-picture-out.pdf")
+                _ = try PDFExporter.export(pages: [page], from: doc, to: out, settings: s)
+                #expect(try imageBits(out) == 1)
+            }
+        }
+        #expect(try turnedExportBits(.blackAndWhite, toned: true, "toned-bw") == 8)
+    }
+
     @Test("A 1-bit scan claiming 72 ppi stays 1 bit in Color though its drawing blurs it")
     func lowResolutionBitonalScanStaysBitonal() throws {
         // Drawn at 150 DPI from 72 ppi, the render holds grays; the scan's own image is 1 bit.

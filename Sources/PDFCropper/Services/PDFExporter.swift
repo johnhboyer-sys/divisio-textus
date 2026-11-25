@@ -239,10 +239,17 @@ enum PDFExporter {
             guard let rendered = PDFRenderer.renderCGImage(page: pdfPage, dpi: dpi) else {
                 throw ExportError.renderFailed(page.sourceIndex)
             }
-            let bitonal = settings.enhanceMode != .blackAndWhite && PDFRenderer.isBitonalScan(pdfPage)
+            let bitonalScan = PDFRenderer.isBitonalScan(pdfPage)
+            let bitonal = settings.enhanceMode != .blackAndWhite && bitonalScan
             let out = LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: settings, bitonalScan: bitonal) }
+            // In black and white, a black and white scan's picture pages as Color makes them (see `finished`).
+            let scanPages = settings.enhanceMode == .blackAndWhite && (bitonalScan || isBitonal(rendered))
+                ? LayeredScan.Once { outputImages(of: page, rendered: rendered, settings: colorOf(settings), bitonalScan: true) }
+                : nil
             let slots = (0..<crops).map { k in
-                Slot(make: { out.value.map { finished($0[k], dpi: dpi, settings: settings) } }, dpi: dpi)
+                Slot(make: { out.value.map {
+                    finished($0[k], dpi: dpi, settings: settings, bitonalPicture: scanPages.map { s in { s.value?[k] } })
+                } }, dpi: dpi)
             }
             return PagePlan(slots: slots, kind: .ready, page: page, pdfPage: pdfPage, dpi: dpi)
         }
@@ -513,14 +520,26 @@ enum PDFExporter {
 
     /// An output page of a scan not stored in layers, made black and white and its
     /// shadows removed as the settings ask. In black and white a page holding a
-    /// picture stays gray (see `BlackAndWhite.page`). With `preview`, a small page:
-    /// its ink is left gray.
-    static func finished(_ image: CGImage, dpi: Double, settings: Settings, preview: Bool = false) -> CGImage {
-        if settings.enhanceMode == .blackAndWhite,
-           let bw = BlackAndWhite.page(image, dpi: dpi, preview: preview, removeShadows: settings.removeShadows) {
-            return bw
+    /// picture stays gray (see `BlackAndWhite.page`), but for a black and white scan's
+    /// (as `outputImages` tells one): `bitonalPicture` gives that page as Color makes it,
+    /// the scan's own black and white, and it comes out so. With `preview`, a small
+    /// page: its ink is left gray.
+    static func finished(_ image: CGImage, dpi: Double, settings: Settings, preview: Bool = false,
+                         bitonalPicture: (() -> CGImage?)? = nil) -> CGImage {
+        if settings.enhanceMode == .blackAndWhite {
+            if let bw = BlackAndWhite.page(image, dpi: dpi, preview: preview, removeShadows: settings.removeShadows) {
+                return bw
+            }
+            if let picture = bitonalPicture?() { return pictureFinished(picture, dpi: dpi, settings: settings) }
         }
         return pictureFinished(image, dpi: dpi, settings: settings)
+    }
+
+    /// `settings` in Color.
+    static func colorOf(_ settings: Settings) -> Settings {
+        var color = settings
+        color.enhanceMode = .color
+        return color
     }
 
     /// An output page that keeps its color or gray (a layered page whose color layer
